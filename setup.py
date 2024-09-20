@@ -16,6 +16,7 @@ class build_ext(build_ext_orig):
             subprocess.check_call(['gfortran', '-c', 'endf_userpy/fortran/endf6-f2pywrappers.f', '-o', 'endf_userpy/fortran/endf6-f2pywrappers.o'])
         else:
             subprocess.check_call(['ifx', '/c', 'endf_userpy/fortran/endf6.f90', '/Foendf_userpy/fortran/endf6.o'])
+            subprocess.check_call(['ifx', '/c', 'endf_userpy/fortran/endf6-f2pywrappers.f', '/Foendf_userpy/fortran/endf6-f2pywrappers.o'])
         # Call the original build_ext
         super().run()
 
@@ -44,8 +45,9 @@ if sys.platform != 'win32':
     add_libraries = ['gfortran']
     c_module_file = 'endf6module.c'
 else:
+    extra_link_args = []
     add_libraries = []
-    c_module_file = 'endf6module_win32.c'
+    c_module_file = 'endf6module.c'
 
 extension = Extension(
     'endf6',
