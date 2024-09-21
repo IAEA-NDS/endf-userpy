@@ -69,14 +69,14 @@ extension = Extension(
 
 setup(
     name='endf-userpy',
-    version='1.0',
+    version='0.0',
     packages=['endf_userpy'],
     ext_modules=[extension],
     cmdclass={'build_ext': build_ext},
     install_requires=[
         'numpy'
     ],
-    description='A package with Fortran code exposed to Python',
+    description='High-level interpretation of ENDF-6 data',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     classifiers=[
