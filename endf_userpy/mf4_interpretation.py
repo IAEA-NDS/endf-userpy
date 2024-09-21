@@ -1,5 +1,16 @@
 import numpy as np
 from .fortran.endf6 import mf4_get_leg
+from .interpolation import (
+    find_interval,
+    convert_interp_repr,
+    evaluate_interp_legendre_polynomials,
+)
+from .conversion import (
+    convert_angcos_to_cmsys,
+    convert_angdist_to_labsys,
+    compute_r2,
+)
+
 
 # helper functions
 
@@ -9,29 +20,6 @@ def deg2rad(values):
 
 def dict2array(obj, dtype=None):
     return np.array(list(v for v in obj.values()), dtype=dtype)
-
-
-def find_interval(xmesh, x):
-    # range checks
-    min_xmesh = np.min(xmesh)
-    max_xmesh = np.max(xmesh)
-    if np.any(min_xmesh > x) or np.any(max_xmesh < x):
-        raise IndexError('some user energies not in the range of energy mesh')
-    # interval finding
-    idcs = np.searchsorted(xmesh, x, side='right')
-    idcs[x == max_xmesh] = len(xmesh) - 1
-    return idcs
-
-
-def convert_interpolation_representation(int_arr, nbt_arr):
-    num_elements = nbt_arr[-1]
-    interp_arr = np.zeros(num_elements, dtype=int)
-    first_idx = 0
-    for i in range(len(nbt_arr)):
-        upper_idx = nbt_arr[i]
-        interp_arr[first_idx:upper_idx] = int_arr[i]
-        first_idx = upper_idx
-    return interp_arr
 
 
 # endf-6 specific functions
@@ -62,6 +50,43 @@ def get_AWP(endf_dict, mt):
     return 1.0
 
 
+def compute_angdist_from_legrepr(endf_dict, mt, energies, angle_cosines):
+    mu_lab = angle_cosines
+    mf4sec = endf_dict[4][mt]
+    awi = get_AWI(endf_dict)
+    awr = get_AWR(endf_dict)
+    awp = get_AWP(endf_dict, mt)
+    lct = mf4sec['LCT']
+    qm = get_QM(endf_dict, mt)
+    qi = get_QI(endf_dict, mt)
+    breakup_flag = get_LR(endf_dict, mt)
+    q = qi if breakup_flag == 0 else qm 
+    # get the energy mesh and bookkeeping information
+    incident_energies = dict2array(mf4sec['E'])
+    nbt_arr = np.array(mf4sec['NBT'])
+    int_arr = np.array(mf4sec['INT'])
+    interp_arr = convert_interp_repr(int_arr, nbt_arr)
+    num_coeffs_per_energy = dict2array(mf4sec['NL'])
+    max_num_coeffs = np.max(num_coeffs_per_energy)
+    # convert Legendre coefficients to numpy array 
+    coeffs = mf4sec['a']
+    coeffs_arr = np.zeros((len(incident_energies), max_num_coeffs+1), dtype=float)
+    for en_idx in range(len(incident_energies)):
+        num_coeffs = num_coeffs_per_energy[en_idx]
+        coeffs_arr[en_idx, 1:(num_coeffs+1)] = dict2array(coeffs[en_idx+1])
+    coeffs_arr[:,0] = 1.0
+    # apply factors (l+1/2)
+    coeffs_arr *= np.arange(coeffs_arr.shape[1]).reshape(1,-1) + 0.5
+    # compute the angular distribution in the laboratory system
+    r2 = compute_r2(energies, awi, awr, awp, q)
+    mu_eff = mu_lab if lct == 1 else convert_angcos_to_cmsys(mu_lab, r2)
+    f_eff = evaluate_interp_legendre_polynomials(
+        energies, mu_eff, incident_energies, coeffs_arr, int_arr, nbt_arr
+    )
+    f_lab = f_eff if lct == 1 else convert_angdist_to_labsys(mu_eff, f_eff, r2)
+    return f_lab
+
+
 def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
@@ -77,7 +102,7 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
     incident_energies = dict2array(mf4sec['E'])
     nbt_arr = np.array(mf4sec['NBT'])
     int_arr = np.array(mf4sec['INT'])
-    interp_arr = convert_interpolation_representation(int_arr, nbt_arr)
+    interp_arr = convert_interp_repr(int_arr, nbt_arr)
     num_coeffs_per_energy = dict2array(mf4sec['NL'])
     max_num_coeffs = np.max(num_coeffs_per_energy)
     # convert Legendre coefficients to numpy array 
