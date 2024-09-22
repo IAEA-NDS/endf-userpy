@@ -53,17 +53,17 @@ def _compute_r2(endf_dict, mt, energies):
 
 
 def compute_angdist(endf_dict, mt, energies, angle_cosines):
-    mu_lab = angle_cosines
     mf4sec = endf_dict[4][mt]
     ltt = mf4sec['LTT']
     li = mf4sec['LI']
     lct = mf4sec['LCT']
-    # convert angle_cosines to CM system if indicated
+    # convert angle cosines to CM system if indicated
+    mu = angle_cosines
     if lct == 1:
-        mu_eff = angle_cosines
+        mu_eff = mu
     elif lct == 2:
         r2 = _compute_r2(endf_dict, mt, energies)
-        mu_eff = convert_angcos_to_cmsys(mu_lab, r2)
+        mu_eff = convert_angcos_to_cmsys(mu, r2)
     else:
         raise ValueError(f'Unknown reference system (LCT={lct}).')
     # perform the appropriate interpolation
