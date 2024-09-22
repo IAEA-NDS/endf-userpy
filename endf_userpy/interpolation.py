@@ -132,6 +132,8 @@ def evaluate_interp_legendre_polynomials(x, mu, xp, coeffs, int_arr, nbt_arr):
     mu = np.array(mu, copy=None)
     if mu.ndim == 1:
         mu = mu.reshape(1, -1)
+    if mu.shape[0] == 1:
+        mu = np.tile(mu, (x.size, 1))
     result = np.zeros((x.size, mu.shape[1]), dtype=float)
     interp_coeffs = interp_legendre_coeffs(x, xp, coeffs, int_arr, nbt_arr)
     for i in range(interp_coeffs.shape[0]):
