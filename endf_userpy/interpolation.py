@@ -68,6 +68,7 @@ def endf_interp1d(x, xp, fp, int_arr, nbt_arr):
         cur_idcs = idcs[is_in_range]
         cur_x = x[is_in_range]
         f[is_in_range] = interp(cur_x, cur_xp, cur_fp, interp_type)  
+        first_idx = last_idx
     return f
 
 
