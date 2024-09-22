@@ -41,8 +41,7 @@ def compute_angdist_from_legrepr(mf4sec, energies, angle_cosines):
     return f
 
 
-def _compute_r2(endf_dict, mt, energies, angle_cosines):
-    mu_lab = angle_cosines
+def _compute_r2(endf_dict, mt, energies):
     awi = get_AWI(endf_dict)
     awr = get_AWR(endf_dict)
     awp = get_AWP(endf_dict, mt)
@@ -63,7 +62,7 @@ def compute_angdist(endf_dict, mt, energies, angle_cosines):
     if lct == 1:
         mu_eff = angle_cosines
     elif lct == 2:
-        r2 = _compute_r2(endf_dict, mt, energies, mu_lab)
+        r2 = _compute_r2(endf_dict, mt, energies)
         mu_eff = convert_angcos_to_cmsys(mu_lab, r2)
     else:
         raise ValueError(f'Unknown reference system (LCT={lct}).')
