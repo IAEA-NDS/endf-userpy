@@ -73,7 +73,7 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
         # copy current result to overall result array
         result_arr[i:i+1,:] = cur_res_arr
 
-    return cur_res_arr
+    return result_arr
 
 
 def compute_angdist(endf_dict, mt, energies, angle_cosines):
