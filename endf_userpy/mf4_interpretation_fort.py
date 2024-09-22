@@ -74,3 +74,16 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
         result_arr[i:i+1,:] = cur_res_arr
 
     return cur_res_arr
+
+
+def compute_angdist(endf_dict, mt, energies, angle_cosines):
+    mu_lab = angle_cosines
+    mf4sec = endf_dict[4][mt]
+    ltt = mf4sec['LTT']
+    li = mf4sec['LI']
+    lct = mf4sec['LCT']
+    if ltt == 1 and li == 0:
+        return get_angdist_from_legendre(endf_dict, mt, energies, mu_lab)
+    raise TypeError(
+        f'Interpretation of MF4/MT for LTT={ltt}, LI={li} not implemented.'
+    )
