@@ -14,34 +14,10 @@ from .helpers import (
     deg2rad,
     dict2array
 )
-
-
-# endf-6 specific functions
-
-def get_QM(endf_dict, mt):
-    return endf_dict[3][mt]['QM']
-
-
-def get_QI(endf_dict, mt):
-    return endf_dict[3][mt]['QI']
-
-
-def get_LR(endf_dict, mt):
-    return endf_dict[3][mt]['LR']
-
-
-def get_AWR(endf_dict):
-    return endf_dict[1][451]['AWR']
-
-
-def get_AWI(endf_dict):
-    # TODO: generalize to incident particles different from neutron
-    return 1.0
-
-
-def get_AWP(endf_dict, mt):
-    # TODO: generalize to reactions different from neutron elastic scattering
-    return 1.0
+from .properties import (
+    get_AWR, get_AWI, get_AWP,
+    get_QM, get_QI, get_LR,
+)
 
 
 def compute_angdist_from_legrepr(mf4sec, energies, angle_cosines):
