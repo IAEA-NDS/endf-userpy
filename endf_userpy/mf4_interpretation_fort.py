@@ -1,14 +1,14 @@
 import numpy as np
 from .fortran.endf6 import mf4_get_leg
-from .interpolation import (
-    find_interval,
-    convert_interp_repr,
-)
+from .interpolation import find_interval
 from .properties import (
     get_AWI, get_AWR, get_AWP,
     get_QM, get_QI, get_LR,
 )
-from .helpers import dict2array
+from .helpers import (
+    dict2array,
+    convert_interp_repr,
+)
 
 
 def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):

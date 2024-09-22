@@ -1,7 +1,5 @@
 import numpy as np
 from .interpolation import (
-    find_interval,
-    convert_interp_repr,
     evaluate_interp_legendre_polynomials,
 )
 from .conversion import (
@@ -25,7 +23,6 @@ def compute_angdist_from_legrepr(mf4sec, energies, angle_cosines):
     incident_energies = dict2array(mf4sec['E'])
     nbt_arr = np.array(mf4sec['NBT'])
     int_arr = np.array(mf4sec['INT'])
-    interp_arr = convert_interp_repr(int_arr, nbt_arr)
     num_coeffs_per_energy = dict2array(mf4sec['NL'])
     max_num_coeffs = np.max(num_coeffs_per_energy)
     # convert Legendre coefficients to numpy array
