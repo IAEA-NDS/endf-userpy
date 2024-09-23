@@ -123,7 +123,6 @@ def get_ejectiles(proj, mt):
 def is_binary_reaction(proj, mt):
     """Determine if binary reaction"""
     ejectiles = get_ejectiles(proj, mt)
-    print(ejectiles)
     if ejectiles is None:
         return False
     return len(ejectiles) == 1 and ejectiles[0][0] == 1 
