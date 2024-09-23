@@ -15,8 +15,7 @@ def get_AWR(endf_dict):
 
 
 def get_AWI(endf_dict):
-    # TODO: generalize to incident particles different from neutron
-    return 1.0
+    return endf_dict[1][451]['AWI']
 
 
 def get_AWP(endf_dict, mt):
