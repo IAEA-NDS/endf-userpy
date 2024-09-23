@@ -17,6 +17,54 @@ C     It contains Fortran 77 wrappers to fortran functions.
       end
 
 
+      subroutine f2pywraptab1intp (tab1intpf2pywrap, x, y, np, nbt
+     &, ibt, nr, x0)
+      external tab1intp
+      integer np
+      integer nr
+      real*8 x0
+      real*8 x(*)
+      real*8 y(*)
+      integer nbt(*)
+      integer ibt(*)
+      real*8 tab1intpf2pywrap
+      real*8  tab1intp
+      tab1intpf2pywrap = tab1intp(x, y, np, nbt, ibt, nr, x0)
+      end
+
+
+      subroutine f2pywrapulab2cm (ulab2cmf2pywrap, lct, awr, awi, 
+     &awp, q, e, u)
+      external ulab2cm
+      integer lct
+      real*8 awr
+      real*8 awi
+      real*8 awp
+      real*8 q
+      real*8 e
+      real*8 u
+      real*8 ulab2cmf2pywrap
+      real*8  ulab2cm
+      ulab2cmf2pywrap = ulab2cm(lct, awr, awi, awp, q, e, u)
+      end
+
+
+      subroutine f2pywrapfcm2lab (fcm2labf2pywrap, lct, awr, awi, 
+     &awp, q, e, w)
+      external fcm2lab
+      integer lct
+      real*8 awr
+      real*8 awi
+      real*8 awp
+      real*8 q
+      real*8 e
+      real*8 w
+      real*8 fcm2labf2pywrap
+      real*8  fcm2lab
+      fcm2labf2pywrap = fcm2lab(lct, awr, awi, awp, q, e, w)
+      end
+
+
       subroutine f2pywrapyleg (ylegf2pywrap, x, a, na)
       external yleg
       real*8 x
