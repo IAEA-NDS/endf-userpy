@@ -1,5 +1,5 @@
 import numpy as np
-from .fortran.endf6 import mf4_get_leg
+from .fortran.endf6 import mf4_get_leg, mf4_get_tab
 from .interpolation import find_interval
 from .properties import (
     get_AWI, get_AWR, get_AWP,
@@ -76,6 +76,62 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
     return result_arr
 
 
+def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines):
+    num_energies = len(energies)
+    num_angle_cosines = len(angle_cosines)
+    mf4sec = endf_dict[4][mt]
+    awi = get_AWI(endf_dict)
+    awr = get_AWR(endf_dict)
+    awp = get_AWP(endf_dict, mt)
+    lct = mf4sec['LCT']
+    qm = get_QM(endf_dict, mt)
+    qi = get_QI(endf_dict, mt)
+    breakup_flag = get_LR(endf_dict, mt)
+    q = qi if breakup_flag == 0 else qm
+    # get incident mesh and interpolation info
+    incident_energies = dict2array(mf4sec['E'])
+    int_arr = mf4sec['energy_table']['INT']
+    nbt_arr = mf4sec['energy_table']['NBT']
+    interp_arr = convert_interp_repr(int_arr, nbt_arr)
+    # find enclosing tab1 records with tabulated angular distribution
+    idcs = find_interval(incident_energies, energies)
+    # call fortran routine
+    result_dim = (len(energies), len(angle_cosines))
+    result_arr = np.zeros(result_dim, dtype=float)
+    for i in result_dim[0]:
+        curidx = idcs[i]
+        e1 = incident_energies[curidx]
+        e2 = incident_energies[curidx+1]
+        interp_type = interp_arr[curidx]
+        lower_tab1 = mf4sec['angtable'][curidx+1]
+        upper_tab1 = mf4sec['angtable'][curidx+2]
+        u1 = np.array(lower_tab1['mu'])
+        f1 = np.array(lower_tab1['f'])
+        nbt1 = np.array(lower_tab1['NBT'])
+        ibt1 = np.array(lower_tab1['INT'])
+        np1 = len(u1)
+        nr1 = len(nbt1)
+        u2 = np.array(upper_tab1['mu'])
+        f2 = np.array(upper_tab1['f'])
+        nbt2 = np.array(upper_tab1['NBT'])
+        ibt2 = np.array(upper_tab1['NBT'])
+        np2 = len(u2)
+        nr2 = len(nbt2)
+
+        cur_res_arr = np.zeros((1, num_angle_cosines), dtype=float)
+
+        mf4_get_tab(
+            awr, awi, awp, q, lct,
+            e1, u1, f1, np1, nbt1, ibt1, nr1,
+            e2, u2, f2, np2, nbt2, ibt2, nr2,
+            inter_type, energies, #  num_energies, (automatically inferred)
+            angle_cosines, num_angle_cosines,
+            cur_result_arr
+        )
+        result_arr[i, :] = cur_result_arr
+    return result_arr
+
+
 def compute_angdist(endf_dict, mt, energies, angle_cosines):
     mu_lab = angle_cosines
     mf4sec = endf_dict[4][mt]
@@ -84,6 +140,8 @@ def compute_angdist(endf_dict, mt, energies, angle_cosines):
     lct = mf4sec['LCT']
     if ltt == 1 and li == 0:
         return get_angdist_from_legendre(endf_dict, mt, energies, mu_lab)
+    elif ltt == 2 and li == 0:
+        return get_angdist_from_tabulated(endf_dict, mt, energies, mu_lab)
     raise TypeError(
         f'Interpretation of MF4/MT for LTT={ltt}, LI={li} not implemented.'
     )
