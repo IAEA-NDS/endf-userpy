@@ -5,7 +5,7 @@ def _create_tuple(*args):
             res.extend(arg)
         else:
             res.append(arg)
-    return res
+    return tuple(res)
 
 
 PARTICLES = ('g', 'n', 'p', 'd', 't', 'h', 'a')
