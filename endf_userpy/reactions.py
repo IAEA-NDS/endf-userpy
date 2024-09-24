@@ -119,7 +119,7 @@ def get_ejectiles(proj, mt):
             level = ejectiles[i+2:]
             if not level.isdigit() and level != 'c':
                 return None
-            return result 
+            return tuple(result)
         i += 1
     return tuple(result)
 
