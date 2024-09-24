@@ -36,6 +36,16 @@ def _convert_legendre_to_numpy_array(coeffs_dict):
     return coeffs_arr
 
 
+def _interp_tab1(x, tab1, xp_name, fp_name):
+    x_mesh = np.array(tab1[xp_name], dtype=float)
+    f_mesh = np.array(tab1[fp_name], dtype=float)
+    int_arr = np.array(tab1['INT'], dtype=int)
+    nbt_arr = np.array(tab1['NBT'], dtype=int)
+    return endf_interp1d(
+        x, x_mesh, f_mesh, int_arr, nbt_arr
+    )
+
+
 def _interp_tab2_tab1(
     x, y, xp, int_arr, nbt_arr, tab1_records, yp_name, fp_name
 ):
@@ -47,27 +57,11 @@ def _interp_tab2_tab1(
     result_dim = (len(x), y.shape[1])
     result_arr = np.zeros(result_dim, dtype=float)
     for i, idx in enumerate(idcs):
+        cur_y = y[0,:] if y.shape[0] == 1 else y[i,:]
         curtab1 = tab1_records[idx]
-        y_mesh1 = np.array(curtab1[yp_name], dtype=float)
-        f_mesh1 = np.array(curtab1[fp_name], dtype=float)
-        int_arr1 = np.array(curtab1['INT'], dtype=int)
-        nbt_arr1 = np.array(curtab1['NBT'], dtype=int)
-        curtab2 = tab1_records[idx+2]
-        y_mesh2 = np.array(curtab2[yp_name], dtype=float)
-        f_mesh2 = np.array(curtab2[fp_name], dtype=float)
-        int_arr2 = np.array(curtab2['INT'], dtype=int)
-        nbt_arr2 = np.array(curtab2['NBT'], dtype=int)
-        if y.shape[0] == 1:
-            cur_y = y[0,:]
-        else:
-            cur_y = y[i,:]
-
-        f1 = endf_interp1d(
-            cur_y, y_mesh1, f_mesh1, int_arr1, nbt_arr1
-        )
-        f2 = endf_interp1d(
-            cur_y, y_mesh2, f_mesh2, int_arr2, nbt_arr2
-        )
+        curtab2 = tab1_records[idx+1]
+        f1 = _interp_tab1(cur_y, curtab1, yp_name, fp_name)
+        f2 = _interp_tab1(cur_y, curtab2, yp_name, fp_name)
         interp_type = interp_arr[idx]
         red_xp = xp[idx:idx+2]
         red_f = np.vstack([f1, f2])
