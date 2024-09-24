@@ -99,18 +99,22 @@ def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines):
     result_dim = (len(energies), len(angle_cosines))
     result_arr = np.zeros(result_dim, dtype=float)
     for i in range(result_dim[0]):
+        curens = energies[i:i+1]
         curidx = idcs[i]
         e1 = incident_energies[curidx]
         e2 = incident_energies[curidx+1]
         interp_type = interp_arr[curidx]
+
         lower_tab1 = mf4sec['angtable'][curidx+1]
         upper_tab1 = mf4sec['angtable'][curidx+2]
+
         u1 = np.array(lower_tab1['mu'])
         f1 = np.array(lower_tab1['f'])
         nbt1 = np.array(lower_tab1['NBT'])
         ibt1 = np.array(lower_tab1['INT'])
         np1 = len(u1)
         nr1 = len(nbt1)
+
         u2 = np.array(upper_tab1['mu'])
         f2 = np.array(upper_tab1['f'])
         nbt2 = np.array(upper_tab1['NBT'])
@@ -124,7 +128,7 @@ def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines):
             awr, awi, awp, q, lct,
             e1, u1, f1, np1, nbt1, ibt1, nr1,
             e2, u2, f2, np2, nbt2, ibt2, nr2,
-            interp_type, energies, #  num_energies, (automatically inferred)
+            interp_type, curens, #  num_energies, (automatically inferred)
             angle_cosines, num_angle_cosines,
             cur_res_arr
         )
