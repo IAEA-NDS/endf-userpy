@@ -1,9 +1,31 @@
 from pathlib import Path
+import pytest
 import numpy as np
 from endf_parserpy import EndfParserCpp
 import endf_userpy.mf4_interpretation as mf4py
 import endf_userpy.mf4_interpretation_fort as mf4fort
 from endf_userpy.helpers import deg2rad
+
+
+@pytest.fixture(scope="module")
+def myEndfParser(
+    ignore_zero_mismatch,
+    ignore_number_mismatch,
+    ignore_varspec_mismatch,
+    accept_spaces,
+    ignore_blank_lines,
+    ignore_send_records,
+    ignore_missing_tpid,
+):
+    return EndfParserCpp(
+        ignore_zero_mismatch=ignore_zero_mismatch,
+        ignore_number_mismatch=ignore_number_mismatch,
+        ignore_varspec_mismatch=ignore_varspec_mismatch,
+        accept_spaces=accept_spaces,
+        ignore_blank_lines=ignore_blank_lines,
+        ignore_send_records=ignore_send_records,
+        ignore_missing_tpid=ignore_missing_tpid,
+    )
 
 
 def test_mf4_legrepr_python_fortran_equivalence():
@@ -28,3 +50,12 @@ def test_mf4_tabulated_python_fortran_equivalence():
     res_py = mf4py.compute_angdist(endf_dict, 2, energies, angcos)
     res_fort = mf4fort.compute_angdist(endf_dict, 2, energies, angcos)
     assert np.allclose(res_py, res_fort)
+
+
+def test_mf4_reconstruction_never_fails(endf_file, myEndfParser):
+    parser = myEndfParser
+    endf_dict = parser.parsefile(endf_file)
+    energies = np.array([1e6, 2e6, 3e6])
+    angcos = np.cos(deg2rad(np.linspace(0.0, 180.0, 5)))
+    for mt in endf_dict[4]:
+        mf4py.compute_angdist(endf_dict, mt, energies, angcos)
