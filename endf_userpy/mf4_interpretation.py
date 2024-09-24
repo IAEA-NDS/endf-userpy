@@ -21,8 +21,8 @@ def compute_angdist_from_legrepr(mf4sec, energies, angle_cosines):
     mu = angle_cosines
     # get the energy mesh and bookkeeping information
     incident_energies = dict2array(mf4sec['E'])
-    nbt_arr = np.array(mf4sec['NBT'])
-    int_arr = np.array(mf4sec['INT'])
+    nbt_arr = np.array(mf4sec['NBT'], dtype=int)
+    int_arr = np.array(mf4sec['INT'], dtype=int)
     num_coeffs_per_energy = dict2array(mf4sec['NL'])
     max_num_coeffs = np.max(num_coeffs_per_energy)
     # convert Legendre coefficients to numpy array
