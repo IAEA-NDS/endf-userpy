@@ -46,7 +46,7 @@ def _interp_tab1(x, tab1, xp_name, fp_name):
     )
 
 
-def _interp_tab2_tab1(
+def _interp_tab2(
     x, y, xp, int_arr, nbt_arr, tab1_records, yp_name, fp_name
 ):
     if y.ndim == 1:
@@ -96,7 +96,7 @@ def compute_angdist_from_tabulated(mf4sec, energies, angle_cosines):
     nbt_arr = np.array(mf4sec['energy_table']['NBT'], dtype=int)
     int_arr = np.array(mf4sec['energy_table']['INT'], dtype=int)
     tab1_records = list(mf4sec['angtable'].values())
-    return _interp_tab2_tab1(
+    return _interp_tab2(
         energies, angle_cosines, en_mesh, int_arr, nbt_arr,
         tab1_records, 'mu', 'f'
     )
