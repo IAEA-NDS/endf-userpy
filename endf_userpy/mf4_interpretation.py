@@ -21,23 +21,29 @@ from .properties import (
 )
 
 
+def _convert_legendre_to_numpy_array(coeffs_dict):
+    num_energies = len(coeffs_dict)
+    num_coeffs_per_energy = [len(v)+1 for _, v in coeffs_dict.items()]
+    max_num_coeffs = np.max(num_coeffs_per_energy)
+    coeffs_arr = np.zeros((num_energies, max_num_coeffs), dtype=float)
+    for en_idx in range(num_energies):
+        num_coeffs = num_coeffs_per_energy[en_idx]
+        coeffs_arr[en_idx, 1:num_coeffs] = \
+            dict2array(coeffs_dict[en_idx+1])
+    coeffs_arr[:,0] = 1.0
+    # apply factors (l+1/2)
+    coeffs_arr *= np.arange(coeffs_arr.shape[1]).reshape(1,-1) + 0.5
+    return coeffs_arr
+
+
 def compute_angdist_from_legrepr(mf4sec, energies, angle_cosines):
     mu = angle_cosines
     # get the energy mesh and bookkeeping information
     incident_energies = dict2array(mf4sec['E'])
     nbt_arr = np.array(mf4sec['NBT'], dtype=int)
     int_arr = np.array(mf4sec['INT'], dtype=int)
-    num_coeffs_per_energy = dict2array(mf4sec['NL'])
-    max_num_coeffs = np.max(num_coeffs_per_energy)
     # convert Legendre coefficients to numpy array
-    coeffs = mf4sec['a']
-    coeffs_arr = np.zeros((len(incident_energies), max_num_coeffs+1), dtype=float)
-    for en_idx in range(len(incident_energies)):
-        num_coeffs = num_coeffs_per_energy[en_idx]
-        coeffs_arr[en_idx, 1:(num_coeffs+1)] = dict2array(coeffs[en_idx+1])
-    coeffs_arr[:,0] = 1.0
-    # apply factors (l+1/2)
-    coeffs_arr *= np.arange(coeffs_arr.shape[1]).reshape(1,-1) + 0.5
+    coeffs_arr = _convert_legendre_to_numpy_array(mf4sec['a'])
     # compute the angular distribution in the laboratory system
     f = evaluate_interp_legendre_polynomials(
         energies, mu, incident_energies, coeffs_arr, int_arr, nbt_arr
