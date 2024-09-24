@@ -119,7 +119,6 @@ def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines):
         nr2 = len(nbt2)
 
         cur_res_arr = np.zeros((1, num_angle_cosines), dtype=float)
-        print(f'interp_type: {interp_type}')
 
         mf4_get_tab(
             awr, awi, awp, q, lct,
