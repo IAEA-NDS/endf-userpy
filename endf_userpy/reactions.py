@@ -1,7 +1,11 @@
+import types
+from collections.abc import Sequence
+
+
 def _create_tuple(*args):
     res = []
     for arg in args:
-        if type(arg[0]) == tuple: 
+        if isinstance(arg, types.GeneratorType):
             res.extend(arg)
         else:
             res.append(arg)
@@ -48,7 +52,7 @@ REACTIONS = _create_tuple(
     (44, 'z', 'n2p'),
     (45, 'z', 'npa'),
     (50, 'y', 'n_0'), 
-    tuple((mt, 'z', f'n_{mt-50}') for mt in range(51, 91)),
+    ((mt, 'z', f'n_{mt-50}') for mt in range(51, 91)),
     (91, 'z', 'n_c'),
     (101, 'n', 'disap'),
     (102, 'z', 'g'),
@@ -75,15 +79,15 @@ REACTIONS = _create_tuple(
     (206, 'z', 'Xh'),
     (207, 'z', 'Xa'),
     (600, 'y', 'p_0'),
-    tuple((mt, 'z', f'p_{mt-600}') for mt in range(601, 649)),
+    ((mt, 'z', f'p_{mt-600}') for mt in range(601, 649)),
     (649, 'z', 'p_c'),
-    tuple((mt, 'z', f'd_{mt-650}') for mt in range(650, 699)),
+    ((mt, 'z', f'd_{mt-650}') for mt in range(650, 699)),
     (699, 'z', 'd_c'),
-    tuple((mt, 'z', f't_{mt-700}') for mt in range(700, 749)),
+    ((mt, 'z', f't_{mt-700}') for mt in range(700, 749)),
     (749, 'z', 't_c'),
-    tuple((mt, 'z', f'h_{mt-750}') for mt in range(750, 799)),
+    ((mt, 'z', f'h_{mt-750}') for mt in range(750, 799)),
     (799, 'z', 'h_c'),
-    tuple((mt, 'z', f'a_{mt-800}') for mt in range(800, 849)),
+    ((mt, 'z', f'a_{mt-800}') for mt in range(800, 849)),
     (849, 'z', 'a_c'),
     (891, 'z', '2n_c')
 )
