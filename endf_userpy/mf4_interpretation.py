@@ -102,6 +102,44 @@ def compute_angdist_from_tabulated(mf4sec, energies, angle_cosines):
     )
 
 
+def compute_angdist_from_mixed(mf4sec, energies, angle_cosines):
+    en_mesh = dict2array(mf4sec['E'], dtype=float)
+    # prepare Legendre interpolation info for low energies
+    num_ens1 = mf4sec['NE1']
+    en_mesh1 = en_mesh[:num_ens1]
+    nbt_arr1 = np.array(mf4sec['leg_int']['NBT'])
+    int_arr1 = np.array(mf4sec['leg_int']['INT'])
+    coeffs_arr = _convert_legendre_to_numpy_array(mf4sec['al'])
+    assert num_ens1 == coeffs_arr.shape[0]
+    # prepare tabulated iterpolation info for high energies
+    num_ens2 = mf4sec['NE2']
+    en_mesh2 = en_mesh[num_ens1-1:]
+    assert num_ens2 == len(en_mesh2)
+    nbt_arr2 = np.array(mf4sec['ang_int']['NBT'])
+    int_arr2 = np.array(mf4sec['ang_int']['INT'])
+    tab1_records = list(mf4sec['angtable'].values())
+    assert num_ens2 == len(tab1_records)
+    # interpolate according to region
+    break_energy = en_mesh[num_ens1]
+    mu = angle_cosines
+    mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
+    is_lower = energies < break_energy
+    energies_lower = energies[is_lower]
+    f_lower = evaluate_interp_legendre_polynomials(
+        energies_lower, mu, en_mesh1, coeffs_arr, int_arr1, nbt_arr1
+    )
+    energies_upper = energies[~is_lower]
+    f_upper = _interp_tab2(
+        energies_upper, mu, en_mesh2, int_arr2, nbt_arr2,
+        tab1_records, 'mu', 'f'
+    )
+    # assemble the result
+    f = np.zeros((len(energies), mu.shape[1]), dtype=float)
+    f[is_lower] = f_lower
+    f[~is_lower] = f_upper
+    return f
+
+
 def _compute_r2(endf_dict, mt, energies):
     awi = get_AWI(endf_dict)
     awr = get_AWR(endf_dict)
@@ -132,6 +170,8 @@ def compute_angdist(endf_dict, mt, energies, angle_cosines):
         f_eff = compute_angdist_from_legrepr(mf4sec, energies, mu_eff)
     elif ltt == 2 and li == 0:
         f_eff = compute_angdist_from_tabulated(mf4sec, energies, mu_eff)
+    elif ltt == 3 and li == 0:
+        f_eff = compute_angdist_from_mixed(mf4sec, energies, mu_eff)
     else:
         raise ValueError(f'Unknown angular distribution representation.')
     # convert result to LAB system if required
