@@ -21,6 +21,15 @@ from .properties import (
 )
 
 
+def get_energy_range(mf4sec, mt):
+    ens = list(mf4sec[mt]['E'].values())
+    return (np.min(ens), np.max(ens)) 
+
+
+def has_isotropic_angdist_repr(mf4sec, mt):
+    return mf4sec[mt]['LTT'] == 0 and mf4sec[mt]['LI'] == 1
+
+
 def _convert_legendre_to_numpy_array(coeffs_dict):
     num_energies = len(coeffs_dict)
     num_coeffs_per_energy = [len(v)+1 for _, v in coeffs_dict.items()]
