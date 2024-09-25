@@ -1,6 +1,23 @@
 import numpy as np
 
 
+def _correct_mu_cm(mu_cm):
+    """Correct numerical issues in mu_cm inplace"""
+    rtol = 1e-8
+    atol = 0.0
+    lo_lim, up_lim = (-1.0, 1.0)
+    too_low = mu_cm < lo_lim
+    if np.allclose(mu_cm[too_low], lo_lim, rtol=rtol, atol=atol):
+        mu_cm[too_low] = lo_lim
+    else:
+        raise ValueError('Encountered mu_cm < -1.0')
+    too_high = mu_cm > up_lim
+    if np.allclose(mu_cm[too_high], up_lim, rtol=rtol, atol=atol):
+        mu_cm[too_high] = up_lim
+    else:
+        raise ValueError('Encountered mu_cm > 1.0')
+
+
 def compute_r2(E_lab, awi, awr, awp, q):
     return awr*(awr+awi-awp)/(awi*awp)*(1.0+(awr+awi)/awr*q/E_lab) 
 
@@ -12,6 +29,7 @@ def convert_angcos_to_cmsys(mu_lab, r2):
     u = mu_lab
     u2 = np.square(mu_lab) 
     mu_cm = (1.0-u2-r2*u2)/(r*(u2-1.0-u*np.sqrt(u2+r2-1.0))) 
+    _correct_mu_cm(mu_cm)
     return mu_cm
 
 
