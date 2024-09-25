@@ -57,5 +57,11 @@ def test_mf4_reconstruction_never_fails(endf_file, myEndfParser):
     endf_dict = parser.parsefile(endf_file)
     energies = np.array([1e6, 2e6, 3e6])
     angcos = np.cos(deg2rad(np.linspace(0.0, 180.0, 5)))
-    for mt in endf_dict[4]:
-        mf4py.compute_angdist(endf_dict, mt, energies, angcos)
+    mf4sec = endf_dict[4]
+    for mt in mf4sec:
+        curens = energies
+        if not mf4py.has_isotropic_angdist_repr(mf4sec, mt):
+            en_range = mf4py.get_energy_range(mf4sec, mt)
+            en_diff = np.diff(en_range)
+            curens = np.linspace(en_range[0], en_range[1], 5)
+        mf4py.compute_angdist(endf_dict, mt, curens, angcos)

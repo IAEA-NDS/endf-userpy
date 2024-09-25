@@ -137,7 +137,7 @@ def compute_angdist_from_mixed(mf4sec, energies, angle_cosines):
     tab1_records = list(mf4sec['angtable'].values())
     assert num_ens2 == len(tab1_records)
     # interpolate according to region
-    break_energy = en_mesh[num_ens1]
+    break_energy = en_mesh[num_ens1-1]
     mu = angle_cosines
     mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
     is_lower = energies < break_energy
