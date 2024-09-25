@@ -76,6 +76,14 @@ def _interp_tab2(
     return result_arr
 
 
+def compute_angdist_from_isotropic(mf4sec, energies, angle_cosines):
+    mu = angle_cosines
+    mu = mu.reshape(1,-1) if mu.ndim == 1 else mu
+    m = len(energies)
+    n = mu.shape[1]
+    return np.full((m, n), 0.5, dtype=float)
+
+
 def compute_angdist_from_legrepr(mf4sec, energies, angle_cosines):
     mu = angle_cosines
     # get the energy mesh and bookkeeping information
@@ -166,14 +174,19 @@ def compute_angdist(endf_dict, mt, energies, angle_cosines):
     else:
         raise ValueError(f'Unknown reference system (LCT={lct}).')
     # perform the appropriate interpolation
-    if ltt == 1 and li == 0:
+    if ltt == 0 and li == 1:
+        f_eff = compute_angdist_from_isotropic(mf4sec, energies, mu_eff)
+    elif ltt == 1 and li == 0:
         f_eff = compute_angdist_from_legrepr(mf4sec, energies, mu_eff)
     elif ltt == 2 and li == 0:
         f_eff = compute_angdist_from_tabulated(mf4sec, energies, mu_eff)
     elif ltt == 3 and li == 0:
         f_eff = compute_angdist_from_mixed(mf4sec, energies, mu_eff)
     else:
-        raise ValueError(f'Unknown angular distribution representation.')
+        raise ValueError(
+            'Unknown angular distribution representation '
+            f'(MT={mt}, LTT={ltt}, LI={li}).'
+        )
     # convert result to LAB system if required
     f_lab = f_eff if lct == 1 else convert_angdist_to_labsys(mu_eff, f_eff, r2)
     return f_lab
