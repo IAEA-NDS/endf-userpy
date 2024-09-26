@@ -11,6 +11,45 @@ from .helpers import (
 )
 
 
+def get_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines):
+    mf4sec = endf_dict[4][mt]
+    awi = get_AWI(endf_dict)
+    awr = get_AWR(endf_dict)
+    awp = get_AWP(endf_dict, mt)
+    lct = mf4sec['LCT']
+    qm = get_QM(endf_dict, mt)
+    qi = get_QI(endf_dict, mt)
+    breakup_flag = get_LR(endf_dict, mt)
+    q = qi if breakup_flag == 0 else qm
+
+    num_angles = len(angle_cosines)
+    num_coeffs1 = 1
+    num_coeffs2 = 1
+    coeffs1 = np.array([0], dtype=float)
+    coeffs2 = np.array([0], dtype=float)
+    en1 = np.min(energies)
+    en2 = np.max(energies)
+    interp_type = 2
+
+    result_dim = (len(energies), len(angle_cosines))
+    result_arr = np.zeros(result_dim, dtype=float)
+    for i in range(result_dim[0]):
+        cur_res_arr = np.zeros((1, result_dim[1]) , dtype=float)
+        energy_out = energies[i]
+        cur_res = mf4_get_leg(
+            awr, awi, awp, q, lct,
+            en1, coeffs1, num_coeffs1,
+            en2, coeffs2, num_coeffs2,
+            interp_type,
+            energy_out, #  num_energies, (removed because automatically inferred)
+            angle_cosines, num_angles,
+            cur_res_arr
+        )
+        result_arr[i,:] = cur_res_arr
+
+    return result_arr
+
+
 def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
@@ -142,7 +181,9 @@ def compute_angdist(endf_dict, mt, energies, angle_cosines):
     ltt = mf4sec['LTT']
     li = mf4sec['LI']
     lct = mf4sec['LCT']
-    if ltt == 1 and li == 0:
+    if ltt == 0 and li == 1:
+        return get_angdist_from_isotropic(endf_dict, mt, energies, mu_lab)
+    elif ltt == 1 and li == 0:
         return get_angdist_from_legendre(endf_dict, mt, energies, mu_lab)
     elif ltt == 2 and li == 0:
         return get_angdist_from_tabulated(endf_dict, mt, energies, mu_lab)
