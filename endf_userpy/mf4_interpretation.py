@@ -142,12 +142,14 @@ def compute_angdist_from_mixed(mf4sec, energies, angle_cosines):
     mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
     is_lower = energies < break_energy
     energies_lower = energies[is_lower]
+    mu_lower = mu[is_lower,:]
     f_lower = evaluate_interp_legendre_polynomials(
-        energies_lower, mu, en_mesh1, coeffs_arr, int_arr1, nbt_arr1
+        energies_lower, mu_lower, en_mesh1, coeffs_arr, int_arr1, nbt_arr1
     )
     energies_upper = energies[~is_lower]
+    mu_upper = mu[~is_lower,:]
     f_upper = _interp_tab2(
-        energies_upper, mu, en_mesh2, int_arr2, nbt_arr2,
+        energies_upper, mu_upper, en_mesh2, int_arr2, nbt_arr2,
         tab1_records, 'mu', 'f'
     )
     # assemble the result
