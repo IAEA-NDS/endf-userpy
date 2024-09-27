@@ -4,6 +4,7 @@ from .helpers import (
     check_int_nbt,
     find_interval,
     get_enclosing_points,
+    convert_interp_repr,
 )
 
 
@@ -93,3 +94,43 @@ def evaluate_interp_legendre_polynomials(x, mu, xp, coeffs, int_arr, nbt_arr):
         cur_res = Legendre(interp_coeffs[i,:])(mu[i,:])
         result[i,:] = cur_res
     return result
+
+
+def interp_tab1(x, tab1, xp_name, fp_name):
+    x_mesh = np.array(tab1[xp_name], dtype=float)
+    f_mesh = np.array(tab1[fp_name], dtype=float)
+    int_arr = np.array(tab1['INT'], dtype=int)
+    nbt_arr = np.array(tab1['NBT'], dtype=int)
+    return endf_interp1d(
+        x, x_mesh, f_mesh, int_arr, nbt_arr
+    )
+
+
+def interp_tab2(
+    x, y, xp, int_arr, nbt_arr, tab1_records, yp_name, fp_name
+):
+    if y.ndim == 1:
+        y = y.reshape(1, -1)
+    idcs = find_interval(xp, x)
+    interp_arr = convert_interp_repr(int_arr, nbt_arr)
+    # interpolation between angles
+    result_dim = (len(x), y.shape[1])
+    result_arr = np.zeros(result_dim, dtype=float)
+    for i, idx in enumerate(idcs):
+        cur_y = y[0,:] if y.shape[0] == 1 else y[i,:]
+        curtab1 = tab1_records[idx]
+        curtab2 = tab1_records[idx+1]
+        f1 = interp_tab1(cur_y, curtab1, yp_name, fp_name)
+        f2 = interp_tab1(cur_y, curtab2, yp_name, fp_name)
+        interp_type = interp_arr[idx]
+        red_xp = xp[idx:idx+2]
+        red_f = np.vstack([f1, f2])
+        cur_x = x[i]
+        curres = np.zeros(y.shape[1], dtype=float)
+        for j in range(y.shape[1]):
+            curres[j] = \
+                interp(cur_x, red_xp , red_f[:,j], interp_type)
+
+        result_arr[i,:] = curres
+
+    return result_arr
