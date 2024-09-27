@@ -30,7 +30,7 @@ REACTIONS = _create_tuple(
     (17, 'z', '3n'),
     (18, 'z', 'fission'),
     (19, 'n', 'f'),
-    (20, 'n', 'nf'),
+    (20, 'n', 'nf'),  # TODO: Can this appear in MF4?
     (21, 'n', '2nf'),
     (22, 'z', 'na'),
     (23, 'n', 'n3a'),
@@ -71,7 +71,7 @@ REACTIONS = _create_tuple(
     (116, 'z', 'pt'),
     (117, 'z', 'da'),
     (151, 'n', 'RES'),
-    (201, 'z', 'Xn'),
+    (201, 'z', 'Xn'),  # TODO: Can this appear in MF4?
     (202, 'z', 'Xg'),
     (203, 'z', 'Xp'),
     (204, 'z', 'Xd'),
