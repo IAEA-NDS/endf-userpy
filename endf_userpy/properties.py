@@ -27,10 +27,15 @@ def get_AWI(endf_dict):
 
 def get_AWP(endf_dict, mt):
     projectile = get_projectile(endf_dict)
-    if not is_binary_reaction(projectile, mt):
-        raise ValueError('AWP can only be determined for binary reactions')
-    ejectiles = get_ejectiles(projectile, mt)
-    ejectile = ejectiles[0][1] 
+    # fission reaction
+    if mt in (18, 19, 20, 21, 38):
+        ejectile = 'n'
+    else:
+        ejectiles = get_ejectiles(projectile, mt)
+        if ejectiles is None:
+            raise ValueError(f'AWP cannot be determined for MT={mt}.')
+        assert len(ejectiles) == 1 or ejectiles[0][1] == 'n'
+        ejectile = ejectiles[0][1]
     awp = PARTICLE_MASSES_AMU[ejectile] / PARTICLE_MASSES_AMU[projectile]
     return awp
 
