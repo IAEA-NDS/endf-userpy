@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from numpy.polynomial.legendre import Legendre
 from .helpers import (
@@ -141,6 +142,12 @@ def interp_tab2(
         f1 = interp_tab1(cur_y, curtab1, yp_name, fp_name, outside_value)
         f2 = interp_tab1(cur_y, curtab2, yp_name, fp_name, outside_value)
         interp_type = interp_arr[idx]
+        if interp_type >= 21 and interp_type <= 25:
+            interp_type -= 20
+            logging.warning(
+                f'Unit-base interpolation (INT={interp_type+20}) not implemented. '
+                f'Using corresponding interpolation INT={interp_type} instead. '
+            )
         red_xp = xp[idx:idx+2]
         red_f = np.vstack([f1, f2])
         cur_x = x[i]
