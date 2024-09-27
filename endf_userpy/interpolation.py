@@ -38,27 +38,38 @@ def interp_log_log(x, xp, fp):
     return y1*np.exp(np.log(x/x1)*np.log(y2/y1)/np.log(x2/x1))
 
 
-def interp(x, xp, fp, interp_type):
+def interp(x, xp, fp, interp_type, outside_value=None):
     """Interpolation using various schemes"""
+    is_inside = (x >= np.min(xp)) & (x <= np.max(xp))
+    if not np.all(is_inside) and outside_value is None:
+        raise ValueError('some `x` value outside mesh given by `xp`')
+    xi = x[is_inside]
     if interp_type == 1:
-        return interp_const(x, xp, fp)
+        fi = interp_const(xi, xp, fp)
     elif interp_type == 2:
-        return interp_lin_lin(x, xp, fp)
+        fi = interp_lin_lin(xi, xp, fp)
     elif interp_type == 3:
-        return interp_lin_log(x, xp, fp)
+        fi = interp_lin_log(xi, xp, fp)
     elif interp_type == 4:
-        return interp_log_lin(x, xp, fp)
+        fi = interp_log_lin(xi, xp, fp)
     elif interp_type == 5:
-        return interp_log_log(x, xp, fp)
+        fi = interp_log_log(xi, xp, fp)
     else:
         raise TypeError(f"interpolation scheme (INT={interp_type}) not implemented")
+    f = np.full(x.shape, outside_value, dtype=float)
+    f[is_inside] = fi
+    return f
 
 
-def endf_interp1d(x, xp, fp, int_arr, nbt_arr):
+def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
     check_int_nbt(int_arr, nbt_arr)
     x = np.array(x, copy=None)
-    f = np.zeros(x.shape, dtype=float)
-    idcs = find_interval(xp, x)
+    is_inside = (x >= np.min(xp)) & (x <= np.max(xp))
+    if not np.all(is_inside) and outside_value is None:
+        raise ValueError('some `x` value outside mesh given by `xp`')
+    xi = x[is_inside]
+    fi = np.zeros(xi.shape, dtype=float)
+    idcs = find_interval(xp, xi)
     first_idx = 0
     for i in range(len(int_arr)):
         last_idx = nbt_arr[i]
@@ -67,9 +78,15 @@ def endf_interp1d(x, xp, fp, int_arr, nbt_arr):
         cur_fp = fp[first_idx:last_idx]
         is_in_range = (idcs >= first_idx) & (idcs < last_idx)
         cur_idcs = idcs[is_in_range]
-        cur_x = x[is_in_range]
-        f[is_in_range] = interp(cur_x, cur_xp, cur_fp, interp_type)  
+        cur_x = xi[is_in_range]
+        fi[is_in_range] = interp(
+            cur_x, cur_xp, cur_fp, interp_type, outside_value
+        )
         first_idx = last_idx
+
+    f = np.empty(x.shape, dtype=float)
+    f[~is_inside] = outside_value
+    f[is_inside] = fi
     return f
 
 
@@ -96,18 +113,19 @@ def evaluate_interp_legendre_polynomials(x, mu, xp, coeffs, int_arr, nbt_arr):
     return result
 
 
-def interp_tab1(x, tab1, xp_name, fp_name):
+def interp_tab1(x, tab1, xp_name, fp_name, outside_value=None):
     x_mesh = np.array(tab1[xp_name], dtype=float)
     f_mesh = np.array(tab1[fp_name], dtype=float)
     int_arr = np.array(tab1['INT'], dtype=int)
     nbt_arr = np.array(tab1['NBT'], dtype=int)
     return endf_interp1d(
-        x, x_mesh, f_mesh, int_arr, nbt_arr
+        x, x_mesh, f_mesh, int_arr, nbt_arr, outside_value
     )
 
 
 def interp_tab2(
-    x, y, xp, int_arr, nbt_arr, tab1_records, yp_name, fp_name
+    x, y, xp, int_arr, nbt_arr, tab1_records, yp_name, fp_name,
+    outside_value=None
 ):
     if y.ndim == 1:
         y = y.reshape(1, -1)
@@ -120,8 +138,8 @@ def interp_tab2(
         cur_y = y[0,:] if y.shape[0] == 1 else y[i,:]
         curtab1 = tab1_records[idx]
         curtab2 = tab1_records[idx+1]
-        f1 = interp_tab1(cur_y, curtab1, yp_name, fp_name)
-        f2 = interp_tab1(cur_y, curtab2, yp_name, fp_name)
+        f1 = interp_tab1(cur_y, curtab1, yp_name, fp_name, outside_value)
+        f2 = interp_tab1(cur_y, curtab2, yp_name, fp_name, outside_value)
         interp_type = interp_arr[idx]
         red_xp = xp[idx:idx+2]
         red_f = np.vstack([f1, f2])
