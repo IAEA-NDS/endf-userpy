@@ -60,9 +60,6 @@ def test_mf4_python_fortran_equivalence(endf_file, myEndfParser):
     angcos = np.cos(deg2rad(np.linspace(10.0, 170.0, 5)))
     mf4sec = endf_dict[4]
     for mt in mf4sec:
-        # TODO: Generalize to also include non-binary reactions
-        if not is_binary_reaction('n', mt):
-            continue
         curens = energies
         if not mf4py.has_isotropic_angdist_repr(mf4sec, mt):
             en_range = mf4py.get_energy_range(mf4sec, mt)
