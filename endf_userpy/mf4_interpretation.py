@@ -124,10 +124,7 @@ def _compute_r2(endf_dict, mt, energies):
     awi = get_AWI(endf_dict)
     awr = get_AWR(endf_dict)
     awp = get_AWP(endf_dict, mt)
-    qm = get_QM(endf_dict, mt)
-    qi = get_QI(endf_dict, mt)
-    breakup_flag = get_LR(endf_dict, mt)
-    q = qi if breakup_flag == 0 else qm
+    q = get_QI(endf_dict, mt)
     return compute_r2(energies, awi, awr, awp, q)
 
 

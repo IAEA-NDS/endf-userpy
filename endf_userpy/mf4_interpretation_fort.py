@@ -56,10 +56,7 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
     awr = get_AWR(endf_dict)
     awp = get_AWP(endf_dict, mt)
     lct = mf4sec['LCT']
-    qm = get_QM(endf_dict, mt)
-    qi = get_QI(endf_dict, mt)
-    breakup_flag = get_LR(endf_dict, mt)
-    q = qi if breakup_flag == 0 else qm
+    q = get_QI(endf_dict, mt)
 
     # get the energy mesh and bookkeeping information
     incident_energies = dict2array(mf4sec['E'])
