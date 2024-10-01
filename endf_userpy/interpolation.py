@@ -41,7 +41,10 @@ def interp_log_log(x, xp, fp):
 
 def interp(x, xp, fp, interp_type, outside_value=None):
     """Interpolation using various schemes"""
-    is_inside = (x >= np.min(xp)) & (x <= np.max(xp))
+    # TODO: Here we provisionally let NaN values pass through the
+    #       program logic for comparison with the Fortran routines.
+    #       However, eventually no NaN values should appear in x.
+    is_inside = ((x >= np.min(xp)) & (x <= np.max(xp))) | np.isnan(x)
     if not np.all(is_inside) and outside_value is None:
         raise ValueError('some `x` value outside mesh given by `xp`')
     xi = x[is_inside]
@@ -65,7 +68,10 @@ def interp(x, xp, fp, interp_type, outside_value=None):
 def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
     check_int_nbt(int_arr, nbt_arr)
     x = np.array(x, copy=None)
-    is_inside = (x >= np.min(xp)) & (x <= np.max(xp))
+    # TODO: Here we provisionally let NaN values pass through the
+    #       program logic for comparison with the Fortran routines.
+    #       However, eventually no NaN values should appear in x.
+    is_inside = ((x >= np.min(xp)) & (x <= np.max(xp))) | np.isnan(x)
     if not np.all(is_inside) and outside_value is None:
         raise ValueError('some `x` value outside mesh given by `xp`')
     xi = x[is_inside]
