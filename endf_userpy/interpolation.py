@@ -136,25 +136,54 @@ def interp_tab2(
     result_dim = (len(x), y.shape[1])
     result_arr = np.zeros(result_dim, dtype=float)
     for i, idx in enumerate(idcs):
+        cur_x = x[i]
+        x1 = xp[idx]
+        x2 = xp[idx+1]
         cur_y = y[0,:] if y.shape[0] == 1 else y[i,:]
+        interp_type = interp_arr[idx]
         curtab1 = tab1_records[idx]
         curtab2 = tab1_records[idx+1]
-        f1 = interp_tab1(cur_y, curtab1, yp_name, fp_name, outside_value)
-        f2 = interp_tab1(cur_y, curtab2, yp_name, fp_name, outside_value)
-        interp_type = interp_arr[idx]
+
+        if interp_type >= 1 and interp_type <= 5:
+            cur_y1 = cur_y
+            cur_y2 = cur_y
+            eff_interp_type = interp_type
+        elif interp_type >= 21 and interp_type <= 25:
+            # unit-base interpolation
+            y1_min = np.min(curtab1[yp_name])
+            y1_max = np.max(curtab1[yp_name])
+            y1_delta = y1_max - y1_min
+            y2_min = np.min(curtab2[yp_name])
+            y2_max = np.max(curtab2[yp_name])
+            y2_delta = y2_max - y2_min
+            rx = (cur_x - x1) / (x2 - x1)
+            y_lo = y1_min + rx * (y2_min - y1_min)
+            y_hi = y1_max + rx * (y2_max - y1_max)
+            y_delta = y_hi - y_lo
+            ry = (cur_y - y_lo ) / y_delta
+            cur_y1 = y1_min + ry * y1_delta
+            cur_y2 = y2_min + ry * y2_delta
+            eff_interp_type = interp_type - 20
+        else:
+            raise ValueError(f'Unsupported interpolation type INT={interp_type}.')
+
+        f1 = interp_tab1(cur_y1, curtab1, yp_name, fp_name, outside_value)
+        f2 = interp_tab1(cur_y2, curtab2, yp_name, fp_name, outside_value)
+
         if interp_type >= 21 and interp_type <= 25:
-            interp_type -= 20
-            logging.warning(
-                f'Unit-base interpolation (INT={interp_type+20}) not implemented. '
-                f'Using corresponding interpolation INT={interp_type} instead. '
-            )
-        red_xp = xp[idx:idx+2]
+            # apply Jacobian in the case of unit-base interpolation
+            y_delta = y_hi - y_lo
+            jac1 = y1_delta / y_delta
+            jac2 = y2_delta / y_delta
+            f1 *= jac1
+            f2 *= jac2
+
+        red_xp = np.array([x1, x2], dtype=float)
         red_f = np.vstack([f1, f2])
-        cur_x = x[i]
         curres = np.zeros(y.shape[1], dtype=float)
         for j in range(y.shape[1]):
             curres[j] = \
-                interp(cur_x, red_xp , red_f[:,j], interp_type)
+                interp(cur_x, red_xp , red_f[:,j], eff_interp_type)
 
         result_arr[i,:] = curres
 
