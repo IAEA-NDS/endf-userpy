@@ -124,6 +124,24 @@ def interp_tab1(x, tab1, xp_name, fp_name, outside_value=None):
     )
 
 
+def determine_unit_base_coordinates(
+    x, y, x1, x2, y1_min, y1_max, y2_min, y2_max
+):
+    y1_delta = y1_max - y1_min
+    y2_delta = y2_max - y2_min
+    rx = (x - x1) / (x2 - x1)
+    y_lo = y1_min + rx * (y2_min - y1_min)
+    y_hi = y1_max + rx * (y2_max - y1_max)
+    y_delta = y_hi - y_lo
+    ry = (y - y_lo ) / y_delta
+    cur_y1 = y1_min + ry * y1_delta
+    cur_y2 = y2_min + ry * y2_delta
+    y_delta = y_hi - y_lo
+    jac1 = y1_delta / y_delta
+    jac2 = y2_delta / y_delta
+    return cur_y1, cur_y2, jac1, jac2
+
+
 def interp_tab2(
     x, y, xp, int_arr, nbt_arr, tab1_records, yp_name, fp_name,
     outside_value=None
@@ -152,17 +170,12 @@ def interp_tab2(
             # unit-base interpolation
             y1_min = np.min(curtab1[yp_name])
             y1_max = np.max(curtab1[yp_name])
-            y1_delta = y1_max - y1_min
             y2_min = np.min(curtab2[yp_name])
             y2_max = np.max(curtab2[yp_name])
-            y2_delta = y2_max - y2_min
-            rx = (cur_x - x1) / (x2 - x1)
-            y_lo = y1_min + rx * (y2_min - y1_min)
-            y_hi = y1_max + rx * (y2_max - y1_max)
-            y_delta = y_hi - y_lo
-            ry = (cur_y - y_lo ) / y_delta
-            cur_y1 = y1_min + ry * y1_delta
-            cur_y2 = y2_min + ry * y2_delta
+            cur_y1, cur_y2, jac1, jac2 = \
+                determine_unit_base_coordinates(
+                    cur_x, cur_y, x1, x2, y1_min, y1_max, y2_min, y2_max
+                )
             eff_interp_type = interp_type - 20
         else:
             raise ValueError(f'Unsupported interpolation type INT={interp_type}.')
@@ -172,9 +185,6 @@ def interp_tab2(
 
         if interp_type >= 21 and interp_type <= 25:
             # apply Jacobian in the case of unit-base interpolation
-            y_delta = y_hi - y_lo
-            jac1 = y1_delta / y_delta
-            jac2 = y2_delta / y_delta
             f1 *= jac1
             f2 *= jac2
 
