@@ -5,6 +5,24 @@ from .reactions import (
 )
 
 
+def get_ZA(endf_dict):
+    return endf_dict[1][451]['ZA']
+
+
+def get_ZAI(endf_dict):
+    proj = get_projectile(endf_dict)
+    zai = {
+        'g': 0*1000. + 0,
+        'n': 0*1000. + 1,
+        'p': 1*1000. + 1,
+        'd': 1*1000. + 2,
+        't': 1*1000. + 3,
+        'h': 2*1000. + 3,
+        'a': 2*1000. + 4,
+    }[proj]
+    return endf_dict[1][451]['ZAI']
+
+
 def get_QM(endf_dict, mt):
     return endf_dict[3][mt]['QM']
 
