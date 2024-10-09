@@ -507,10 +507,10 @@
 ! ------------------------------------------------------------------------------
  subroutine mf6_get_law2(awr,awi,awp,q,lct,lang,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f6)
 !
-! Descrption:
-! Get the angular distribution f(E,u) given by Legendre expansion for a set
-! of incident energies e(ne) at different cosines xmu(nmu) supplied by the
-! user. The results are returned in the f4(ie,ju) array.
+! Description:
+! Get the angular distribution f(E,u) given by MF6/LAW2 (Discrete 2-body
+! reaction) for a set of incident energies e(ne) at different cosines xmu(nmu)
+! supplied by the user. The results are returned in the f6(ie,ju) array.
 !
 ! Input:
 ! awr: relative atomic mass of the target
@@ -580,6 +580,68 @@
     deallocate(u1,f1,u2,f2)
     deallocate(nbt1,ibt1,nbt2,ibt2)
   endif
+  return
+  end
+! ------------------------------------------------------------------------------
+  subroutine mf6_get_law6(awr,awi,awp,q,apsx,npsx,e,ne,ep,nep,xmu,nmu,f6)
+!
+! Description:
+! Get the angular distribution f(E,E',u) given by MF6/LAW6 (N-Body Phase-Space
+! Distribution)  for a set of incident energies e(ne) at different cosines
+! xmu(nmu) supplied by the user.
+! The results are returned in the f6(i,j,k) array.
+!
+! Input:
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value from MF3
+! e: user's incident energy array
+! ne: number of user's incident energies
+! ep: user's outgoing energy array
+! nep: number of user's outgoing energies
+! xmu: user's cosine array (in the LAB system)
+! nmu: number of user's cosines
+!
+! Output:
+! f6(i,j,k): f(E,E',u) angular distribution in the lab system at ne incident
+!            energies, nep outgoing energies and for nmu cosine values
+!
+  implicit real*8 (a-h,o-z)
+  parameter(pi=3.141592653589793235d0)
+  dimension e(*),ep(*),xmu(*)
+  dimension f6(ne,nep,*)
+  awc=awi+awr
+  r=1.5d0*dble(npsx)-4.0d0
+  do i=1,ne
+    ei=e(i)
+    ea=awr/awc*ei+q
+    eimax=(apsx-awp)/apsx*ea
+    es=awi*awp/(awc*awc)*ei
+    if (npsx.lt.3.or.npsx.gt.5) then
+      cn=0.0d0
+    else
+      if (npsx.eq.3) then
+        cn=4.0d0/(pi*eimax*eimax)
+      elseif(npsx.eq.4) then
+        cn=105.0d0/(32.0d0*(eimax**3.5d0))
+      elseif(npsx.eq.5) then
+        cn=256.0d0/(14.0d0*pi*(eimax**5.0d0))
+      endif
+    endif
+    do j=1,nep
+       epj=ep(j)
+       do k=1,nmu
+         u=xmu(k)
+         epc=es+epj-2.0d0*u*sqrt(es*epj)
+         if (epc.lt.eimax) then
+           f6(i,j,k)=cn*sqrt(epj)*(eimax-epc)**r
+         else
+           f6(i,j,k)=0.0d0
+         endif
+       enddo
+    enddo
+  enddo
   return
   end
 ! ------------------------------------------------------------------------------
@@ -931,7 +993,7 @@
 !  tp=ep, w=u and dinv=1.0 if input data are in the LAB system
 !
   implicit real*8 (a-h, o-z)
-  parameter (d2min=1.0d-38, cmin=sqrt(d2min))
+  parameter (d2min=1.0d-38, cmin=1.0d-19)
   if (lct.eq.2.or.(lct.eq.3.and.awp.le.4.0d0)) then
     c=sqrt(awi*awp*e/ep)/(awi+awr)
     d2=1.0d0+c*c-2.0d0*c*u
