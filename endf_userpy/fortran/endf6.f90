@@ -209,7 +209,7 @@
       ep=epu(je)
       do ju=1,nuu
         u=uu(ju)
-        call mf6lab2cm(awr,awi,awp,lct,e,ep,u,tp,w,dinv)   
+        call mf6lab2cm(awr,awi,awp,lct,e,ep,u,tp,w,dinv)
         call f6law1(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,&
                     e2,nd2,na2,nep2,ep2,b2,fdis,fcon)
         f6dis(ie,je,ju)=fdis*dinv
@@ -318,7 +318,7 @@
         f1=f1*x1range/xrange
         x=x2low+xslope*x2range
         f2=f6law1_con(e2,x,w,za,zai,zap,lang,lep,nd2,na2,nep2,ep2,b2)
-        f2=f2*x2range/xrange  
+        f2=f2*x2range/xrange
       endif
       f6con=yintp(e1,f1,e2,f2,law,e)
     endif
@@ -353,7 +353,7 @@
 !               na=0, isotropic distribution for all representations
 !       the total number of angular parameters is nt=na+1
 ! nep: total number of outgoing energies given at e
-!      the number of continumm outgoing energies is nepc=nep-nd 
+!      the number of continumm outgoing energies is nepc=nep-nd
 ! ep: outgoing energy values at e. 1D-array [ep(nep)]
 ! b: outgoing energy-angle distribution at e. 2D-array [b(nep,na)]
 !
@@ -410,7 +410,7 @@
         ibt2(1)=lmu
         f6law1_con=unit_base_intp(ep(i1),a1,y1,nmu1,nbt1,ibt1,nr1, &
                                   ep(i2),a2,y2,nmu2,nbt2,ibt2,nr2,lep,tp,w)
-                                  
+
         deallocate(a1,y1,a2,y2)
         deallocate(nbt1,ibt1,nbt2,ibt2)
       else
@@ -450,7 +450,7 @@
 !               na=0, isotropic distribution for all representations
 !       the total number of angular parameters is nt=na+1
 ! nep: total number of outgoing energies given at e
-!      the number of continumm outgoing energies is nepc=nep-nd 
+!      the number of continumm outgoing energies is nepc=nep-nd
 ! ep: outgoing energy values at e. 1D-array [ep(nep)]
 ! b: outgoing energy-angle distribution at e. 2D-array [b(nep,na)]
 !
@@ -501,6 +501,84 @@
     endif
   else
     f6law1_dis=0.0d0
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+ subroutine mf6_get_law2(awr,awi,awp,q,lct,lang,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f6)
+!
+! Descrption:
+! Get the angular distribution f(E,u) given by Legendre expansion for a set
+! of incident energies e(ne) at different cosines xmu(nmu) supplied by the
+! user. The results are returned in the f4(ie,ju) array.
+!
+! Input:
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value from MF3
+! lct: reference system for angular distributions.(1=LAB, 2=CM)
+! lang: MF6/LAW2 representation flag:
+!       lang=0, Legendre expansion
+!       lang=12,Tabulated data with p(u) linear in u (ENDF6/INT=2)
+!       lang=14,Tabulated data with log(p(u)) linear in u (ENDF6/INT=4)
+! e1: incident energy for the lower panel
+! a1: for lang=0, Legendre coefficients at e1
+!     for lang>0, the (u,p(u)) pairs for tabulated angular distribution at e1
+! nl1: for lang=0, Legendre expansion order
+!      for lang>0, Number of tabulated pairs (u,p(u)) at e1
+! e2: incident energy for the upper panel
+! a2: for lang=0, Legendre coefficients at e2
+!     for lang>0, the (u,p(u)) pairs for tabulated angular distribution at e2
+! nl2: for lang=0, Legendre expansion order at e2
+!      for lang>0, Number of tabulated pairs (u,p(u)) at e2
+! ilaw: interpolation law between e1 and e2
+! e(ie): user's incident energy array
+! ne: number of user's incident energies
+! xmu: user's cosine array (in the LAB system)
+! nmu: number of user's cosines
+!
+! Output:
+! f6(ie,ju): f(E,u) angular distribution in the lab system at ne incident
+!            energies and for nmu cosine values
+!
+  implicit real*8 (a-h,o-z)
+! externals
+  dimension a1(*),a2(*),e(*),xmu(*),f6(ne,*)
+! internals
+  allocatable u1(:),u2(:),f1(:),f2(:)
+  allocatable nbt1(:),ibt1(:),nbt2(:),ibt2(:)
+  if (lang.eq.0) then
+    call mf4_get_leg(awr,awi,awp,q,lct,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f6)
+  else
+    nr1=1
+    nr2=1
+    allocate (u1(nl1),f1(nl1),u2(nl2),f2(nl2))
+    allocate (nbt1(nr1),ibt1(nr1),nbt2(nr2),ibt2(nr2))
+    j=0
+    do l=1,nl1
+      j=j+1
+      u1(l)=a1(j)
+      j=j+1
+      f1(l)=a1(j)
+    enddo
+    j=0
+    do l=1,nl2
+      j=j+1
+      u2(l)=a2(j)
+      j=j+1
+      f2(l)=a2(j)
+    enddo
+    lmu=lang-10
+    nbt1(1)=nl1
+    ibt1(1)=lmu
+    nbt2(1)=nl2
+    ibt2(1)=lmu
+    law=mod(ilaw,10)
+    call mf4_get_tab(awr,awi,awp,q,lct,e1,u1,f1,nl1,nbt1,ibt1,nr1, &
+                     e2,u2,f2,nl2,nbt2,ibt2,nr2,law,e,ne,xmu,nmu,f6)
+    deallocate(u1,f1,u2,f2)
+    deallocate(nbt1,ibt1,nbt2,ibt2)
   endif
   return
   end
@@ -806,12 +884,13 @@
 ! dinv: Jacobian from CM to LAB for LCT=2, 1 otherwise
 !
   implicit real*8 (a-h,o-z)
-  parameter (r2min=1.0d-76)
+  parameter (rthmin=-0.999999d0)
   if (lct.eq.2) then
 !   distribution is in the CM system
 !   convert input cosine from LAB to CM using two-body kinematic formulae
-    r2=awr*(awr+awi-awp)/(awi*awp)*(1.0d0+(awr+awi)/awr*q/e)
-    if (r2.lt.r2min) r2=r2min
+    rth=(awr+awi)/awr*q/e
+    if (rth.lt.rthmin) rth=rthmin
+    r2=awr*(awr+awi-awp)/(awi*awp)*(1.0d0+rth)
     r=sqrt(r2)
     u2=u*u
     w=(1.0d0-u2-r2*u2)/(r*(u2-1.0d0-u*sqrt(u2+r2-1.0d0)))
