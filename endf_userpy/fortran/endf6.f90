@@ -596,6 +596,8 @@
 ! awi: relative nuclear mass of the incident particle
 ! awp: relative nuclear mass of the outgoing particle
 ! q: reaction q value from MF3
+! apsx: total mass in neutron units of the N particles treated by LAW6
+! npsx: number of particles distributed according to LAW6 (N)
 ! e: user's incident energy array
 ! ne: number of user's incident energies
 ! ep: user's outgoing energy array
@@ -608,26 +610,27 @@
 !            energies, nep outgoing energies and for nmu cosine values
 !
   implicit real*8 (a-h,o-z)
-  parameter(pi=3.141592653589793235d0)
+  parameter(pi=3.141592653589793d0)
+  parameter(c3=4.0d0/pi, c4=105.0d0/32.0d0, c5=256.0d0/(14.0d0*pi))
   dimension e(*),ep(*),xmu(*)
   dimension f6(ne,nep,*)
   awc=awi+awr
+  c0=awr/awc
+  c1=(apsx-awp)/apsx
+  c2=awi*awp/(awc*awc)
   r=1.5d0*dble(npsx)-4.0d0
+  cn=0.0d0
   do i=1,ne
     ei=e(i)
-    ea=awr/awc*ei+q
-    eimax=(apsx-awp)/apsx*ea
-    es=awi*awp/(awc*awc)*ei
-    if (npsx.lt.3.or.npsx.gt.5) then
-      cn=0.0d0
-    else
-      if (npsx.eq.3) then
-        cn=4.0d0/(pi*eimax*eimax)
-      elseif(npsx.eq.4) then
-        cn=105.0d0/(32.0d0*(eimax**3.5d0))
-      elseif(npsx.eq.5) then
-        cn=256.0d0/(14.0d0*pi*(eimax**5.0d0))
-      endif
+    ea=c0*ei+q
+    eimax=c1*ea
+    es=c2*ei
+    if (npsx.eq.3) then
+      cn=c3/(eimax*eimax)
+    elseif(npsx.eq.4) then
+      cn=c4/(eimax**3.5d0)
+    elseif(npsx.eq.5) then
+      cn=c5/(eimax**5.0d0)
     endif
     do j=1,nep
        epj=ep(j)
