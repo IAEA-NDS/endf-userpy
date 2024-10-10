@@ -216,7 +216,11 @@
                       eu(i)=e0+h*dble(i-1)
                     enddo
                     rth=(awr+awi)/awr*q/e0
-                    r2=awr*(awr+awi-awp)/(awi*awp)*(1.0d0+rth)
+                    if (awi*awp.ne.0.0d0) then
+                      r2=awr*(awr+awi-awp)/(awi*awp)*(1.0d0+rth)
+                    else
+                      r2=1.0d38
+                    endif
                     if (r2.gt.1.0d0) then
                        umin=-1.0d0
                     else
