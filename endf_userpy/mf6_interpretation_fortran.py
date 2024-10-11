@@ -30,6 +30,7 @@ def get_ddx_from_subsec_law1(
     za = get_ZA(endf_dict)
     zai = get_ZAI(endf_dict)
     lct = sec['LCT']
+
     # subsection variables
     subsec = sec['subsection'][subsec_num]
     zap = subsec['ZAP']
@@ -43,6 +44,14 @@ def get_ddx_from_subsec_law1(
     nd_arr = dict2array(subsec['ND'], dtype=int)
     na_arr = dict2array(subsec['NA'], dtype=int)
     nep_arr = dict2array(subsec['NEP'], dtype=int)
+
+    # determine effective LCT based on emitted particle (CM or LAB)
+    if lct in (1, 2):
+        eff_lct = lct
+    elif lct == 3:
+        eff_lct = 1 if awp > 4 else 2
+    else:
+        raise NotImplementedError(f'LCT={lct} not implemented')
 
     # find enclosing energy intervals
     idcs = find_interval(ei_mesh, energies_in)
