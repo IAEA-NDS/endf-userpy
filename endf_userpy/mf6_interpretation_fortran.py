@@ -62,31 +62,32 @@ def get_ddx_from_subsec_law1(
 
     for i in range(cont_result_arr.shape[0]):
         curidx = idcs[i]
+        cur_eu = np.array([eu[i]], order='F')
         lei = ei_interp[curidx]
 
         e1 = ei_mesh[curidx]
         nd1 = nd_arr[curidx]
         na1 = na_arr[curidx]
-        ep1 = dict2array(subsec['Ep'][curidx+1], dtype=float)
+        ep1 = dict2array(subsec['Ep'][curidx+1], dtype=float, order='F')
         nep1 = len(ep1)  # also nep_arr[curidx]
-        b1 = dict2array(subsec['b'][curidx+1], dtype=float)
+        b1 = dict2array(subsec['b'][curidx+1], dtype=float, order='F')
 
         e2 = ei_mesh[curidx+1]
         nd2 = nd_arr[curidx+1]
         na2 = na_arr[curidx+1]
-        ep2 = dict2array(subsec['Ep'][curidx+2], dtype=float)
+        ep2 = dict2array(subsec['Ep'][curidx+2], dtype=float, order='F')
         nep2 = len(ep2)
-        b2 = dict2array(subsec['b'][curidx+1], dtype=float)
+        b2 = dict2array(subsec['b'][curidx+2], dtype=float, order='F')
 
-        cur_disc_res = np.zeros((1, nepu, nuu), dtype=float) 
-        cur_cont_res = np.zeros((1, nepu, nuu), dtype=float)
+        cur_disc_res = np.zeros((1, nepu, nuu), dtype=float, order='F')
+        cur_cont_res = np.zeros((1, nepu, nuu), dtype=float, order='F')
 
         # neu, nepu, nep1, nep2 are automatically inferred
         # hence dropped from the argument list
         mf6_get_law1(
-            eu, epu, uu, nuu, 
-            awr, awi, awp, za, zai, zap, lct, lang, lep, lei,  
-            e1, nd1, na1, ep1, b1, e2, nd2, na2, ep2, b2,  
+            cur_eu, epu, uu, nuu,
+            awr, awi, awp, za, zai, zap, eff_lct, lang, lep, lei,
+            e1, nd1, na1, ep1, b1, e2, nd2, na2, ep2, b2,
             cur_disc_res, cur_cont_res
         )
 
