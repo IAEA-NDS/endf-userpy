@@ -20,7 +20,7 @@ def get_ZAI(endf_dict):
         'h': 2*1000. + 3,
         'a': 2*1000. + 4,
     }[proj]
-    return endf_dict[1][451]['ZAI']
+    return zai
 
 
 def get_QM(endf_dict, mt):
