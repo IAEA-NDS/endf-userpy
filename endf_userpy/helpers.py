@@ -5,13 +5,13 @@ def deg2rad(values):
     return np.pi / 180.0 * np.array(values, copy=None)
 
 
-def dict2array(obj, dtype=None):
+def dict2array(obj, dtype=None, order='K'):
     """Construct (multi-dim) array from nested dictionaries"""
     if isinstance(next(iter(obj.values())), dict):
         lst = list(dict2array(v, dtype) for v in obj.values())
     else:
         lst = list(obj.values())
-    return np.array(lst, dtype=dtype)
+    return np.array(lst, dtype=dtype, order=order)
 
 
 def check_int_nbt(int_arr, nbt_arr):
