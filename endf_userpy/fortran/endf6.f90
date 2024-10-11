@@ -950,7 +950,7 @@
 !
   implicit real*8 (a-h,o-z)
   parameter (rthmin=-0.999999d0)
-  if (lct.eq.2) then
+  if (lct.eq.2.and.awp.ne.0.0d0) then
 !   distribution is in the CM system
 !   convert input cosine from LAB to CM using two-body kinematic formulae
     rth=(awr+awi)/awr*q/e
