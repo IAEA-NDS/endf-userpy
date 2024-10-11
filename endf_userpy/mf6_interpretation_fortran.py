@@ -28,7 +28,7 @@ def get_ddx_from_subsec_law1(
     awr = get_AWR(endf_dict)
     awi = get_AWI(endf_dict)
     za = get_ZA(endf_dict)
-    zai = get_ZA(endf_dict)
+    zai = get_ZAI(endf_dict)
     lct = sec['LCT']
     # subsection variables
     subsec = sec['subsection'][subsec_num]
