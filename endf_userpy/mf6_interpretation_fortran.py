@@ -1,5 +1,8 @@
 import numpy as np
-from .fortran.endf6 import mf6_get_law1 
+from .fortran.endf6 import (
+    mf6_get_law1,
+    mf6_get_law2,
+)
 from .helpers import (
     dict2array,
     convert_interp_repr,
@@ -11,6 +14,7 @@ from .properties import (
     get_AWP,
     get_ZA,
     get_ZAI,
+    get_QI,
 )
 
 
@@ -97,6 +101,75 @@ def get_ddx_from_subsec_law1(
     return disc_result_arr, cont_result_arr
 
 
+def get_ddx_from_subsec_law2(
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out
+):
+    # TODO: how to signal to the user that this is a
+    #       discrete distribution with a dirac delta in the
+    #       the emission energy.
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    awr = get_AWR(endf_dict)
+    awi = get_AWI(endf_dict)
+    awp = subsec['AWP']
+    q = get_QI(endf_dict, mt) 
+    lct = sec['LCT']
+    lang = subsec['LANG']
+    ei_mesh = dict2array(subsec['E'], dtype=float)
+    int_arr = np.array(subsec['INT'], dtype=int)
+    nbt_arr = np.array(subsec['NBT'], dtype=int)
+    ei_interp = convert_interp_repr(int_arr, nbt_arr)
+
+    a_arr = dict2array(subsec['A'], dtype=float, order='F', fill_value=0.0)
+    nl_arr = dict2array(subsec['NL'], dtype=float, order='F')
+
+    # determine effective LCT based on emitted particle (CM or LAB)
+    if lct in (1, 2):
+        eff_lct = lct
+    elif lct == 3:
+        eff_lct = 1 if awp > 4 else 2
+    else:
+        raise NotImplementedError(f'LCT={lct} not implemented')
+
+    # find enclosing energy intervals
+    idcs = find_interval(ei_mesh, energies_in)
+
+    eu = energies_in
+    neu = len(eu)
+    nmu = len(angle_cosines_out)
+    xmu = angle_cosines_out
+    nmu = len(xmu)
+
+    result_dim = (neu, nmu)
+    result_arr = np.zeros(result_dim, dtype=float)
+
+    for i in range(neu):
+        curidx = idcs[i]
+        cur_eu = np.array([eu[i]], dtype=float, order='F')
+        ilaw = ei_interp[curidx]
+
+        e1 = ei_mesh[curidx]
+        a1 = a_arr[curidx]
+        nl1 = nl_arr[curidx]
+
+        e2 = ei_mesh[curidx+1]
+        a2 = a_arr[curidx+1]
+        nl2 = nl_arr[curidx+1]
+
+        cur_result = np.zeros((1, nmu), dtype=float, order='F')
+
+        # remove `ne` (=1) because automatically inferred
+        mf6_get_law2(
+            awr, awi, awp, q, lct, lang,
+            e1, a1, nl1, e2, a2, nl2,
+            ilaw,cur_eu, xmu,nmu, cur_result
+        )
+
+        result_arr[i:i+1,:] = cur_result
+
+    return result_arr
+
+
 def compute_ddx_from_subsec(
     endf_dict, mt, subsec_num,
     energies_in, energies_out, angle_cosines_out
@@ -108,6 +181,11 @@ def compute_ddx_from_subsec(
         return get_ddx_from_subsec_law1(
             endf_dict, mt, subsec_num,
             energies_in, energies_out, angle_cosines_out
+        )
+    elif law == 2:
+        return get_ddx_from_subsec_law2(
+            endf_dict, mt, subsec_num,
+            energies_in, angle_cosines_out
         )
     else:
         raise NotImplementedError(
