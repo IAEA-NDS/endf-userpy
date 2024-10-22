@@ -20,6 +20,7 @@ def get_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines):
     qm = get_QM(endf_dict, mt)
     qi = get_QI(endf_dict, mt)
     breakup_flag = get_LR(endf_dict, mt)
+    # TODO: Is it this determination of q-value correct? 
     q = qi if breakup_flag == 0 else qm
 
     num_angles = len(angle_cosines)
