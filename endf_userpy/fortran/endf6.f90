@@ -241,6 +241,33 @@
   enddo
   return
   end
+! -----------------------------------------------------------------------------
+  subroutine mf6_get_law5(za,awr,zap,awp,spi,lidp,lei,ltp, &
+                          e1,nl1,a1,e2,nl2,a2,eni,sni,np,nbt,ibt,nr, &
+                          e,ne,xmu,nmu,f65)
+  implicit real*8 (a-h, o-z)
+  parameter (zero=0.0d0)
+! external dimensions
+  dimension a1(*),a2(*),eni(*),sni(*),nbt(*),ibt(*)
+  dimension e(*),xmu(*),f65(ne,*)
+  lct=2     ! data must be given in the CM system for MF6/LAW5
+  awi=awp   ! incident charged particle must be equal to outgoing particle
+  q=zero    ! reaction Q value should be zero for elastic scattering
+  do ie=1,ne
+    ei=e(ie)
+    do ju=1,nmu
+      u=xmu(ju)
+!     Reference system conversion, if required
+      call mf4lab2cm(lct,awr,awi,awp,q,ei,u,w,dinv)
+      f=f6law5(ei,w,za,awr,zap,awp,spi,lidp,lei,ltp, &
+               e1,nl1,a1,e2,nl2,a2, &
+               eni,sni,np,nbt,ibt,nr)
+!     Multiply by Jacobian
+      f65(ie,ju)=f*dinv
+    enddo
+  enddo
+  return
+  end
 ! ------------------------------------------------------------------------------
   subroutine mf6_get_law6(awr,awi,awp,q,apsx,npsx,e,ne,ep,nep,xmu,nmu,f6)
 !
@@ -817,6 +844,445 @@
   else
     write(*,*)' Fatal error: LAW=2/LANG=',lang,' not allowed'
     stop
+  endif
+  return
+  end
+! -----------------------------------------------------------------------------
+  real*8 function f6law5(e,u,za,awr,zap,awp,spi,lidp,lei,ltp, &
+                         e1,nl1,a1,e2,nl2,a2, &
+                         eni,sni,np,nbt,ibt,nr)
+!
+! Charged-particle Elastic Scattering (MF6/LAW5)
+! Reaction MT2: z+Y=z+Y q=0
+!
+!  Description:
+!  Calculate the charged-particles scattering cross section
+!  in barn/(cosine_units)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! lei: interpolation law between incident energies e1 and e2
+! ltp: flag for elastic scattering representation
+!      ltp=1 nuclear amplitude expansion
+!      ltp=2 residual cross section expansion
+!      ltp=12 nuclear + interference representation with pni linear in u
+!      ltp=14 nuclear + interference representation with log(pni) linear in u
+! e1: incident energy of the lower data panel
+! nl1: angular parameter at e1:
+!       nl1= higest Legendre order of the nuclear partial waves for LTP=1 or 2
+!       nl1= number for tabulated cosines for LTP=12 or 14
+! a1: List of parameters acccording to the representation at e1
+!       coeficients b(i), [ar(i),ai(i)] for LTP=1
+!       coeficients c(i) for LTP=2
+!       pairs [u(i),pni(i)] for LTP=12 or 14
+! e2: incident energy of the upper data panel
+! nl2: angular parameter at e2:
+!       nl2= higest Legendre order of the nuclear partial waves for LTP=1 or 2
+!       nl2= number for tabulated cosines for LTP=12 or 14
+! a2: List of parameters acccording to the representation at e2
+!       coeficients b(i), [ar(i),ai(i)] for LTP=1
+!       coeficients c(i) for LTP=2
+!       pairs [u(i),pni(i)] for LTP=12 or 14
+! eni: incident energy grid for MF3/MT2 data
+! sni: MF3/MT2 data according to the representation
+!       equal 1 for LTP=1 or LTP=2
+!       equal to nuclear+interference cross-section(sni) for LTP=12 or 14
+! np: number of incident energies
+!nbt: interpolation ranges for sni
+!ibt: interpolation law for echa range
+!nr:  number of interpolation ranges
+!
+! Output:
+! f6law5: elastic cross section in unit of barn/(cosine_unit) at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  parameter (one=1.0d0)
+  parameter (two=2.0d0)
+  parameter (pi=3.141592653589793d0)
+  parameter (umax=9.999999999999999d-1)
+! external dimension
+  dimension a1(*),a2(*),eni(*),sni(*),nbt(*),ibt(*)
+  allocatable b1(:),b2(:),b(:),c1(:),c2(:),c(:)
+  allocatable nbt1(:),ibt1(:),nbt2(:),ibt2(:)
+  if (e.lt.e1.or.e.gt.e2) then ! out of range
+    sige=0.0d0
+  else
+    if (u.ge.one) then ! check for singularities
+      u=umax
+    elseif (u.le.-one) then
+      if (lidp.eq.1) then
+        u=-umax
+      else
+        u=-one
+      endif
+    endif
+    if (ltp.eq.1) then ! LTP=1: nuclear amplitude expansion
+      if (e.eq.e1) then
+        if (lidp.eq.1) then
+          n1=nl1+1
+          nn1=n1+n1
+        else
+          n1=nl1+nl1+1
+          nn1=n1+1
+        endif
+        allocate (b1(n1),c1(nn1))
+        do i=1,n1
+          b1(i)=a1(i)
+        enddo
+        do i=1,nn1
+          c1(i)=a1(n1+i)
+        enddo
+        sige=sctnae(e1,u,za,awr,zap,awp,spi,lidp,c1,b1,nl1)
+        deallocate(b1,c1)
+      elseif (e.eq.e2) then
+        if (lidp.eq.1) then
+          n2=nl2+1
+          nn2=n2+n2
+        else
+          n2=nl2+nl2+1
+          nn2=n2+1
+        endif
+        allocate (b2(n2),c2(nn2))
+        do i=1,n2
+          b2(i)=a2(i)
+        enddo
+        do i=1,nn2
+          c2(i)=a2(n2+i)
+        enddo
+        sige=sctnae(e2,u,za,awr,zap,awp,spi,lidp,c2,b2,nl2)
+        deallocate(b2,c2)
+      else
+        ilaw=mod(lei,10)
+        if (lidp.eq.1) then
+          n1=nl1+1
+          nn1=n1+n1
+          n2=nl2+1
+          nn2=n2+n2
+        else
+          n1=nl1+nl1+1
+          nn1=n1+1
+          n2=nl2+nl2+1
+          nn2=n2+1
+        endif
+        allocate (b1(n1),b2(n2))
+        do i=1,n1
+          b1(i)=a1(i)
+        enddo
+        do i=1,n2
+          b2(i)=a2(i)
+        enddo
+        nb=max(n1,n2)
+        allocate(b(nb))
+        call list_intp(e1,b1,n1,e2,b2,n2,ilaw,e,b,nb)
+        deallocate(b1,b2)
+        allocate (c1(nn1),c2(nn2))
+        do i=1,nn1
+          c1(i)=a1(n1+i)
+        enddo
+        do i=1,nn2
+          c2(i)=a2(n2+i)
+        enddo
+        nc=max(nn1,nn2)
+        allocate (c(nc))
+        call list_intp(e1,c1,nn1,e2,c2,nn2,ilaw,e,c,nc)
+        deallocate(c1,c2)
+        nl=max(nl1,nl2)
+        sige=sctnae(e,u,za,awr,zap,awp,spi,lidp,c,b,nl)
+        deallocate(b,c)
+      endif
+    elseif (ltp.eq.2) then ! LTP=2: residual cross section expansion
+      if (e.eq.e1) then
+        sige=sctrxe(e1,u,za,awr,zap,awp,spi,lidp,a1,nl1)
+      elseif (e.eq.e2) then
+        sige=sctrxe(e1,u,za,awr,zap,awp,spi,lidp,a2,nl2)
+      else
+        ilaw=mod(lei,10)
+        nl=max(nl1,nl2)
+        n1=nl1+1
+        n2=nl2+1
+        nc=nl+1
+        allocate(c(nc))
+        call list_intp(e1,a1,n1,e2,a2,n2,ilaw,e,c,nc)
+        sige=sctrxe(e,u,za,awr,zap,awp,spi,lidp,c,nl)
+        deallocate(c)
+      endif
+    else ! LTP>2: nuclear + interference representation
+      if (lidp.eq.1) then
+        uu=abs(u)
+      else
+        uu=u
+      endif
+      if(e.eq.e1) then
+        allocate(b1(nl1),c1(nl1),nbt1(1),ibt1(1))
+        do i=1,nl1
+          ii=i+i
+          b1(i)=a1(ii-1)
+          c1(i)=a1(ii)
+        enddo
+        nr1=1
+        nbt1(1)=nl1
+        ibt1(1)=ltp-10
+        signi=tab1intp(eni,sni,np,nbt,ibt,nr,e1)
+        pni=tab1intp(b1,c1,nl1,nbt1,ibt1,nr1,uu)
+        sige=sctnpi(e1,u,za,awr,zap,awp,spi,lidp,signi,pni)
+        deallocate(b1,c1,nbt1,ibt1)
+      elseif(e.eq.e2) then
+        allocate(b2(nl2),c2(nl2),nbt2(1),ibt2(1))
+        do i=1,nl2
+          ii=i+i
+          b2(i)=a2(ii-1)
+          c2(i)=a2(ii)
+        enddo
+        nr2=1
+        nbt2(1)=nl2
+        ibt2(1)=ltp-10
+        signi=tab1intp(eni,sni,np,nbt,ibt,nr,e2)
+        pni=tab1intp(b2,c2,nl2,nbt2,ibt2,nr2,uu)
+        sige=sctnpi(e2,u,za,awr,zap,awp,spi,lidp,signi,pni)
+        deallocate(b2,c2,nbt2,ibt2)
+      else
+        ilaw=mod(lei,10)
+        allocate(b1(nl1),c1(nl1),nbt1(1),ibt1(1))
+        do i=1,nl1
+          ii=i+i
+          b1(i)=a1(ii-1)
+          c1(i)=a1(ii)
+        enddo
+        nr1=1
+        nbt1(1)=nl1
+        ibt1(1)=ltp-10
+        allocate(b2(nl2),c2(nl2),nbt2(1),ibt2(1))
+        do i=1,nl2
+          ii=i+i
+          b2(i)=a2(ii-1)
+          c2(i)=a2(ii)
+        enddo
+        nr2=1
+        nbt2(1)=nl2
+        ibt2(1)=ltp-10
+        signi=tab1intp(eni,sni,np,nbt,ibt,nr,e)
+        pni=unit_base_intp(e1,b1,c1,nl1,nbt1,ibt1,nr1, &
+                           e2,b2,c2,nl2,nbt2,ibt2,nr2,ilaw,e,uu)
+        sige=sctnpi(e,u,za,awr,zap,awp,spi,lidp,signi,pni)
+        deallocate(b1,c1,nbt1,ibt1)
+        deallocate(b2,c2,nbt2,ibt2)
+      endif
+    endif
+  endif
+  f6law5=two*pi*sige ! to convert barn/sr to barn/(unit_cosine)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function sctnae(e,u,za,awr,zap,awp,spi,lidp,a,b,nl)
+!
+! Description:
+! Compute elastic cross section for the nuclear amplitude representation (LTP=1)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! a: list of coefficients (ar(i),ai(i)) for the interference expansion
+! b: list of coefficient b(i) for the nuclear cross section expansion
+! nl: higest Legendre order of the nuclear partial waves
+!
+! Output:
+! sctnae: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(zero=0.0d0)
+  parameter(half=0.5d0)
+  parameter(one=1.0d0)
+  parameter(two=2.0d0)
+  complex(kind(1.0d0))ciu,sum1,sum2,csl,arg1,arg2
+! external dimension
+  dimension a(*),b(*)
+! internal dimension
+  allocatable p(:)
+  nb=2*nl
+  allocate(p(nb+1))
+  call legndr(u,p,nb)
+  ciu=dcmplx(zero,one)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  if (lidp.eq.1) then ! identical particles
+    sigb=half*b(1)
+    do l=1,nl
+      ll=l+l
+      sigb=sigb+(dble(ll)+half)*b(l+1)*p(ll+1)
+    enddo
+    sum1=half*dcmplx(a(1),a(2))
+    sum2=sum1
+    sgn=-one
+    do l=1,nl
+      ll=l+l+1
+      csl=(dble(l)+half)*p(l+1)*dcmplx(a(ll),a(ll+1))
+      sum1=sum1+csl
+      sum2=sum2+sgn*csl
+      sgn=-sgn
+    enddo
+    arg1=eta*log((one-u)*half)*ciu
+    arg2=eta*log((one+u)*half)*ciu
+    sigi=-two*eta/(one-u*u)*dble((one+u)*exp(arg1)*sum1+(one-u)*exp(arg2)*sum2)
+  else ! distinguishable particles
+    sigb=half*b(1)
+    do l=1,nb
+      l1=l+1
+      sigb=sigb+(dble(l)+half)*b(l1)*p(l1)
+    enddo
+    sum1=half*dcmplx(a(1),a(2))
+    do l=1,nl
+      ll=l+l+1
+      sum1=sum1+(dble(l)+half)*p(l+1)*dcmplx(a(ll),a(ll+1))
+    enddo
+    arg1=eta*log((one-u)*half)*ciu
+    sigi=-two*eta/(one-u)*dble(exp(arg1)*sum1)
+  endif
+  sctnae=sigc+sigi+sigb ! Coulomb+interference+nuclear
+  deallocate(p)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function sctrxe(e,u,za,awr,zap,awp,spi,lidp,c,nl)
+!
+! Description:
+! Compute elastic cross section for the residual cross section expansion
+! representation (LTP=2)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! c: list of coefficients c(i) for the residual cross section expansion
+! nl: higest Legendre order of the nuclear partial waves
+!
+! Output:
+! sctrxe: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(half=0.5d0)
+  parameter(one=1.0d0)
+! external dimension
+  dimension c(*)
+! internal dimension
+  allocatable p(:)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  if (lidp.eq.1) then ! identical particles
+    nc=2*nl
+    allocate(p(nc+1))
+    call legndr(u,p,nc)
+    sigr=half*c(1)
+    do l=1,nl
+      ll=l+l
+      sigr=sigr+(dble(ll)+half)*c(l+1)*p(ll+1)
+    enddo
+    sigr=sigr/(one-u*u)
+  else ! distinguishable particles
+    allocate(p(nl+1))
+    call legndr(u,p,nl)
+    sigr=half*c(1)
+    do l=1,nl
+      l1=l+1
+      sigr=sigr+(dble(l)+half)*c(l1)*p(l1)
+    enddo
+    sigr=sigr/(one-u)
+  endif
+  sctrxe=sigc+sigr ! Coulomb + (residual contribution)
+  deallocate(p)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function sctnpi(e,u,za,awr,zap,awp,spi,lidp,sni,pni)
+!
+! Description:
+! Compute elastic cross section for the nuclear + interference
+! representation (LTP=12 or LTP=14)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! sni: nuclear + interference cross section at e from MF3/MT2 data
+! pni: nuclear + interference distribution at (e,u) from MF6/MT2 data
+!
+! Output:
+! sctnpi: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  sctnpi=sigc+sni*pni ! Coulomb + (nuclear+interference contribution)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+!
+! Description:
+! Compute the Coulomb component of the elastic cross section
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+!
+! Output:
+! coul: Coulomb component in units of barn/sr at (e,u)
+! eta: dimensionless Coulomb parameter (needed for LTP=1)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(amn=1.00866491595d0)          ! neutron mass in amu
+  parameter(ev=1.602176634E-12)           ! erg/eV
+  parameter(amu=9.3149410242d+8)          ! atomic mas unit in ev/amu
+  parameter(hbar=6.582119569d-16)         ! reduced Planck's constant in eV*s
+  parameter(clight=2.99792458d+10)        ! speed of light in vacuum  in cm/s
+  parameter(barn=1.0d-24)                 ! 1 barn=1.0e-24 cm**2)
+  parameter(alpha=1.0d-16*ev*clight/hbar) ! fine-structure constant
+  parameter(zero=0.0d0)
+  parameter(one=1.0d0)
+  parameter(two=2.0d0)
+  parameter(c1=two*amu/(hbar*hbar*clight*clight)*barn)
+  parameter(c2=alpha*alpha*amu/two)
+  at=awr*amn
+  ap=awp*amn
+  izt=nint(za)
+  izp=nint(zap)
+  zt=int(izt/1000)
+  zp=int(izp/1000)
+  eta=zp*zt*sqrt(c2*ap/e)
+  wk=at*sqrt(c1*ap*e)/(ap+at)
+  if (lidp.eq.1) then ! identical particles
+    u2=u*u
+    r2s=two*spi
+    i2s=nint(r2s)
+    coul=two*eta*eta/(wk*wk*(one-u2))*((one+u2)/(one-u2) + &
+         ((-1)**i2s)/(r2s+one)*cos(eta*log((one+u)/(one-u))))
+  else ! distinguishable particles
+    coul=eta*eta/(wk*wk*(one-u)*(one-u))
   endif
   return
   end
