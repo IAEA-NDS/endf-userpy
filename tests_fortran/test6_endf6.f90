@@ -3,6 +3,7 @@
       parameter (nbmax=50000, nnx=450,nnsni=2000)
       parameter (nedim=60,nadim=51,nepdim=200)
       parameter (neu=5,nepu=5,nuu=5)
+      parameter (emin=1.0d-5,eps=1.0d-12, one=1.0d0, zero=0.0d0)
       character*66 line
       character*120 fin,fout
       dimension nbt(20),ibt(20),llaw(nepdim)
@@ -87,7 +88,7 @@
         if (icod.ne.0) then
           write(nou,*)' mt=',mf6(i),' not found on MF3'
           write(*,*)' mt=',mf6(i),' not found on MF3'
-          qi(i)=0.0d0
+          qi(i)=zero
         else
           call readcont(nin,za,awr,l1,l2,n1,n2,mat,mf,mt,ns)
           call readtab1(nin,qm,qi(i),l1,lr,nr,np,nbt,ibt,x,y)
@@ -126,10 +127,10 @@
             write(*,'(a,i4,a,i4,a,i5,a,1pe13.6,a,i4)')' imt=',imt,' MT=',mt,' MAT=',mat,' QI=',q,' NK=',nk
             do kk=1,nk
               call readtab1(nin,zap,awp,lip,law,nr,np,nbt,ibt,x,y)
-              eprim=0.0d0
-              if (law.eq.2.and.zap.eq.0.0d0.and.awp.ne.0.0d0) then
+              eprim=zero
+              if (law.eq.2.and.zap.eq.zero.and.awp.ne.zero) then
                 eprim=awp
-                awp=0.0d0
+                awp=zero
               endif
               if (law.eq.6) then
                 lct=1
@@ -142,7 +143,7 @@
               endif
               write(nou,'(110a1)')('*',i=1,110)
               write(nou,'(a,i4)')' Particle ',kk
-              if (eprim.eq.0.0d0) then
+              if (eprim.eq.zero) then
                 write(nou,'(a,1p,e13.6,a,e13.6,a,i2)')' ZAP=',zap,' AWP=',awp,' LCT=',lct
               else
                 write(nou,'(a,1p,e13.6,a,e13.6,a,i2,a,e13.6)')' ZAP=',zap,' AWP=',awp,' LCT=',lct,' E_prim=',eprim
@@ -240,6 +241,7 @@
                 write(nou,'(a,i3,a,i5)')' LAW=',law,' lct=',lct,' NE=',ne
                 write(nou,'(110a1)')('=',i=1,110)
                 call readlist(nin,c1,e1,lang1,n2,nw1,nl1,b01)
+                ee=(awr+awi)/awr*q
                 do ie=2,ne
                   call readlist(nin,c1,e2,lang2,n2,nw2,nl2,b02)
                   if (e1.ne.e2.and.lang1.eq.lang2) then
@@ -247,24 +249,25 @@
                     write(nou,'(a,i5,a,1p,e13.6,a,e13.6,a,i3)')' IE=',ie-1,' E1=',e1,' E2=',e2,' LEIN=',lei
                     write(nou,'(6(a,i4))')' lang=',lang1,' nl1=',nl1,' nl2=',nl2
                     write(nou,'(110a1)')('-',i=1,110)
-                    e0=(awr+awi)/awr*(-q)*1.00001d0
-                    if (e1.gt.e0) e0=e1*1.00001d0
+                    e0=max(-ee,emin)
+                    if (e1.gt.e0) e0=e1*1.000010d0
                     h=(e2-e0)/dble(neu-1)
                     do i=1,neu
                       eu(i)=e0+h*dble(i-1)
                     enddo
-                    rth=(awr+awi)/awr*q/e0
-                    if (awi*awp.ne.0.0d0) then
-                      r2=awr*(awr+awi-awp)/(awi*awp)*(1.0d0+rth)
+                    rth=max(ee/e2,-one)
+                    if ((awi*awp).ne.zero) then
+                      r2=awr*(awr+awi-awp)/(awi*awp)*(one+rth)
                     else
                       r2=1.0d38
                     endif
-                    if (r2.gt.1.0d0) then
-                       umin=-1.0d0
+                    r=sqrt(r2)
+                    if (r.le.one) then
+                      umin=cos(asin(r))+eps
                     else
-                       umin=sqrt(1.0d0-r2)+1.0d-5
+                      umin=-one
                     endif
-                    h=(1.0d0-umin)/(nuu-1)
+                    h=(one-umin)/(nuu-1)
                     do i=1,nuu
                       uu(i)=umin+h*dble(i-1)
                     enddo
@@ -299,23 +302,21 @@
                     write(nou,'(a,i5,a,1p,e13.6,a,e13.6,a,i3)')' IE=',ie-1,' E1=',e1,' E2=',e2,' LEIN=',lei
                     write(nou,'(6(a,i4))')' LTP=',ltp,' lidp=',lidp,' nl1=',nl1,' nl2=',nl2
                     write(nou,'(110a1)')('-',i=1,110)
-                    e0=1.0d-5
-                    if (e1.gt.e0) e0=e1*1.000001d0
+                    e0=max(-ee,emin)
+                    if (e1.gt.e0) e0=e1*1.000010d0
                     h=(e2-e0)/dble(neu-1)
                     do i=1,neu
                       eu(i)=e0+h*dble(i-1)
                     enddo
-                    if (awi*awp.ne.0.0d0) then
-                      r2=awr*awr/(awp*awp)
+                    r=awr/awp ! because elastic scattering q=0 and awi=awp
+                    if (abs(r-one).lt.eps) r=one
+                    r2=r*r
+                    if (r.le.one) then
+                      umin=cos(asin(r))+eps
                     else
-                      r2=1.0d38
+                      umin=-one
                     endif
-                    if (r2.gt.1.0d0) then
-                       umin=-9.999999999999999d-1
-                    else
-                       umin=sqrt(1.0d0-r2)+1.0d-5
-                    endif
-                    h=(1.0d0-umin)/(nuu-1)
+                    h=(one-umin)/(nuu-1)
                     do i=1,nuu
                       uu(i)=umin+h*dble(i-1)
                     enddo
@@ -327,7 +328,7 @@
                     write(nou,'(4a16)')'ei','u','w','f6law5'
                     do i=1,neu
                       do k=1,nuu
-                        call mf4lab2cm(lct,awr,awi,awp,q,eu(i),uu(k),w,dinv)
+                        call mf4lab2cm(lct,awr,awp,awp,q,eu(i),uu(k),w,dinv)
                         if (w.ge.1.0d0) then
                           w=9.999999999999999d-1
                         elseif (w.le.-1.0d0) then
@@ -353,17 +354,17 @@
                 call readcont(nin,apsx,c1,l1,l2,n1,npsx,mat,mf,mt,nsi)
                 write(nou,'(a,i2,a,1pe13.6,a,i2)')' LAW=',law,' APSX=',apsx,' NPSX=',npsx
                 write(nou,'(110a1)')('=',i=1,110)
-                 if (q.lt.0.0d0) then
+                 if (q.lt.zero) then
                    e0=(awr+awi)/awr*(-q)*1.00001d0
                  else
-                   e0=1.0d-5
+                   e0=emin
                  endif
                  e2=emax
                  h=(e2-e0)/dble(neu-1)
                  do i=1,neu
                    eu(i)=e0+h*dble(i-1)
                  enddo
-                 tp1=1.0d-5
+                 tp1=emin
                  tp2=min(e2-e0,(e0+e2)/2.0d0)
                  h=(tp2-tp1)/(nepu-1)
                  do i=1,nepu

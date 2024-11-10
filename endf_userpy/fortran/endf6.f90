@@ -1080,213 +1080,6 @@
   return
   end
 ! ------------------------------------------------------------------------------
-  real*8 function sctnae(e,u,za,awr,zap,awp,spi,lidp,a,b,nl)
-!
-! Description:
-! Compute elastic cross section for the nuclear amplitude representation (LTP=1)
-!
-! Input:
-! e: energy of incident charged particle in the LAB system [eV]
-! u: cosine of the scattering angle in the CM system
-! za: ZA number of the target
-! awr: relative atomic mass of the target
-! zap: ZA number of the charged-particle
-! awp: relative nuclear mass of the charged-particle
-! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
-! lidp: flag for identical particles (lidp=1 for identical particles)
-! a: list of coefficients (ar(i),ai(i)) for the interference expansion
-! b: list of coefficient b(i) for the nuclear cross section expansion
-! nl: higest Legendre order of the nuclear partial waves
-!
-! Output:
-! sctnae: elastic cross section in units of barn/sr at (e,u)
-!
-  implicit real*8 (a-h, o-z)
-  parameter(zero=0.0d0)
-  parameter(half=0.5d0)
-  parameter(one=1.0d0)
-  parameter(two=2.0d0)
-  complex(kind(1.0d0))ciu,sum1,sum2,csl,arg1,arg2
-! external dimension
-  dimension a(*),b(*)
-! internal dimension
-  allocatable p(:)
-  nb=2*nl
-  allocate(p(nb+1))
-  call legndr(u,p,nb)
-  ciu=dcmplx(zero,one)
-  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
-  if (lidp.eq.1) then ! identical particles
-    sigb=half*b(1)
-    do l=1,nl
-      ll=l+l
-      sigb=sigb+(dble(ll)+half)*b(l+1)*p(ll+1)
-    enddo
-    sum1=half*dcmplx(a(1),a(2))
-    sum2=sum1
-    sgn=-one
-    do l=1,nl
-      ll=l+l+1
-      csl=(dble(l)+half)*p(l+1)*dcmplx(a(ll),a(ll+1))
-      sum1=sum1+csl
-      sum2=sum2+sgn*csl
-      sgn=-sgn
-    enddo
-    arg1=eta*log((one-u)*half)*ciu
-    arg2=eta*log((one+u)*half)*ciu
-    sigi=-two*eta/(one-u*u)*dble((one+u)*exp(arg1)*sum1+(one-u)*exp(arg2)*sum2)
-  else ! distinguishable particles
-    sigb=half*b(1)
-    do l=1,nb
-      l1=l+1
-      sigb=sigb+(dble(l)+half)*b(l1)*p(l1)
-    enddo
-    sum1=half*dcmplx(a(1),a(2))
-    do l=1,nl
-      ll=l+l+1
-      sum1=sum1+(dble(l)+half)*p(l+1)*dcmplx(a(ll),a(ll+1))
-    enddo
-    arg1=eta*log((one-u)*half)*ciu
-    sigi=-two*eta/(one-u)*dble(exp(arg1)*sum1)
-  endif
-  sctnae=sigc+sigi+sigb ! Coulomb+interference+nuclear
-  deallocate(p)
-  return
-  end
-! ------------------------------------------------------------------------------
-  real*8 function sctrxe(e,u,za,awr,zap,awp,spi,lidp,c,nl)
-!
-! Description:
-! Compute elastic cross section for the residual cross section expansion
-! representation (LTP=2)
-!
-! Input:
-! e: energy of incident charged particle in the LAB system [eV]
-! u: cosine of the scattering angle in the CM system
-! za: ZA number of the target
-! awr: relative atomic mass of the target
-! zap: ZA number of the charged-particle
-! awp: relative nuclear mass of the charged-particle
-! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
-! lidp: flag for identical particles (lidp=1 for identical particles)
-! c: list of coefficients c(i) for the residual cross section expansion
-! nl: higest Legendre order of the nuclear partial waves
-!
-! Output:
-! sctrxe: elastic cross section in units of barn/sr at (e,u)
-!
-  implicit real*8 (a-h, o-z)
-  parameter(half=0.5d0)
-  parameter(one=1.0d0)
-! external dimension
-  dimension c(*)
-! internal dimension
-  allocatable p(:)
-  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
-  if (lidp.eq.1) then ! identical particles
-    nc=2*nl
-    allocate(p(nc+1))
-    call legndr(u,p,nc)
-    sigr=half*c(1)
-    do l=1,nl
-      ll=l+l
-      sigr=sigr+(dble(ll)+half)*c(l+1)*p(ll+1)
-    enddo
-    sigr=sigr/(one-u*u)
-  else ! distinguishable particles
-    allocate(p(nl+1))
-    call legndr(u,p,nl)
-    sigr=half*c(1)
-    do l=1,nl
-      l1=l+1
-      sigr=sigr+(dble(l)+half)*c(l1)*p(l1)
-    enddo
-    sigr=sigr/(one-u)
-  endif
-  sctrxe=sigc+sigr ! Coulomb + (residual contribution)
-  deallocate(p)
-  return
-  end
-! ------------------------------------------------------------------------------
-  real*8 function sctnpi(e,u,za,awr,zap,awp,spi,lidp,sni,pni)
-!
-! Description:
-! Compute elastic cross section for the nuclear + interference
-! representation (LTP=12 or LTP=14)
-!
-! Input:
-! e: energy of incident charged particle in the LAB system [eV]
-! u: cosine of the scattering angle in the CM system
-! za: ZA number of the target
-! awr: relative atomic mass of the target
-! zap: ZA number of the charged-particle
-! awp: relative nuclear mass of the charged-particle
-! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
-! lidp: flag for identical particles (lidp=1 for identical particles)
-! sni: nuclear + interference cross section at e from MF3/MT2 data
-! pni: nuclear + interference distribution at (e,u) from MF6/MT2 data
-!
-! Output:
-! sctnpi: elastic cross section in units of barn/sr at (e,u)
-!
-  implicit real*8 (a-h, o-z)
-  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
-  sctnpi=sigc+sni*pni ! Coulomb + (nuclear+interference contribution)
-  return
-  end
-! ------------------------------------------------------------------------------
-  real*8 function coul(e,u,za,awr,zap,awp,spi,lidp,eta)
-!
-! Description:
-! Compute the Coulomb component of the elastic cross section
-!
-! Input:
-! e: energy of incident charged particle in the LAB system [eV]
-! u: cosine of the scattering angle in the CM system
-! za: ZA number of the target
-! awr: relative atomic mass of the target
-! zap: ZA number of the charged-particle
-! awp: relative nuclear mass of the charged-particle
-! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
-! lidp: flag for identical particles (lidp=1 for identical particles)
-!
-! Output:
-! coul: Coulomb component in units of barn/sr at (e,u)
-! eta: dimensionless Coulomb parameter (needed for LTP=1)
-!
-  implicit real*8 (a-h, o-z)
-  parameter(amn=1.00866491595d0)          ! neutron mass in amu
-  parameter(ev=1.602176634E-12)           ! erg/eV
-  parameter(amu=9.3149410242d+8)          ! atomic mas unit in ev/amu
-  parameter(hbar=6.582119569d-16)         ! reduced Planck's constant in eV*s
-  parameter(clight=2.99792458d+10)        ! speed of light in vacuum  in cm/s
-  parameter(barn=1.0d-24)                 ! 1 barn=1.0e-24 cm**2)
-  parameter(alpha=1.0d-16*ev*clight/hbar) ! fine-structure constant
-  parameter(zero=0.0d0)
-  parameter(one=1.0d0)
-  parameter(two=2.0d0)
-  parameter(c1=two*amu/(hbar*hbar*clight*clight)*barn)
-  parameter(c2=alpha*alpha*amu/two)
-  at=awr*amn
-  ap=awp*amn
-  izt=nint(za)
-  izp=nint(zap)
-  zt=int(izt/1000)
-  zp=int(izp/1000)
-  eta=zp*zt*sqrt(c2*ap/e)
-  wk=at*sqrt(c1*ap*e)/(ap+at)
-  if (lidp.eq.1) then ! identical particles
-    u2=u*u
-    r2s=two*spi
-    i2s=nint(r2s)
-    coul=two*eta*eta/(wk*wk*(one-u2))*((one+u2)/(one-u2) + &
-         ((-1)**i2s)/(r2s+one)*cos(eta*log((one+u)/(one-u))))
-  else ! distinguishable particles
-    coul=eta*eta/(wk*wk*(one-u)*(one-u))
-  endif
-  return
-  end
-! ------------------------------------------------------------------------------
   real*8 function f6law6(awr,awi,awp,q,apsx,npsx,e,ep,u)
 !
 ! Description:
@@ -1629,6 +1422,213 @@
    return
    end
 ! ------------------------------------------------------------------------------
+  real*8 function sctnae(e,u,za,awr,zap,awp,spi,lidp,a,b,nl)
+!
+! Description:
+! Compute elastic cross section for the nuclear amplitude representation (LTP=1)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! a: list of coefficients (ar(i),ai(i)) for the interference expansion
+! b: list of coefficient b(i) for the nuclear cross section expansion
+! nl: higest Legendre order of the nuclear partial waves
+!
+! Output:
+! sctnae: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(zero=0.0d0)
+  parameter(half=0.5d0)
+  parameter(one=1.0d0)
+  parameter(two=2.0d0)
+  complex(kind(1.0d0))ciu,sum1,sum2,csl,arg1,arg2
+! external dimension
+  dimension a(*),b(*)
+! internal dimension
+  allocatable p(:)
+  nb=2*nl
+  allocate(p(nb+1))
+  call legndr(u,p,nb)
+  ciu=dcmplx(zero,one)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  if (lidp.eq.1) then ! identical particles
+    sigb=half*b(1)
+    do l=1,nl
+      ll=l+l
+      sigb=sigb+(dble(ll)+half)*b(l+1)*p(ll+1)
+    enddo
+    sum1=half*dcmplx(a(1),a(2))
+    sum2=sum1
+    sgn=-one
+    do l=1,nl
+      ll=l+l+1
+      csl=(dble(l)+half)*p(l+1)*dcmplx(a(ll),a(ll+1))
+      sum1=sum1+csl
+      sum2=sum2+sgn*csl
+      sgn=-sgn
+    enddo
+    arg1=eta*log((one-u)*half)*ciu
+    arg2=eta*log((one+u)*half)*ciu
+    sigi=-two*eta/(one-u*u)*dble((one+u)*exp(arg1)*sum1+(one-u)*exp(arg2)*sum2)
+  else ! distinguishable particles
+    sigb=half*b(1)
+    do l=1,nb
+      l1=l+1
+      sigb=sigb+(dble(l)+half)*b(l1)*p(l1)
+    enddo
+    sum1=half*dcmplx(a(1),a(2))
+    do l=1,nl
+      ll=l+l+1
+      sum1=sum1+(dble(l)+half)*p(l+1)*dcmplx(a(ll),a(ll+1))
+    enddo
+    arg1=eta*log((one-u)*half)*ciu
+    sigi=-two*eta/(one-u)*dble(exp(arg1)*sum1)
+  endif
+  sctnae=sigc+sigi+sigb ! Coulomb+interference+nuclear
+  deallocate(p)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function sctrxe(e,u,za,awr,zap,awp,spi,lidp,c,nl)
+!
+! Description:
+! Compute elastic cross section for the residual cross section expansion
+! representation (LTP=2)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! c: list of coefficients c(i) for the residual cross section expansion
+! nl: higest Legendre order of the nuclear partial waves
+!
+! Output:
+! sctrxe: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(half=0.5d0)
+  parameter(one=1.0d0)
+! external dimension
+  dimension c(*)
+! internal dimension
+  allocatable p(:)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  if (lidp.eq.1) then ! identical particles
+    nc=2*nl
+    allocate(p(nc+1))
+    call legndr(u,p,nc)
+    sigr=half*c(1)
+    do l=1,nl
+      ll=l+l
+      sigr=sigr+(dble(ll)+half)*c(l+1)*p(ll+1)
+    enddo
+    sigr=sigr/(one-u*u)
+  else ! distinguishable particles
+    allocate(p(nl+1))
+    call legndr(u,p,nl)
+    sigr=half*c(1)
+    do l=1,nl
+      l1=l+1
+      sigr=sigr+(dble(l)+half)*c(l1)*p(l1)
+    enddo
+    sigr=sigr/(one-u)
+  endif
+  sctrxe=sigc+sigr ! Coulomb + (residual contribution)
+  deallocate(p)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function sctnpi(e,u,za,awr,zap,awp,spi,lidp,sni,pni)
+!
+! Description:
+! Compute elastic cross section for the nuclear + interference
+! representation (LTP=12 or LTP=14)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! sni: nuclear + interference cross section at e from MF3/MT2 data
+! pni: nuclear + interference distribution at (e,u) from MF6/MT2 data
+!
+! Output:
+! sctnpi: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  sctnpi=sigc+sni*pni ! Coulomb + (nuclear+interference contribution)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+!
+! Description:
+! Compute the Coulomb component of the elastic cross section
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+!
+! Output:
+! coul: Coulomb component in units of barn/sr at (e,u)
+! eta: dimensionless Coulomb parameter (needed for LTP=1)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(amn=1.00866491595d0)          ! neutron mass in amu
+  parameter(ev=1.602176634E-12)           ! erg/eV
+  parameter(amu=9.3149410242d+8)          ! atomic mas unit in ev/amu
+  parameter(hbar=6.582119569d-16)         ! reduced Planck's constant in eV*s
+  parameter(clight=2.99792458d+10)        ! speed of light in vacuum  in cm/s
+  parameter(barn=1.0d-24)                 ! 1 barn=1.0e-24 cm**2)
+  parameter(alpha=1.0d-16*ev*clight/hbar) ! fine-structure constant
+  parameter(zero=0.0d0)
+  parameter(one=1.0d0)
+  parameter(two=2.0d0)
+  parameter(c1=two*amu/(hbar*hbar*clight*clight)*barn)
+  parameter(c2=alpha*alpha*amu/two)
+  at=awr*amn
+  ap=awp*amn
+  izt=nint(za)
+  izp=nint(zap)
+  zt=int(izt/1000)
+  zp=int(izp/1000)
+  eta=zp*zt*sqrt(c2*ap/e)
+  wk=at*sqrt(c1*ap*e)/(ap+at)
+  if (lidp.eq.1) then ! identical particles
+    u2=u*u
+    r2s=two*spi
+    i2s=nint(r2s)
+    coul=two*eta*eta/(wk*wk*(one-u2))*((one+u2)/(one-u2) + &
+         ((-1)**i2s)/(r2s+one)*cos(eta*log((one+u)/(one-u))))
+  else ! distinguishable particles
+    coul=eta*eta/(wk*wk*(one-u)*(one-u))
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
 ! procedures for LAB to CM conversion
 ! ------------------------------------------------------------------------------
   subroutine mf4lab2cm(lct,awr,awi,awp,q,e,u,w,dinv)
@@ -1653,28 +1653,55 @@
 ! dinv: Jacobian from CM to LAB for LCT=2, 1 otherwise
 !
   implicit real*8 (a-h,o-z)
-  parameter (rthmin=-0.999999d0)
-  if (lct.eq.2.and.awp.ne.0.0d0) then
-!   distribution is in the CM system
-!   convert input cosine from LAB to CM using two-body kinematic formulae
-    rth=(awr+awi)/awr*q/e
-    if (rth.lt.rthmin) rth=rthmin
-    r2=awr*(awr+awi-awp)/(awi*awp)*(1.0d0+rth)
+  parameter (zero=0.0d0)
+  parameter (eps=1.0d-12)
+  parameter (one=1.0d0)
+  parameter (emin=1.0d-5)
+  if (lct.eq.2.and.(awp*awi).ne.zero) then
+!   distribution is given in the CM system for massive particles
+!   convert cosine value from LAB to CM using non relativistic
+!   two-body kinematic formulae
+    ee=(awr+awi)/awr*q
+    ethr=max(-ee,emin)
+    rth=max(ee/e,-one)
+    r2=awr*(awr+awi-awp)/(awi*awp)*(one+rth)
     r=sqrt(r2)
-    u2=u*u
-    w=(1.0d0-u2-r2*u2)/(r*(u2-1.0d0-u*sqrt(u2+r2-1.0d0)))
-    if (w.gt.1.0d0) then
-      w=1.0d0
-    elseif (w.lt.-1.0d0) then
-      w=-1.0d0
+    if (r.le.one) then
+      umin=cos(asin(r))
+    else
+      umin=-one
     endif
-    xw=1.0d0+2.0d0*r*w+r2
-    dinv=xw*sqrt(xw)/(r2*(r+w))
+    if (e.ge.ethr.and.u.ge.umin) then
+      u2=u*u
+      w=(one-u2-r2*u2)/(r*(u2-one-u*sqrt(u2+r2-one)))
+      if (w.gt.one) then
+        w=one
+      elseif (w.lt.-one) then
+        w=-one
+      endif
+      rpw=abs(r+w)
+      if (r.le.one.and.w.lt.zero.and.rpw.lt.eps) then
+         rpw=eps
+         if (-w.lt.r) then
+           w=-r-eps
+         else
+           w=-r+eps
+         endif
+      endif
+      xw=1.0d0+2.0d0*r*w+r2
+      dinv=xw*sqrt(xw)/(r2*rpw)
+    else
+!     forbidden value of e or u or both
+!     assigning a set of values to point out the issue
+      u=one
+      w=u
+      dinv=zero
+    endif
   else
 !   distribution is in the LAB system or no conversion is required
 !   no transformation is applied. the Jacobian dinv is set equal 1
     w=u
-    dinv=1.0d0
+    dinv=one
   endif
   return
   end
