@@ -2,6 +2,7 @@ import numpy as np
 from .fortran.endf6 import (
     mf6_get_law1,
     mf6_get_law2,
+    mf6_get_law6,
 )
 from .helpers import (
     dict2array,
@@ -170,6 +171,35 @@ def get_ddx_from_subsec_law2(
     return result_arr
 
 
+def get_ddx_from_subsec_law6(
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out
+):
+    sec = endf_dict[6][mt]
+    awr = get_AWR(endf_dict)
+    awi = get_AWI(endf_dict)
+    q = get_QI(endf_dict, mt)
+    subsec = sec['subsection'][subsec_num]
+    awp = subsec['AWP']
+    apsx = subsec['APSX']
+    npsx = subsec['NPSX']
+
+    eu = energies_in
+    neu = len(eu)
+    epu = energies_out
+    nepu = len(epu)
+    uu = angle_cosines_out
+    nuu = len(uu)
+
+    result_dim = (neu, nepu, nuu)
+    result_arr = np.zeros(result_dim, dtype=float, order='F')
+
+    mf6_get_law6(
+        awr, awi, awp, q, apsx, npsx,
+        eu, epu, uu, nuu, result_arr
+    )
+    return result_arr
+
+
 def compute_ddx_from_subsec(
     endf_dict, mt, subsec_num,
     energies_in, energies_out, angle_cosines_out
@@ -186,6 +216,11 @@ def compute_ddx_from_subsec(
         return get_ddx_from_subsec_law2(
             endf_dict, mt, subsec_num,
             energies_in, angle_cosines_out
+        )
+    elif law == 6:
+        return get_ddx_from_subsec_law6(
+            endf_dict, mt, subsec_num,
+            energies_in, energies_out, angle_cosines_out
         )
     else:
         raise NotImplementedError(
