@@ -1,8 +1,8 @@
-! ----------------------------------------------------------------------------------
+! ========================================================================================
 !
-!       endf6py.f90
+!  endf6py.f90 library for ENDF-6 processing
 !
-! ----------------------------------------------------------------------------------
+! ========================================================================================
   subroutine mf4_get_leg(awr,awi,awp,q,lct,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f4)
 !
 ! Descrption:
@@ -35,47 +35,24 @@
   implicit real*8 (a-h,o-z)
 ! externals
   dimension a1(*),a2(*),e(*),xmu(*),f4(ne,*)
-! internals
-  allocatable b1(:),b2(:),a(:)
-! allocate space for internals arrays
-  nb1=nl1+1
-  nb2=nl2+1
-  na=max(nb1,nb2)
-  allocate(b1(nb1),b2(nb2),a(na))
-! Prepare Legendre coefficient arrays for parameter interpolation
-! Add zero order coefficient, which should be 1 for MF4 data
-  do l=1,nl1
-    b1(l+1)=a1(l)
-  enddo
-  b1(1)=1.0d0
-  do l=1,nl2
-    b2(l+1)=a2(l)
-  enddo
-  b2(1)=1.0d0
 ! Cycle for incident energies
   do ie=1,ne
     ei=e(ie)
-!   Legendre coefficient interpolation
-    call list_intp(e1,b1,nb1,e2,b2,nb2,ilaw,ei,a,na)
-    nla=na-1 ! Legendre expansion order at the intermediate energy ei
     do ju=1,nmu
       u=xmu(ju)
 !     Reference system conversion, if required
       call mf4lab2cm(lct,awr,awi,awp,q,ei,u,w,dinv)
 !     calculate the f(E,w) in the reference system of the evaluation
-      feu=yleg(w,a,nla)
+      f=f4leg(e1,a1,nl1,e2,a2,nl2,ilaw,ei,w)
 !     multiply by Jacobian
-      f4(ie,ju)=feu*dinv
+      f4(ie,ju)=f*dinv
     enddo
   enddo
-  deallocate(b1,b2,a)
   return
   end
 ! ------------------------------------------------------------------------------
   subroutine mf4_get_tab(awr,awi,awp,q,lct,e1,u1,f1,np1,nbt1,ibt1,nr1, &
                          e2,u2,f2,np2,nbt2,ibt2,nr2,ilaw,e,ne,xmu,nmu,f4)
-!
-! Description:
 !
 ! Descrption:
 ! Get the angular distribution f(E,u) given by tabulated probabilities for
@@ -116,25 +93,15 @@
   dimension u1(*),f1(*),nbt1(*),ibt1(*)
   dimension u2(*),f2(*),nbt2(*),ibt2(*)
   dimension e(*),xmu(*),f4(ne,*)
-! interpolate in the original distribution
   do ie=1,ne
     ei=e(ie)
     do ju=1,nmu
       u=xmu(ju)
 !     Reference system conversion, if required
       call mf4lab2cm(lct,awr,awi,awp,q,ei,u,w,dinv)
-      if (ei.eq.e1) then
-        feu=tab1intp(u1,f1,np1,nbt1,ibt1,nr1,w)
-      elseif (ei.eq.e2) then
-        feu=tab1intp(u2,f2,np2,nbt2,ibt2,nr2,w)
-      else
-        law=mod(ilaw,10)
-        feu1=tab1intp(u1,f1,np1,nbt1,ibt1,nr1,w)
-        feu2=tab1intp(u2,f2,np2,nbt2,ibt2,nr2,w)
-        feu=yintp(e1,feu1,e2,feu2,law,ei)
-      endif
+      f=f4tab(e1,u1,f1,np1,nbt1,ibt1,nr1,e2,u2,f2,np2,nbt2,ibt2,nr2,ilaw,ei,w)
 !     multiply by Jacobian, if required
-      f4(ie,ju)=feu*dinv
+      f4(ie,ju)=f*dinv
     enddo
   enddo
   return
@@ -217,6 +184,314 @@
       enddo
     enddo
   enddo
+  return
+  end
+! ---------------------------------------------------------------------------------------
+  subroutine mf6_get_law2(awr,awi,awp,q,lct,lang,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f6)
+!
+! Description:
+! Get the angular distribution f(E,u) given by MF6/LAW2 (Discrete 2-body
+! reaction) for a set of incident energies e(ne) at different cosines xmu(nmu)
+! supplied by the user. The results are returned in the f6(ie,ju) array.
+!
+! Input:
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value from MF3
+! lct: reference system for angular distributions.(1=LAB, 2=CM)
+! lang: MF6/LAW2 representation flag:
+!       lang=0, Legendre expansion
+!       lang=12,Tabulated data with p(u) linear in u (ENDF6/INT=2)
+!       lang=14,Tabulated data with log(p(u)) linear in u (ENDF6/INT=4)
+! e1: incident energy for the lower panel
+! a1: for lang=0, Legendre coefficients at e1
+!     for lang>0, the (u,p(u)) pairs for tabulated angular distribution at e1
+! nl1: for lang=0, Legendre expansion order
+!      for lang>0, Number of tabulated pairs (u,p(u)) at e1
+! e2: incident energy for the upper panel
+! a2: for lang=0, Legendre coefficients at e2
+!     for lang>0, the (u,p(u)) pairs for tabulated angular distribution at e2
+! nl2: for lang=0, Legendre expansion order at e2
+!      for lang>0, Number of tabulated pairs (u,p(u)) at e2
+! ilaw: interpolation law between e1 and e2
+! e(ie): user's incident energy array
+! ne: number of user's incident energies
+! xmu: user's cosine array (in the LAB system)
+! nmu: number of user's cosines
+!
+! Output:
+! f6(ie,ju): f(E,u) angular distribution in the lab system at ne incident
+!            energies and for nmu cosine values
+!
+  implicit real*8 (a-h,o-z)
+! externals
+  dimension a1(*),a2(*),e(*),xmu(*),f6(ne,*)
+  do ie=1,ne
+    ei=e(ie)
+    do ju=1,nmu
+      u=xmu(ju)
+!     Reference system conversion, if required
+      call mf4lab2cm(lct,awr,awi,awp,q,ei,u,w,dinv)
+!     calculate the f(E,w) in the reference system of the evaluation
+      f=f6law2(lang,e1,a1,nl1,e2,a2,nl2,ilaw,ei,w)
+!     multiply by Jacobian
+      f6(ie,ju)=f*dinv
+    enddo
+  enddo
+  return
+  end
+! -----------------------------------------------------------------------------
+  subroutine mf6_get_law5(za,awr,zap,awp,spi,lidp,lei,ltp, &
+                          e1,nl1,a1,e2,nl2,a2,eni,sni,np,nbt,ibt,nr, &
+                          e,ne,xmu,nmu,f65)
+  implicit real*8 (a-h, o-z)
+  parameter (zero=0.0d0)
+! external dimensions
+  dimension a1(*),a2(*),eni(*),sni(*),nbt(*),ibt(*)
+  dimension e(*),xmu(*),f65(ne,*)
+  lct=2     ! data must be given in the CM system for MF6/LAW5
+  awi=awp   ! incident charged particle must be equal to outgoing particle
+  q=zero    ! reaction Q value should be zero for elastic scattering
+  do ie=1,ne
+    ei=e(ie)
+    do ju=1,nmu
+      u=xmu(ju)
+!     Reference system conversion, if required
+      call mf4lab2cm(lct,awr,awi,awp,q,ei,u,w,dinv)
+      f=f6law5(ei,w,za,awr,zap,awp,spi,lidp,lei,ltp, &
+               e1,nl1,a1,e2,nl2,a2, &
+               eni,sni,np,nbt,ibt,nr)
+!     Multiply by Jacobian
+      f65(ie,ju)=f*dinv
+    enddo
+  enddo
+  return
+  end
+! ------------------------------------------------------------------------------
+  subroutine mf6_get_law6(awr,awi,awp,q,apsx,npsx,e,ne,ep,nep,xmu,nmu,f6)
+!
+! Description:
+! Get the angular distribution f(E,E',u) given by MF6/LAW6 (N-Body Phase-Space
+! Distribution)  for a set of incident energies e(ne) at different cosines
+! xmu(nmu) supplied by the user.
+! The results are returned in the f6(i,j,k) array.
+!
+! Input:
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value from MF3
+! apsx: total mass in neutron units of the N particles treated by LAW6
+! npsx: number of particles distributed according to LAW6 (N)
+! e: user's incident energy array
+! ne: number of user's incident energies
+! ep: user's outgoing energy array
+! nep: number of user's outgoing energies
+! xmu: user's cosine array (in the LAB system)
+! nmu: number of user's cosines
+!
+! Output:
+! f6(i,j,k): f(E,E',u) angular distribution in the lab system at ne incident
+!            energies, nep outgoing energies and for nmu cosine values
+!
+  implicit real*8 (a-h,o-z)
+  dimension e(*),ep(*),xmu(*)
+  dimension f6(ne,nep,*)
+  do i=1,ne
+    do j=1,nep
+      do k=1,nmu
+        f6(i,j,k)=f6law6(awr,awi,awp,q,apsx,npsx,e(i),ep(j),xmu(k))
+      enddo
+    enddo
+  enddo
+  return
+  end
+! ------------------------------------------------------------------------------
+  subroutine mf6_get_law7(e,ne,ep,nep,xmu,nmu,lei, &
+                         e1,lmu1,u11,ep11,f11,np11,nbt11,ibt11,nr11, &
+                                 u12,ep12,f12,np12,nbt12,ibt12,nr12, &
+                         e2,lmu2,u21,ep21,f21,np21,nbt21,ibt21,nr21, &
+                                 u22,ep22,f22,np22,nbt22,ibt22,nr22,f6)
+!
+! Description:
+! Calculate the angle-energy distribution given by MF6/LAW7 at ne incident
+! energies between e1 and e2, nmu outgoing cosines between min(u11,u21) and
+! max(u12,u22) at nep outgoing energies.
+!
+! Input:
+!  e: User's incident energy array
+! ne: number of incident energies between e1 and e2
+! ep: User's outgoing energy array
+!nep: number of outgoing energies
+!xmu: User's outgoing cosine array
+!nmu: number of outgoing cosines
+!lei: interpolation law between e1 and e2
+! e1: incident energy of the lower energy panel
+!lmu1: interpolation law between u11 and u12 at e1
+!u11: outgoing cosine value of the lower cosine panel at e1
+!ep11: outgoing energies at 2D-panel (u11,e1)
+!f11:  outgoing energy distribution at 2D-panel (u11,e1)
+!np11: number of outgoing energies at 2D-panel (u11,e1)
+!nbt11: interpolation ranges for f11
+!ibt11: interpolation law for f11
+!nr11:  number of interpolation ranges for f11
+!u12: outgoing cosine value of the upper cosine panel at e1
+!ep12: outgoing energies at 2D-panel (u12,e1)
+!f12:  outgoing energy distribution at 2D-panel (u12,e1)
+!np12: number of outgoing energies at 2D-panel (u21,e1)
+!nbt12: interpolation ranges for f12
+!ibt12: interpolation law for f12
+!nr12:  number of interpolation ranges for f12
+! e2: incident energy of the upper energy panel
+!lmu2: interpolation law between u21 and u22 at e2
+!u21: outgoing cosine value of the lower cosine panel at e2
+!ep21: outgoing energies at 2D-panel (u12,e2)
+!f21:  outgoing energy distribution at 2D-panel (u12,e2)
+!np21: number of outgoing energies at 2D-panel (u12,e2)
+!nbt21: interpolation ranges for f21
+!ibt21: interpolation law for f21
+!nr21:  number of interpolation ranges for f21
+!u22: outgoing cosine value of the upper cosine panel at e2
+!ep22: outgoing energies at 2D-panel (u12,e2)
+!f22:  outgoing energy distribution at 2D-panel (u22,e2)
+!np22: number of outgoing energies at 2D-panel (u22,e2)
+!nbt22: interpolation ranges for f22
+!ibt22: interpolation law for f22
+!nr22:  number of interpolation ranges for f22
+!
+!Output:
+! f6(i,j,k): angle-energy distribution given by MF6/LAW7 at ne incident energy
+!            points, nep outgoing energy points and nmu outgoing cosines
+!
+  implicit real*8 (a-h,o-z)
+  dimension e(*),ep(*),xmu(*),f6(ne,nep,*)
+  dimension ep11(*),f11(*),nbt11(*),ibt11(*),ep12(*),f12(*),nbt12(*),ibt12(*)
+  dimension ep21(*),f21(*),nbt21(*),ibt21(*),ep22(*),f22(*),nbt22(*),ibt22(*)
+  do i=1,ne
+    do k=1,nmu
+      do j=1,nep
+        f6(i,j,k)=f6law7(e(i),ep(j),xmu(k),lei, &
+                         e1,lmu1,u11,ep11,f11,np11,nbt11,ibt11,nr11, &
+                                 u12,ep12,f12,np12,nbt12,ibt12,nr12, &
+                         e2,lmu2,u21,ep21,f21,np21,nbt21,ibt21,nr21, &
+                                 u22,ep22,f22,np22,nbt22,ibt22,nr22)
+      enddo
+    enddo
+  enddo
+  return
+  end
+! ==============================================================================
+!
+! representation based procedures for MF4 and MF6
+!
+! ==============================================================================
+  real*8 function f4leg(e1,a1,nl1,e2,a2,nl2,ilaw,e,u)
+!
+! Descrption:
+! Calculate the angular distribution f(E,u) given by Legendre expansion in MF4
+! at (e,u)
+!
+! Input:
+! e1: incident energy for the Legendre coefficients a1[l]
+! a1(l): Legendre coefficients at e1 (a0=1, not supplied)
+! nl1: order of the Legendre expansion at e1
+! e2: incident energy for the Legendre coefficients a2[l]
+! a2(l): Legendre coeffients at e2 (a0=1, not supplied)
+! nl1: order of the Legendre expansion at e2
+! ilaw: interpolation law between e1 and e2
+! e: incident energy
+! u: outgoing cosine value
+!
+! Output:
+! f4leg: f(E,u) angular distribution at (e,u)
+!
+  implicit real*8 (a-h,o-z)
+! external arrays
+  dimension a1(*),a2(*)
+! internal arrays
+  allocatable b1(:),b2(:),a(:)
+  if (e.lt.e1.or.e.gt.e2) then
+    f4leg=0.0d0
+  else
+!   Prepare Legendre coefficient arrays
+!   Add the zero order coefficient, which is equal 1 due to normalization
+    nb1=nl1+1
+    nb2=nl2+1
+    allocate(b1(nb1),b2(nb2))
+    do l=1,nl1
+      b1(l+1)=a1(l)
+    enddo
+    b1(1)=1.0d0
+    do l=1,nl2
+      b2(l+1)=a2(l)
+    enddo
+    b2(1)=1.0d0
+    if (e.eq.e1) then
+      f4leg=yleg(u,b1,nl1)
+    elseif (e.eq.e2) then
+      f4leg=yleg(u,b2,nl2)
+    else
+!     Legendre coefficient interpolation
+      na=max(nb1,nb2)
+      allocate(a(na))
+      call list_intp(e1,b1,nb1,e2,b2,nb2,ilaw,e,a,na)
+      nla=na-1 ! Legendre expansion order at the intermediate energy e
+!     calculate f(E,u)
+      f4leg=yleg(u,a,nla)
+      deallocate(a)
+    endif
+  endif
+  deallocate(b1,b2)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function f4tab(e1,u1,f1,np1,nbt1,ibt1,nr1, &
+                        e2,u2,f2,np2,nbt2,ibt2,nr2,ilaw,e,u)
+!
+! Description:
+!
+! Descrption:
+! Get the angular distribution f(E,u) given by tabulated probabilities in MF4
+! at (e,u)
+!
+! Input:
+! e1: incident energy for tabulated data set 1
+! u1: cosine values at e1
+! f1: tabulated probability values at e1
+! np1: number of tabulated pair (u1,f1)
+! nbt1: interpolation nodes for f1(u1)
+! ibt1: interpolation laws for f1(u1)
+! nr1: number of interpolation nodes for f1(u1)
+! e2: incident energy for tabulated data set 2
+! u2: cosine values at e2
+! f2: tabulated probability values at e2
+! np2: number of tabulated pair (u2,f2)
+! nbt2: interpolation nodes for f2(u2)
+! ibt2: interpolation laws for f2(u2)
+! nr2: number of interpolation nodes for f2(u2)
+! ilaw: interpolation law between e1 and e2
+! e: incident energy
+! u: outgoing cosine value
+!
+! Output:
+! f4tab: f(E,u) angular distribution at (e,u)
+!
+  implicit real*8 (a-h,o-z)
+  dimension u1(*),f1(*),nbt1(*),ibt1(*)
+  dimension u2(*),f2(*),nbt2(*),ibt2(*)
+  if (e.lt.e1.or.e.gt.e2) then
+    f4tab=0.0d0
+  elseif (e.eq.e1) then
+    f4tab=tab1intp(u1,f1,np1,nbt1,ibt1,nr1,u)
+  elseif (e.eq.e2) then
+    f4tab=tab1intp(u2,f2,np2,nbt2,ibt2,nr2,u)
+  else
+    law=mod(ilaw,10)
+    y1=tab1intp(u1,f1,np1,nbt1,ibt1,nr1,u)
+    y2=tab1intp(u2,f2,np2,nbt2,ibt2,nr2,u)
+    f4tab=yintp(e1,y1,e2,y2,law,e)
+  endif
   return
   end
 ! ------------------------------------------------------------------------------
@@ -505,19 +780,12 @@
   return
   end
 ! ------------------------------------------------------------------------------
- subroutine mf6_get_law2(awr,awi,awp,q,lct,lang,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f6)
+  real*8 function f6law2(lang,e1,a1,nl1,e2,a2,nl2,ilaw,e,u)
 !
 ! Description:
-! Get the angular distribution f(E,u) given by MF6/LAW2 (Discrete 2-body
-! reaction) for a set of incident energies e(ne) at different cosines xmu(nmu)
-! supplied by the user. The results are returned in the f6(ie,ju) array.
+! Calculate the value of f(E,u) given by MF6/LAW2 at (e,u)
 !
 ! Input:
-! awr: relative atomic mass of the target
-! awi: relative nuclear mass of the incident particle
-! awp: relative nuclear mass of the outgoing particle
-! q: reaction q value from MF3
-! lct: reference system for angular distributions.(1=LAB, 2=CM)
 ! lang: MF6/LAW2 representation flag:
 !       lang=0, Legendre expansion
 !       lang=12,Tabulated data with p(u) linear in u (ENDF6/INT=2)
@@ -533,24 +801,20 @@
 ! nl2: for lang=0, Legendre expansion order at e2
 !      for lang>0, Number of tabulated pairs (u,p(u)) at e2
 ! ilaw: interpolation law between e1 and e2
-! e(ie): user's incident energy array
-! ne: number of user's incident energies
-! xmu: user's cosine array (in the LAB system)
-! nmu: number of user's cosines
+! e: incident energy
+! u: outgoing cosine
 !
 ! Output:
-! f6(ie,ju): f(E,u) angular distribution in the lab system at ne incident
-!            energies and for nmu cosine values
+! f6law2: f(E,u) angular distribution at (e,u)
 !
   implicit real*8 (a-h,o-z)
 ! externals
-  dimension a1(*),a2(*),e(*),xmu(*),f6(ne,*)
-! internals
+  dimension a1(*),a2(*)
   allocatable u1(:),u2(:),f1(:),f2(:)
   allocatable nbt1(:),ibt1(:),nbt2(:),ibt2(:)
   if (lang.eq.0) then
-    call mf4_get_leg(awr,awi,awp,q,lct,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f6)
-  else
+    f6law2=f4leg(e1,a1,nl1,e2,a2,nl2,ilaw,e,u)
+  elseif (lang.eq.12.or.lang.eq.14) then
     nr1=1
     nr2=1
     allocate (u1(nl1),f1(nl1),u2(nl2),f2(nl2))
@@ -574,22 +838,253 @@
     ibt1(1)=lmu
     nbt2(1)=nl2
     ibt2(1)=lmu
-    law=mod(ilaw,10)
-    call mf4_get_tab(awr,awi,awp,q,lct,e1,u1,f1,nl1,nbt1,ibt1,nr1, &
-                     e2,u2,f2,nl2,nbt2,ibt2,nr2,law,e,ne,xmu,nmu,f6)
+    f6law2=f4tab(e1,u1,f1,nl1,nbt1,ibt1,nr1,e2,u2,f2,nl2,nbt2,ibt2,nr2,ilaw,e,u)
     deallocate(u1,f1,u2,f2)
     deallocate(nbt1,ibt1,nbt2,ibt2)
+  else
+    write(*,*)' Fatal error: LAW=2/LANG=',lang,' not allowed'
+    stop
   endif
   return
   end
+! -----------------------------------------------------------------------------
+  real*8 function f6law5(e,u,za,awr,zap,awp,spi,lidp,lei,ltp, &
+                         e1,nl1,a1,e2,nl2,a2, &
+                         eni,sni,np,nbt,ibt,nr)
+!
+! Charged-particle Elastic Scattering (MF6/LAW5)
+! Reaction MT2: z+Y=z+Y q=0
+!
+!  Description:
+!  Calculate the charged-particles scattering cross section
+!  in barn/(cosine_units)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! lei: interpolation law between incident energies e1 and e2
+! ltp: flag for elastic scattering representation
+!      ltp=1 nuclear amplitude expansion
+!      ltp=2 residual cross section expansion
+!      ltp=12 nuclear + interference representation with pni linear in u
+!      ltp=14 nuclear + interference representation with log(pni) linear in u
+! e1: incident energy of the lower data panel
+! nl1: angular parameter at e1:
+!       nl1= higest Legendre order of the nuclear partial waves for LTP=1 or 2
+!       nl1= number for tabulated cosines for LTP=12 or 14
+! a1: List of parameters acccording to the representation at e1
+!       coeficients b(i), [ar(i),ai(i)] for LTP=1
+!       coeficients c(i) for LTP=2
+!       pairs [u(i),pni(i)] for LTP=12 or 14
+! e2: incident energy of the upper data panel
+! nl2: angular parameter at e2:
+!       nl2= higest Legendre order of the nuclear partial waves for LTP=1 or 2
+!       nl2= number for tabulated cosines for LTP=12 or 14
+! a2: List of parameters acccording to the representation at e2
+!       coeficients b(i), [ar(i),ai(i)] for LTP=1
+!       coeficients c(i) for LTP=2
+!       pairs [u(i),pni(i)] for LTP=12 or 14
+! eni: incident energy grid for MF3/MT2 data
+! sni: MF3/MT2 data according to the representation
+!       equal 1 for LTP=1 or LTP=2
+!       equal to nuclear+interference cross-section(sni) for LTP=12 or 14
+! np: number of incident energies
+!nbt: interpolation ranges for sni
+!ibt: interpolation law for echa range
+!nr:  number of interpolation ranges
+!
+! Output:
+! f6law5: elastic cross section in unit of barn/(cosine_unit) at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  parameter (one=1.0d0)
+  parameter (two=2.0d0)
+  parameter (pi=3.141592653589793d0)
+  parameter (umax=9.999999999999999d-1)
+! external dimension
+  dimension a1(*),a2(*),eni(*),sni(*),nbt(*),ibt(*)
+  allocatable b1(:),b2(:),b(:),c1(:),c2(:),c(:)
+  allocatable nbt1(:),ibt1(:),nbt2(:),ibt2(:)
+  if (e.lt.e1.or.e.gt.e2) then ! out of range
+    sige=0.0d0
+  else
+    if (u.ge.one) then ! check for singularities
+      u=umax
+    elseif (u.le.-one) then
+      if (lidp.eq.1) then
+        u=-umax
+      else
+        u=-one
+      endif
+    endif
+    if (ltp.eq.1) then ! LTP=1: nuclear amplitude expansion
+      if (e.eq.e1) then
+        if (lidp.eq.1) then
+          n1=nl1+1
+          nn1=n1+n1
+        else
+          n1=nl1+nl1+1
+          nn1=n1+1
+        endif
+        allocate (b1(n1),c1(nn1))
+        do i=1,n1
+          b1(i)=a1(i)
+        enddo
+        do i=1,nn1
+          c1(i)=a1(n1+i)
+        enddo
+        sige=sctnae(e1,u,za,awr,zap,awp,spi,lidp,c1,b1,nl1)
+        deallocate(b1,c1)
+      elseif (e.eq.e2) then
+        if (lidp.eq.1) then
+          n2=nl2+1
+          nn2=n2+n2
+        else
+          n2=nl2+nl2+1
+          nn2=n2+1
+        endif
+        allocate (b2(n2),c2(nn2))
+        do i=1,n2
+          b2(i)=a2(i)
+        enddo
+        do i=1,nn2
+          c2(i)=a2(n2+i)
+        enddo
+        sige=sctnae(e2,u,za,awr,zap,awp,spi,lidp,c2,b2,nl2)
+        deallocate(b2,c2)
+      else
+        ilaw=mod(lei,10)
+        if (lidp.eq.1) then
+          n1=nl1+1
+          nn1=n1+n1
+          n2=nl2+1
+          nn2=n2+n2
+        else
+          n1=nl1+nl1+1
+          nn1=n1+1
+          n2=nl2+nl2+1
+          nn2=n2+1
+        endif
+        allocate (b1(n1),b2(n2))
+        do i=1,n1
+          b1(i)=a1(i)
+        enddo
+        do i=1,n2
+          b2(i)=a2(i)
+        enddo
+        nb=max(n1,n2)
+        allocate(b(nb))
+        call list_intp(e1,b1,n1,e2,b2,n2,ilaw,e,b,nb)
+        deallocate(b1,b2)
+        allocate (c1(nn1),c2(nn2))
+        do i=1,nn1
+          c1(i)=a1(n1+i)
+        enddo
+        do i=1,nn2
+          c2(i)=a2(n2+i)
+        enddo
+        nc=max(nn1,nn2)
+        allocate (c(nc))
+        call list_intp(e1,c1,nn1,e2,c2,nn2,ilaw,e,c,nc)
+        deallocate(c1,c2)
+        nl=max(nl1,nl2)
+        sige=sctnae(e,u,za,awr,zap,awp,spi,lidp,c,b,nl)
+        deallocate(b,c)
+      endif
+    elseif (ltp.eq.2) then ! LTP=2: residual cross section expansion
+      if (e.eq.e1) then
+        sige=sctrxe(e1,u,za,awr,zap,awp,spi,lidp,a1,nl1)
+      elseif (e.eq.e2) then
+        sige=sctrxe(e1,u,za,awr,zap,awp,spi,lidp,a2,nl2)
+      else
+        ilaw=mod(lei,10)
+        nl=max(nl1,nl2)
+        n1=nl1+1
+        n2=nl2+1
+        nc=nl+1
+        allocate(c(nc))
+        call list_intp(e1,a1,n1,e2,a2,n2,ilaw,e,c,nc)
+        sige=sctrxe(e,u,za,awr,zap,awp,spi,lidp,c,nl)
+        deallocate(c)
+      endif
+    else ! LTP>2: nuclear + interference representation
+      if (lidp.eq.1) then
+        uu=abs(u)
+      else
+        uu=u
+      endif
+      if(e.eq.e1) then
+        allocate(b1(nl1),c1(nl1),nbt1(1),ibt1(1))
+        do i=1,nl1
+          ii=i+i
+          b1(i)=a1(ii-1)
+          c1(i)=a1(ii)
+        enddo
+        nr1=1
+        nbt1(1)=nl1
+        ibt1(1)=ltp-10
+        signi=tab1intp(eni,sni,np,nbt,ibt,nr,e1)
+        pni=tab1intp(b1,c1,nl1,nbt1,ibt1,nr1,uu)
+        sige=sctnpi(e1,u,za,awr,zap,awp,spi,lidp,signi,pni)
+        deallocate(b1,c1,nbt1,ibt1)
+      elseif(e.eq.e2) then
+        allocate(b2(nl2),c2(nl2),nbt2(1),ibt2(1))
+        do i=1,nl2
+          ii=i+i
+          b2(i)=a2(ii-1)
+          c2(i)=a2(ii)
+        enddo
+        nr2=1
+        nbt2(1)=nl2
+        ibt2(1)=ltp-10
+        signi=tab1intp(eni,sni,np,nbt,ibt,nr,e2)
+        pni=tab1intp(b2,c2,nl2,nbt2,ibt2,nr2,uu)
+        sige=sctnpi(e2,u,za,awr,zap,awp,spi,lidp,signi,pni)
+        deallocate(b2,c2,nbt2,ibt2)
+      else
+        ilaw=mod(lei,10)
+        allocate(b1(nl1),c1(nl1),nbt1(1),ibt1(1))
+        do i=1,nl1
+          ii=i+i
+          b1(i)=a1(ii-1)
+          c1(i)=a1(ii)
+        enddo
+        nr1=1
+        nbt1(1)=nl1
+        ibt1(1)=ltp-10
+        allocate(b2(nl2),c2(nl2),nbt2(1),ibt2(1))
+        do i=1,nl2
+          ii=i+i
+          b2(i)=a2(ii-1)
+          c2(i)=a2(ii)
+        enddo
+        nr2=1
+        nbt2(1)=nl2
+        ibt2(1)=ltp-10
+        signi=tab1intp(eni,sni,np,nbt,ibt,nr,e)
+        pni=unit_base_intp(e1,b1,c1,nl1,nbt1,ibt1,nr1, &
+                           e2,b2,c2,nl2,nbt2,ibt2,nr2,ilaw,e,uu)
+        sige=sctnpi(e,u,za,awr,zap,awp,spi,lidp,signi,pni)
+        deallocate(b1,c1,nbt1,ibt1)
+        deallocate(b2,c2,nbt2,ibt2)
+      endif
+    endif
+  endif
+  f6law5=two*pi*sige ! to convert barn/sr to barn/(unit_cosine)
+  return
+  end
 ! ------------------------------------------------------------------------------
-  subroutine mf6_get_law6(awr,awi,awp,q,apsx,npsx,e,ne,ep,nep,xmu,nmu,f6)
+  real*8 function f6law6(awr,awi,awp,q,apsx,npsx,e,ep,u)
 !
 ! Description:
-! Get the angular distribution f(E,E',u) given by MF6/LAW6 (N-Body Phase-Space
-! Distribution)  for a set of incident energies e(ne) at different cosines
-! xmu(nmu) supplied by the user.
-! The results are returned in the f6(i,j,k) array.
+! Calculate the angular distribution f(E,E',u) given by MF6/LAW6
+!(N-Body Phase-Space Distribution) at (e,ep,u)
 !
 ! Input:
 ! awr: relative atomic mass of the target
@@ -598,57 +1093,665 @@
 ! q: reaction q value from MF3
 ! apsx: total mass in neutron units of the N particles treated by LAW6
 ! npsx: number of particles distributed according to LAW6 (N)
-! e: user's incident energy array
-! ne: number of user's incident energies
-! ep: user's outgoing energy array
-! nep: number of user's outgoing energies
-! xmu: user's cosine array (in the LAB system)
-! nmu: number of user's cosines
+! e: incident energy in the LAB system
+! ep: outgoing energy in the LAB system
+! u:  outgoing cosine value in the LAB system
 !
 ! Output:
-! f6(i,j,k): f(E,E',u) angular distribution in the lab system at ne incident
-!            energies, nep outgoing energies and for nmu cosine values
+! f6law6: f(E,E',u) angular distribution in the lab system at (e,ep,u)
 !
   implicit real*8 (a-h,o-z)
   parameter(pi=3.141592653589793d0)
   parameter(c3=4.0d0/pi, c4=105.0d0/32.0d0, c5=256.0d0/(14.0d0*pi))
-  dimension e(*),ep(*),xmu(*)
-  dimension f6(ne,nep,*)
   awc=awi+awr
-  c0=awr/awc
-  c1=(apsx-awp)/apsx
-  c2=awi*awp/(awc*awc)
-  r=1.5d0*dble(npsx)-4.0d0
-  cn=0.0d0
-  do i=1,ne
-    ei=e(i)
-    ea=c0*ei+q
-    eimax=c1*ea
-    es=c2*ei
-    if (npsx.eq.3) then
-      cn=c3/(eimax*eimax)
-    elseif(npsx.eq.4) then
-      cn=c4/(eimax**3.5d0)
-    elseif(npsx.eq.5) then
-      cn=c5/(eimax**5.0d0)
+  ea=awr/awc*e+q
+  eimax=(apsx-awp)/apsx*ea
+  f6law6=0.0d0
+  if (eimax.gt.0.0d0) then
+    es=awi*awp/(awc*awc)*e
+    epc=es+ep-2.0d0*u*sqrt(es*ep)
+    if (epc.lt.eimax) then
+      if (npsx.eq.3) then
+        cn=c3/(eimax*eimax)
+      elseif(npsx.eq.4) then
+        cn=c4/(eimax**3.5d0)
+      elseif(npsx.eq.5) then
+        cn=c5/(eimax**5.0d0)
+      else
+        cn=0.0d0
+      endif
+      f6law6=cn*sqrt(ep)*(eimax-epc)**(1.5d0*dble(npsx)-4.0d0)
     endif
-    do j=1,nep
-       epj=ep(j)
-       do k=1,nmu
-         u=xmu(k)
-         epc=es+epj-2.0d0*u*sqrt(es*epj)
-         if (epc.lt.eimax) then
-           f6(i,j,k)=cn*sqrt(epj)*(eimax-epc)**r
-         else
-           f6(i,j,k)=0.0d0
-         endif
-       enddo
-    enddo
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function f6law7(e,ep,u,lei, &
+                         e1,lmu1,u11,ep11,f11,np11,nbt11,ibt11,nr11, &
+                                 u12,ep12,f12,np12,nbt12,ibt12,nr12, &
+                         e2,lmu2,u21,ep21,f21,np21,nbt21,ibt21,nr21, &
+                                 u22,ep22,f22,np22,nbt22,ibt22,nr22)
+!
+! Description:
+! Calculate the angle-energy distribution given by MF6/LAW7 at (e,ep,u)
+!
+! Input:
+!  e: incident energy in the LAB system
+! ep: outgoing energy in the LAB system
+!  u: outgoing cosine in the LAB system
+!lei: interpolation law between e1 and e2
+! e1: incident energy of the lower energy panel
+!lmu1: interpolation law between u11 and u12 at e1
+!u11: outgoing cosine value of the lower cosine panel at e1
+!ep11: outgoing energies at 2D-panel (u11,e1)
+!f11:  outgoing energy distribution at 2D-panel (u11,e1)
+!np11: number of outgoing energies at 2D-panel (u11,e1)
+!nbt11: interpolation ranges for f11
+!ibt11: interpolation law for f11
+!nr11:  number of interpolation ranges for f11
+!u12: outgoing cosine value of the upper cosine panel at e1
+!ep12: outgoing energies at 2D-panel (u12,e1)
+!f12:  outgoing energy distribution at 2D-panel (u12,e1)
+!np12: number of outgoing energies at 2D-panel (u21,e1)
+!nbt12: interpolation ranges for f12
+!ibt12: interpolation law for f12
+!nr12:  number of interpolation ranges for f12
+! e2: incident energy of the upper energy panel
+!lmu2: interpolation law between u21 and u22 at e2
+!u21: outgoing cosine value of the lower cosine panel at e2
+!ep21: outgoing energies at 2D-panel (u12,e2)
+!f21:  outgoing energy distribution at 2D-panel (u12,e2)
+!np21: number of outgoing energies at 2D-panel (u12,e2)
+!nbt21: interpolation ranges for f21
+!ibt21: interpolation law for f21
+!nr21:  number of interpolation ranges for f21
+!u22: outgoing cosine value of the upper cosine panel at e2
+!ep22: outgoing energies at 2D-panel (u12,e2)
+!f22:  outgoing energy distribution at 2D-panel (u22,e2)
+!np22: number of outgoing energies at 2D-panel (u22,e2)
+!nbt22: interpolation ranges for f22
+!ibt22: interpolation law for f22
+!nr22:  number of interpolation ranges for f22
+!
+!Output:
+! f6law7: angle-energy distribution given by MF6/LAW7 at (e,ep,u)
+!
+  implicit real*8 (a-h,o-z)
+  dimension ep11(*),f11(*),nbt11(*),ibt11(*),ep12(*),f12(*),nbt12(*),ibt12(*)
+  dimension ep21(*),f21(*),nbt21(*),ibt21(*),ep22(*),f22(*),nbt22(*),ibt22(*)
+  if (e.lt.e1.or.e.gt.e2) then
+     f6law7=0.0d0
+  else
+    if (u.lt.u11.or.u.gt.u12) then
+      f1=0.0d0
+    else
+      f1=unit_base_intp(u11,ep11,f11,np11,nbt11,ibt11,nr11, &
+                        u12,ep12,f12,np12,nbt12,ibt12,nr12,lmu1,u,ep)
+    endif
+    if (u.lt.u21.or.u.gt.u22) then
+      f2=0.0d0
+    else
+      f2=unit_base_intp(u21,ep21,f21,np21,nbt21,ibt21,nr21, &
+                        u22,ep22,f22,np22,nbt22,ibt22,nr22,lmu2,u,ep)
+    endif
+    law=mod(lei,10)
+    f6law7=yintp(e1,f1,e2,f2,law,e)
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+! basic procedures for law formalism
+! ------------------------------------------------------------------------------
+  real*8 function yleg(x,a,na)
+!
+! Description:
+! calculate y(x) given by a legendre expansion of order na
+!
+! Input:
+!  x: independent variable value
+!  a: Legendre coefficients (na+1 coefficients)
+! na: Legendre expansion order
+!
+! Output:
+!  yleg: function value at x
+!
+  implicit real*8 (a-h,o-z)
+  parameter (nlmax=65)
+  dimension a(*),p(nlmax)
+  call legndr(x,p,na)
+  yleg=0.0d0
+  n=na+1
+  do l=1,n
+    yleg=yleg+(dble(l)-0.5d0)*a(l)*p(l)
   enddo
   return
   end
 ! ------------------------------------------------------------------------------
-!     auxiliary functions
+  subroutine legndr(x,p,nl)
+!
+! Description
+!   generate legendre polynomials at x by recursion.
+!
+! Input:
+!  x: independent variable value
+! nl: Legendre expansion order
+!
+! Output:
+!  p(l): Legendre polynomials at x
+!        p(1)=P0(x), p(2)=P1(x), ... p(nl+1)=Pnl(x)
+!        p dimension: nl+1
+!
+  implicit real*8 (a-h,o-z)
+  dimension p(*)
+  p(1)=1.0d0
+  p(2)=x
+  if (nl.gt.1) then
+    m1=nl-1
+    do i=1,m1
+      g=x*p(i+1)
+      h=g-p(i)
+      p(i+2)=h+g-h/(i+1)
+    enddo
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function ykalbach(zai,zap,zat,e,ep,u,b,na)
+!
+! Description:
+! Compute the kalbach-mann angular distribution at outgoing cosine u
+!
+! f(u)=a*f0*(cosh(a*u)+r*sinh(a*u))/(2*sinh(a)
+!
+! where f0=f0(e,ep) is the total emission probability
+!        r=r(e,ep)  is the pre-compound fraction
+!        a=a(e,ep)  is the slope, a simple parameterized function
+!
+! The incident energy e should be in the LAB system, and the outgoing energy ep
+! and the outgoing cosine u should be given in the CM system
+!
+! Input:
+! zai: ZA number of the incident particle (ZA=1000*Z+A)
+! zap: ZA number of the outgoing particle
+! zat: ZA number of the target
+! e: incident energy in the LAB system [eV]
+! ep: outgoing energy in the CM system [eV]
+! u: outgoing cosine value in the CM system
+! b: array of Kalbach-Mann parameters (dimension b(na+1)):
+!      b(1)=f0
+!      b(2)=r, if na=1 or na=2
+!      b(3)=a, if na=2
+! na: number of kalbach-mann parameters na=[0,1,2]
+!
+! Output:
+!  ykalbach: f(e,ep,u)=a*f0*(cosh(a*u)+r*sinh(a*u))/(2*sinh(a)
+!
+  implicit real*8 (a-h,o-z)
+  parameter (zero=0.0d0, amin=1.0d-38)
+  dimension b(*)
+  f0=b(1)
+  if (na.eq.1) then
+    r=b(2)
+    a=bachaa(zai,zap,zat,e,ep)
+  elseif (na.eq.2) then
+    r=b(2)
+    a=b(3)
+  else
+    r=zero
+    a=zero
+  endif
+  if (abs(a).gt.amin) then
+    au=a*u
+    ykalbach=0.5d0*a*f0*(cosh(au)+r*sinh(au))/sinh(a)
+  else
+    ykalbach=0.5d0*f0
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+   real*8 function bachaa(zai,zap,zat,ee,epe)
+!
+!  Description:
+!  compute the parameter a=a(e,ep) for Kalbach-Mann systematics:
+!    f(u)=a*f0*(cosh(a*u)+r*sinh(a*u))/(2*sinh(a))
+!    (adapted from NJOY2016 by D. Lopez Aldama)
+!
+!  Input:
+!  zai:  incident particle ZA number
+!  zap:  outgoing particle ZA number
+!  zat:  target ZA number
+!  ee:   incident energy of particle zai [eV]
+!  epe:  outgoing energy of particle zap [eV]
+!
+!  Output:
+!  bachaa: Kalbach-Mann parameter a=a(ee,epe)
+!
+   implicit real*8 (a-h,o-z)
+   real*8 nc,nb
+   parameter(third=.333333333d0, twoth=.666666667d0, fourth=1.33333333d0)
+   parameter(c1=15.68d0, c2=-28.07d0, c3=-18.56d0)
+   parameter(c4=33.22d0, c5=-0.717d0, c6=1.211d0)
+   parameter(s2=2.22d0, s3=8.48d0, s4=7.72d0, s5=28.3d0)
+   parameter(b1=0.04d0, b2=1.8d-6, b3=6.7d-7)
+   parameter(d1=9.3d0)
+   parameter(ea1=41.d0, ea2=130.d0)
+   parameter(emc2=939.56542052539d0, emev=1.0d6)
+   parameter(eps=1.0d-3)
+!
+   iza1i=int(zai+eps)
+   iza2=int(zap+eps)
+   izat=int(zat+eps)
+   e=ee/emev
+   ep=epe/emev
+   iza1=iza1i
+   if (iza1i.eq.0) iza1=1
+   iza=izat
+   if (iza.eq.6000) iza=6012
+   if (iza.eq.12000) iza=12024
+   if (iza.eq.14000) iza=14028
+   if (iza.eq.16000) iza=16032
+   if (iza.eq.17000) iza=17035
+   if (iza.eq.19000) iza=19039
+   if (iza.eq.20000) iza=20040
+   if (iza.eq.22000) iza=22048
+   if (iza.eq.23000) iza=23051
+   if (iza.eq.24000) iza=24052
+   if (iza.eq.26000) iza=26056
+   if (iza.eq.28000) iza=28058
+   if (iza.eq.29000) iza=29063
+   if (iza.eq.31000) iza=31069
+   if (iza.eq.40000) iza=40090
+   if (iza.eq.42000) iza=42096
+   if (iza.eq.48000) iza=48112
+   if (iza.eq.49000) iza=49115
+   if (iza.eq.50000) iza=50120
+   if (iza.eq.63000) iza=63151
+   if (iza.eq.72000) iza=72178
+   if (iza.eq.74000) iza=74184
+   if (iza.eq.82000) iza=82208
+   aa=mod(iza,1000)
+   if (aa.eq.0.) then
+      write(*,*)' Fatal error in bachaa: Dominant isotope not known for ',iza
+      stop
+   endif
+   za=int(iza/1000)
+   ac=aa+mod(iza1,1000)
+   zc=za+int(iza1/1000)
+   ab=ac-mod(iza2,1000)
+   zb=zc-int(iza2/1000)
+   na=nint(aa-za)
+   nb=nint(ab-zb)
+   nc=nint(ac-zc)
+   sa=c1*(ac-aa)+c2*((nc-zc)**2/ac-(na-za)**2/aa) &
+     +c3*(ac**twoth-aa**twoth)+c4*((nc-zc)**2/ac**fourth-(na-za)**2/aa**fourth)&
+     +c5*(zc**2/ac**third-za**2/aa**third)+c6*(zc**2/ac-za**2/aa)
+   if (iza1.eq.1002) sa=sa-s2
+   if (iza1.eq.1003) sa=sa-s3
+   if (iza1.eq.2003) sa=sa-s4
+   if (iza1.eq.2004) sa=sa-s5
+   sb=c1*(ac-ab)+c2*((nc-zc)**2/ac-(nb-zb)**2/ab) &
+     +c3*(ac**twoth-ab**twoth)+c4*((nc-zc)**2/ac**fourth-(nb-zb)**2/ab**fourth)&
+     +c5*(zc**2/ac**third-zb**2/ab**third)+c6*(zc**2/ac-zb**2/ab)
+   if (iza2.eq.1002) sb=sb-s2
+   if (iza2.eq.1003) sb=sb-s3
+   if (iza2.eq.2003) sb=sb-s4
+   if (iza2.eq.2004) sb=sb-s5
+   ecm=aa*e/ac
+   ea=ecm+sa
+   eb=ep*ac/ab+sb
+   x1=eb
+   if (ea.gt.ea2) x1=ea2*eb/ea
+   x3=eb
+   if (ea.gt.ea1) x3=ea1*eb/ea
+   fa=1
+   if (iza1.eq.2004) fa=0
+   fb=1
+   if (iza2.eq.1) fb=fb/2
+   if (iza2.eq.2004) fb=2
+   bb=b1*x1+b2*x1**3+b3*fa*fb*x3**4
+   if (iza1i.eq.0) then
+      fact=d1
+      if (ep.ne.0.) fact=fact/sqrt(ep)
+      test=1
+      if (fact.lt.test) fact=test
+      test=4
+      if (fact.gt.test) fact=test
+      bb=bb*sqrt(e/(2*emc2))*fact
+   endif
+   bachaa=bb
+   return
+   end
+! ------------------------------------------------------------------------------
+  real*8 function sctnae(e,u,za,awr,zap,awp,spi,lidp,a,b,nl)
+!
+! Description:
+! Compute elastic cross section for the nuclear amplitude representation (LTP=1)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! a: list of coefficients (ar(i),ai(i)) for the interference expansion
+! b: list of coefficient b(i) for the nuclear cross section expansion
+! nl: higest Legendre order of the nuclear partial waves
+!
+! Output:
+! sctnae: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(zero=0.0d0)
+  parameter(half=0.5d0)
+  parameter(one=1.0d0)
+  parameter(two=2.0d0)
+  complex(kind(1.0d0))ciu,sum1,sum2,csl,arg1,arg2
+! external dimension
+  dimension a(*),b(*)
+! internal dimension
+  allocatable p(:)
+  nb=2*nl
+  allocate(p(nb+1))
+  call legndr(u,p,nb)
+  ciu=dcmplx(zero,one)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  if (lidp.eq.1) then ! identical particles
+    sigb=half*b(1)
+    do l=1,nl
+      ll=l+l
+      sigb=sigb+(dble(ll)+half)*b(l+1)*p(ll+1)
+    enddo
+    sum1=half*dcmplx(a(1),a(2))
+    sum2=sum1
+    sgn=-one
+    do l=1,nl
+      ll=l+l+1
+      csl=(dble(l)+half)*p(l+1)*dcmplx(a(ll),a(ll+1))
+      sum1=sum1+csl
+      sum2=sum2+sgn*csl
+      sgn=-sgn
+    enddo
+    arg1=eta*log((one-u)*half)*ciu
+    arg2=eta*log((one+u)*half)*ciu
+    sigi=-two*eta/(one-u*u)*dble((one+u)*exp(arg1)*sum1+(one-u)*exp(arg2)*sum2)
+  else ! distinguishable particles
+    sigb=half*b(1)
+    do l=1,nb
+      l1=l+1
+      sigb=sigb+(dble(l)+half)*b(l1)*p(l1)
+    enddo
+    sum1=half*dcmplx(a(1),a(2))
+    do l=1,nl
+      ll=l+l+1
+      sum1=sum1+(dble(l)+half)*p(l+1)*dcmplx(a(ll),a(ll+1))
+    enddo
+    arg1=eta*log((one-u)*half)*ciu
+    sigi=-two*eta/(one-u)*dble(exp(arg1)*sum1)
+  endif
+  sctnae=sigc+sigi+sigb ! Coulomb+interference+nuclear
+  deallocate(p)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function sctrxe(e,u,za,awr,zap,awp,spi,lidp,c,nl)
+!
+! Description:
+! Compute elastic cross section for the residual cross section expansion
+! representation (LTP=2)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! c: list of coefficients c(i) for the residual cross section expansion
+! nl: higest Legendre order of the nuclear partial waves
+!
+! Output:
+! sctrxe: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(half=0.5d0)
+  parameter(one=1.0d0)
+! external dimension
+  dimension c(*)
+! internal dimension
+  allocatable p(:)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  if (lidp.eq.1) then ! identical particles
+    nc=2*nl
+    allocate(p(nc+1))
+    call legndr(u,p,nc)
+    sigr=half*c(1)
+    do l=1,nl
+      ll=l+l
+      sigr=sigr+(dble(ll)+half)*c(l+1)*p(ll+1)
+    enddo
+    sigr=sigr/(one-u*u)
+  else ! distinguishable particles
+    allocate(p(nl+1))
+    call legndr(u,p,nl)
+    sigr=half*c(1)
+    do l=1,nl
+      l1=l+1
+      sigr=sigr+(dble(l)+half)*c(l1)*p(l1)
+    enddo
+    sigr=sigr/(one-u)
+  endif
+  sctrxe=sigc+sigr ! Coulomb + (residual contribution)
+  deallocate(p)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function sctnpi(e,u,za,awr,zap,awp,spi,lidp,sni,pni)
+!
+! Description:
+! Compute elastic cross section for the nuclear + interference
+! representation (LTP=12 or LTP=14)
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+! sni: nuclear + interference cross section at e from MF3/MT2 data
+! pni: nuclear + interference distribution at (e,u) from MF6/MT2 data
+!
+! Output:
+! sctnpi: elastic cross section in units of barn/sr at (e,u)
+!
+  implicit real*8 (a-h, o-z)
+  sigc=coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+  sctnpi=sigc+sni*pni ! Coulomb + (nuclear+interference contribution)
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function coul(e,u,za,awr,zap,awp,spi,lidp,eta)
+!
+! Description:
+! Compute the Coulomb component of the elastic cross section
+!
+! Input:
+! e: energy of incident charged particle in the LAB system [eV]
+! u: cosine of the scattering angle in the CM system
+! za: ZA number of the target
+! awr: relative atomic mass of the target
+! zap: ZA number of the charged-particle
+! awp: relative nuclear mass of the charged-particle
+! spi: spin of the charged particle (spi=0, 1/2, 1, ...)
+! lidp: flag for identical particles (lidp=1 for identical particles)
+!
+! Output:
+! coul: Coulomb component in units of barn/sr at (e,u)
+! eta: dimensionless Coulomb parameter (needed for LTP=1)
+!
+  implicit real*8 (a-h, o-z)
+  parameter(amn=1.00866491595d0)          ! neutron mass in amu
+  parameter(ev=1.602176634E-12)           ! erg/eV
+  parameter(amu=9.3149410242d+8)          ! atomic mas unit in ev/amu
+  parameter(hbar=6.582119569d-16)         ! reduced Planck's constant in eV*s
+  parameter(clight=2.99792458d+10)        ! speed of light in vacuum  in cm/s
+  parameter(barn=1.0d-24)                 ! 1 barn=1.0e-24 cm**2)
+  parameter(alpha=1.0d-16*ev*clight/hbar) ! fine-structure constant
+  parameter(zero=0.0d0)
+  parameter(one=1.0d0)
+  parameter(two=2.0d0)
+  parameter(c1=two*amu/(hbar*hbar*clight*clight)*barn)
+  parameter(c2=alpha*alpha*amu/two)
+  at=awr*amn
+  ap=awp*amn
+  izt=nint(za)
+  izp=nint(zap)
+  zt=int(izt/1000)
+  zp=int(izp/1000)
+  eta=zp*zt*sqrt(c2*ap/e)
+  wk=at*sqrt(c1*ap*e)/(ap+at)
+  if (lidp.eq.1) then ! identical particles
+    u2=u*u
+    r2s=two*spi
+    i2s=nint(r2s)
+    coul=two*eta*eta/(wk*wk*(one-u2))*((one+u2)/(one-u2) + &
+         ((-1)**i2s)/(r2s+one)*cos(eta*log((one+u)/(one-u))))
+  else ! distinguishable particles
+    coul=eta*eta/(wk*wk*(one-u)*(one-u))
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+! procedures for LAB to CM conversion
+! ------------------------------------------------------------------------------
+  subroutine mf4lab2cm(lct,awr,awi,awp,q,e,u,w,dinv)
+!
+! Description:
+! Convert the cosine value given in the LAB system (u) to the CM system (w)
+! and compute the CM to LAB Jacobian (dinv), if the evaluated angle distribution
+! is given in the CM system (lct=2).If lct is not equal 2, no transformation is
+! applied (w=u and dinv=1).
+!
+! Input:
+! lct: original reference system for angular distributions.(1=LAB, 2=CM)
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value
+! e: incident energy
+! u: input cosine value (u should be given in the LAB system if lct=1 or 2)
+!
+! Output:
+! w: cosine value in the reference system of the original evaluated data
+! dinv: Jacobian from CM to LAB for LCT=2, 1 otherwise
+!
+  implicit real*8 (a-h,o-z)
+  parameter (zero=0.0d0)
+  parameter (eps=1.0d-12)
+  parameter (one=1.0d0)
+  parameter (emin=1.0d-5)
+  if (lct.eq.2.and.(awp*awi).ne.zero) then
+!   distribution is given in the CM system for massive particles
+!   convert cosine value from LAB to CM using non relativistic
+!   two-body kinematic formulae
+    ee=(awr+awi)/awr*q
+    ethr=max(-ee,emin)
+    rth=max(ee/e,-one)
+    r2=awr*(awr+awi-awp)/(awi*awp)*(one+rth)
+    r=sqrt(r2)
+    if (r.le.one) then
+      umin=cos(asin(r))
+    else
+      umin=-one
+    endif
+    if (e.ge.ethr.and.u.ge.umin) then
+      u2=u*u
+      w=(one-u2-r2*u2)/(r*(u2-one-u*sqrt(u2+r2-one)))
+      if (w.gt.one) then
+        w=one
+      elseif (w.lt.-one) then
+        w=-one
+      endif
+      rpw=abs(r+w)
+      if (r.le.one.and.w.lt.zero.and.rpw.lt.eps) then
+         rpw=eps
+         if (-w.lt.r) then
+           w=-r-eps
+         else
+           w=-r+eps
+         endif
+      endif
+      xw=1.0d0+2.0d0*r*w+r2
+      dinv=xw*sqrt(xw)/(r2*rpw)
+    else
+!     forbidden value of e or u or both
+!     assigning a set of values to point out the issue
+      u=one
+      w=u
+      dinv=zero
+    endif
+  else
+!   distribution is in the LAB system or no conversion is required
+!   no transformation is applied. the Jacobian dinv is set equal 1
+    w=u
+    dinv=one
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+  subroutine mf6lab2cm(awr,awi,awp,lct,e,ep,u,tp,w,dinv)
+!
+! Description:
+!  Make the reference system transformation if required
+!
+! Input:
+!  awr: relative atomic mass of the target
+!  awi: relative nuclear mass of the incident particle
+!  awp: relative nuclear mass of the required outgoing particle in MF6
+!  lct: reference system for angular distribution
+!  e:   inciden energy in the LAB system
+!  ep:  secondary energy in the LAB system
+!  u:   cosine value in the LAB system
+!
+! Output:
+!  tp: secondary energy in the reference system of the evaluation data
+!  w:  cosine value in the reference system of the evaluation data
+!  dinv: Jacobian determinant from evaluated data to user data
+!  tp=ep, w=u and dinv=1.0 if input data are in the LAB system
+!
+  implicit real*8 (a-h, o-z)
+  parameter (d2min=1.0d-38, cmin=1.0d-19)
+  if (lct.eq.2.or.(lct.eq.3.and.awp.le.4.0d0)) then
+    c=sqrt(awi*awp*e/ep)/(awi+awr)
+    d2=1.0d0+c*c-2.0d0*c*u
+    if (d2.lt.d2min) then
+      d2=d2min
+      c=u-cmin
+    endif
+    tp=ep*d2
+    dinv=1/sqrt(d2)
+    w=dinv*(u-c)
+    if (w.gt.1.0d0) then
+      w=1.0d0
+    elseif (w.lt.-1.0d0) then
+      w=-1.0d0
+    endif
+  else
+    tp=ep
+    w=u
+    dinv=1.0d0
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+! auxiliary functions
 ! ------------------------------------------------------------------------------
   function ihigh(x0,x,i0,n)
 !
@@ -871,7 +1974,7 @@
   return
   end
 ! ------------------------------------------------------------------------------
-  function unit_base_intp(y1,x1,f1,np1,nbt1,ibt1,nr1, &
+  real*8 function unit_base_intp(y1,x1,f1,np1,nbt1,ibt1,nr1, &
                           y2,x2,f2,np2,nbt2,ibt2,nr2,inty,y0,x0)
 ! Description:
 ! Return the value of the function at (y0,x0) using unit-base interpolation
@@ -926,317 +2029,4 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
-  subroutine mf4lab2cm(lct,awr,awi,awp,q,e,u,w,dinv)
-!
-! Description:
-! Convert the cosine value given in the LAB system (u) to the CM system (w)
-! and compute the CM to LAB Jacobian (dinv), if the evaluated angle distribution
-! is given in the CM system (lct=2).If lct is not equal 2, no transformation is
-! applied (w=u and dinv=1).
-!
-! Input:
-! lct: original reference system for angular distributions.(1=LAB, 2=CM)
-! awr: relative atomic mass of the target
-! awi: relative nuclear mass of the incident particle
-! awp: relative nuclear mass of the outgoing particle
-! q: reaction q value
-! e: incident energy
-! u: input cosine value (u should be given in the LAB system if lct=1 or 2)
-!
-! Output:
-! w: cosine value in the reference system of the original evaluated data
-! dinv: Jacobian from CM to LAB for LCT=2, 1 otherwise
-!
-  implicit real*8 (a-h,o-z)
-  parameter (rthmin=-0.999999d0)
-  if (lct.eq.2.and.awp.ne.0.0d0) then
-!   distribution is in the CM system
-!   convert input cosine from LAB to CM using two-body kinematic formulae
-    rth=(awr+awi)/awr*q/e
-    if (rth.lt.rthmin) rth=rthmin
-    r2=awr*(awr+awi-awp)/(awi*awp)*(1.0d0+rth)
-    r=sqrt(r2)
-    u2=u*u
-    w=(1.0d0-u2-r2*u2)/(r*(u2-1.0d0-u*sqrt(u2+r2-1.0d0)))
-    if (w.gt.1.0d0) then
-      w=1.0d0
-    elseif (w.lt.-1.0d0) then
-      w=-1.0d0
-    endif
-    xw=1.0d0+2.0d0*r*w+r2
-    dinv=xw*sqrt(xw)/(r2*(r+w))
-  else
-!   distribution is in the LAB system or no conversion is required
-!   no transformation is applied. the Jacobian dinv is set equal 1
-    w=u
-    dinv=1.0d0
-  endif
-  return
-  end
-! ------------------------------------------------------------------------------
-  subroutine mf6lab2cm(awr,awi,awp,lct,e,ep,u,tp,w,dinv)
-!
-! Description:
-!  Make the reference system transformation if required
-!
-! Input:
-!  awr: relative atomic mass of the target
-!  awi: relative nuclear mass of the incident particle
-!  awp: relative nuclear mass of the required outgoing particle in MF6
-!  lct: reference system for angular distribution
-!  e:   inciden energy in the LAB system
-!  ep:  secondary energy in the LAB system
-!  u:   cosine value in the LAB system
-!
-! Output:
-!  tp: secondary energy in the reference system of the evaluation data
-!  w:  cosine value in the reference system of the evaluation data
-!  dinv: Jacobian determinant from evaluated data to user data
-!  tp=ep, w=u and dinv=1.0 if input data are in the LAB system
-!
-  implicit real*8 (a-h, o-z)
-  parameter (d2min=1.0d-38, cmin=1.0d-19)
-  if (lct.eq.2.or.(lct.eq.3.and.awp.le.4.0d0)) then
-    c=sqrt(awi*awp*e/ep)/(awi+awr)
-    d2=1.0d0+c*c-2.0d0*c*u
-    if (d2.lt.d2min) then
-      d2=d2min
-      c=u-cmin
-    endif
-    tp=ep*d2
-    dinv=1/sqrt(d2)
-    w=dinv*(u-c)
-    if (w.gt.1.0d0) then
-      w=1.0d0
-    elseif (w.lt.-1.0d0) then
-      w=-1.0d0
-    endif
-  else
-    tp=ep
-    w=u
-    dinv=1.0d0
-  endif
-  return
-  end
-! ------------------------------------------------------------------------------
-  real*8 function yleg(x,a,na)
-!
-! Description:
-! calculate y(x) given by a legendre expansion of order na
-!
-! Input:
-!  x: independent variable value
-!  a: Legendre coefficients (na+1 coefficients)
-! na: Legendre expansion order
-!
-! Output:
-!  yleg: function value at x
-!
-  implicit real*8 (a-h,o-z)
-  parameter (nlmax=65)
-  dimension a(*),p(nlmax)
-  call legndr(x,p,na)
-  yleg=0.0d0
-  n=na+1
-  do l=1,n
-    yleg=yleg+(dble(l)-0.5d0)*a(l)*p(l)
-  enddo
-  return
-  end
-! ------------------------------------------------------------------------------
-  subroutine legndr(x,p,nl)
-!
-! Description
-!   generate legendre polynomials at x by recursion.
-!
-! Input:
-!  x: independent variable value
-! nl: Legendre expansion order
-!
-! Output:
-!  p(l): Legendre polynomials at x
-!        p(1)=P0(x), p(2)=P1(x), ... p(nl+1)=Pnl(x)
-!        p dimension: nl+1
-!
-  implicit real*8 (a-h,o-z)
-  dimension p(*)
-  p(1)=1.0d0
-  p(2)=x
-  if (nl.gt.1) then
-    m1=nl-1
-    do i=1,m1
-      g=x*p(i+1)
-      h=g-p(i)
-      p(i+2)=h+g-h/(i+1)
-    enddo
-  endif
-  return
-  end
-! ------------------------------------------------------------------------------
-  real*8 function ykalbach(zai,zap,zat,e,ep,u,b,na)
-!
-! Description:
-! Compute the kalbach-mann angular distribution at outgoing cosine u
-!
-! f(u)=a*f0*(cosh(a*u)+r*sinh(a*u))/(2*sinh(a)
-!
-! where f0=f0(e,ep) is the total emission probability
-!        r=r(e,ep)  is the pre-compound fraction
-!        a=a(e,ep)  is the slope, a simple parameterized function
-!
-! The incident energy e should be in the LAB system, and the outgoing energy ep
-! and the outgoing cosine u should be given in the CM system
-!
-! Input:
-! zai: ZA number of the incident particle (ZA=1000*Z+A)
-! zap: ZA number of the outgoing particle
-! zat: ZA number of the target
-! e: incident energy in the LAB system [eV]
-! ep: outgoing energy in the CM system [eV]
-! u: outgoing cosine value in the CM system
-! b: array of Kalbach-Mann parameters (dimension b(na+1)):
-!      b(1)=f0
-!      b(2)=r, if na=1 or na=2
-!      b(3)=a, if na=2
-! na: number of kalbach-mann parameters na=[0,1,2]
-!
-! Output:
-!  ykalbach: f(e,ep,u)=a*f0*(cosh(a*u)+r*sinh(a*u))/(2*sinh(a)
-!
-  implicit real*8 (a-h,o-z)
-  parameter (zero=0.0d0, amin=1.0d-38)
-  dimension b(*)
-  f0=b(1)
-  if (na.eq.1) then
-    r=b(2)
-    a=bachaa(zai,zap,zat,e,ep)
-  elseif (na.eq.2) then
-    r=b(2)
-    a=b(3)
-  else
-    r=zero
-    a=zero
-  endif
-  if (abs(a).gt.amin) then
-    au=a*u
-    ykalbach=0.5d0*a*f0*(cosh(au)+r*sinh(au))/sinh(a)
-  else
-    ykalbach=0.5d0*f0
-  endif
-  return
-  end
-! ------------------------------------------------------------------------------
-   real*8 function bachaa(zai,zap,zat,ee,epe)
-!
-!  Description:
-!  compute the parameter a=a(e,ep) for Kalbach-Mann systematics:
-!    f(u)=a*f0*(cosh(a*u)+r*sinh(a*u))/(2*sinh(a))
-!    (adapted from NJOY2016 by D. Lopez Aldama)
-!
-!  Input:
-!  zai:  incident particle ZA number
-!  zap:  outgoing particle ZA number
-!  zat:  target ZA number
-!  ee:   incident energy of particle zai [eV]
-!  epe:  outgoing energy of particle zap [eV]
-!
-!  Output:
-!  bachaa: Kalbach-Mann parameter a=a(ee,epe)
-!
-   implicit real*8 (a-h,o-z)
-   real*8 nc,nb
-   parameter(third=.333333333d0, twoth=.666666667d0, fourth=1.33333333d0)
-   parameter(c1=15.68d0, c2=-28.07d0, c3=-18.56d0)
-   parameter(c4=33.22d0, c5=-0.717d0, c6=1.211d0)
-   parameter(s2=2.22d0, s3=8.48d0, s4=7.72d0, s5=28.3d0)
-   parameter(b1=0.04d0, b2=1.8d-6, b3=6.7d-7)
-   parameter(d1=9.3d0)
-   parameter(ea1=41.d0, ea2=130.d0)
-   parameter(emc2=939.56542052539d0, emev=1.0d6)
-   parameter(eps=1.0d-3)
-!
-   iza1i=int(zai+eps)
-   iza2=int(zap+eps)
-   izat=int(zat+eps)
-   e=ee/emev
-   ep=epe/emev
-   iza1=iza1i
-   if (iza1i.eq.0) iza1=1
-   iza=izat
-   if (iza.eq.6000) iza=6012
-   if (iza.eq.12000) iza=12024
-   if (iza.eq.14000) iza=14028
-   if (iza.eq.16000) iza=16032
-   if (iza.eq.17000) iza=17035
-   if (iza.eq.19000) iza=19039
-   if (iza.eq.20000) iza=20040
-   if (iza.eq.22000) iza=22048
-   if (iza.eq.23000) iza=23051
-   if (iza.eq.24000) iza=24052
-   if (iza.eq.26000) iza=26056
-   if (iza.eq.28000) iza=28058
-   if (iza.eq.29000) iza=29063
-   if (iza.eq.31000) iza=31069
-   if (iza.eq.40000) iza=40090
-   if (iza.eq.42000) iza=42096
-   if (iza.eq.48000) iza=48112
-   if (iza.eq.49000) iza=49115
-   if (iza.eq.50000) iza=50120
-   if (iza.eq.63000) iza=63151
-   if (iza.eq.72000) iza=72178
-   if (iza.eq.74000) iza=74184
-   if (iza.eq.82000) iza=82208
-   aa=mod(iza,1000)
-   if (aa.eq.0.) then
-      write(*,*)' Fatal error in bachaa: Dominant isotope not known for ',iza
-      stop
-   endif
-   za=int(iza/1000)
-   ac=aa+mod(iza1,1000)
-   zc=za+int(iza1/1000)
-   ab=ac-mod(iza2,1000)
-   zb=zc-int(iza2/1000)
-   na=nint(aa-za)
-   nb=nint(ab-zb)
-   nc=nint(ac-zc)
-   sa=c1*(ac-aa)+c2*((nc-zc)**2/ac-(na-za)**2/aa) &
-     +c3*(ac**twoth-aa**twoth)+c4*((nc-zc)**2/ac**fourth-(na-za)**2/aa**fourth)&
-     +c5*(zc**2/ac**third-za**2/aa**third)+c6*(zc**2/ac-za**2/aa)
-   if (iza1.eq.1002) sa=sa-s2
-   if (iza1.eq.1003) sa=sa-s3
-   if (iza1.eq.2003) sa=sa-s4
-   if (iza1.eq.2004) sa=sa-s5
-   sb=c1*(ac-ab)+c2*((nc-zc)**2/ac-(nb-zb)**2/ab) &
-     +c3*(ac**twoth-ab**twoth)+c4*((nc-zc)**2/ac**fourth-(nb-zb)**2/ab**fourth)&
-     +c5*(zc**2/ac**third-zb**2/ab**third)+c6*(zc**2/ac-zb**2/ab)
-   if (iza2.eq.1002) sb=sb-s2
-   if (iza2.eq.1003) sb=sb-s3
-   if (iza2.eq.2003) sb=sb-s4
-   if (iza2.eq.2004) sb=sb-s5
-   ecm=aa*e/ac
-   ea=ecm+sa
-   eb=ep*ac/ab+sb
-   x1=eb
-   if (ea.gt.ea2) x1=ea2*eb/ea
-   x3=eb
-   if (ea.gt.ea1) x3=ea1*eb/ea
-   fa=1
-   if (iza1.eq.2004) fa=0
-   fb=1
-   if (iza2.eq.1) fb=fb/2
-   if (iza2.eq.2004) fb=2
-   bb=b1*x1+b2*x1**3+b3*fa*fb*x3**4
-   if (iza1i.eq.0) then
-      fact=d1
-      if (ep.ne.0.) fact=fact/sqrt(ep)
-      test=1
-      if (fact.lt.test) fact=test
-      test=4
-      if (fact.gt.test) fact=test
-      bb=bb*sqrt(e/(2*emc2))*fact
-   endif
-   bachaa=bb
-   return
-   end
 ! -----------------------------------------------------------------------------
