@@ -1,4 +1,7 @@
-from .physical_constants import PARTICLE_MASSES_AMU
+from .physical_constants import (
+    PARTICLE_MASSES_AMU,
+    PARTICLE_ZAP,
+)
 from .reactions import (
     is_binary_reaction,
     get_ejectiles,
@@ -11,15 +14,7 @@ def get_ZA(endf_dict):
 
 def get_ZAI(endf_dict):
     proj = get_projectile(endf_dict)
-    zai = {
-        'g': 0*1000. + 0,
-        'n': 0*1000. + 1,
-        'p': 1*1000. + 1,
-        'd': 1*1000. + 2,
-        't': 1*1000. + 3,
-        'h': 2*1000. + 3,
-        'a': 2*1000. + 4,
-    }[proj]
+    zai = PARTICLE_ZAP[proj]
     return zai
 
 
