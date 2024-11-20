@@ -57,6 +57,20 @@ def get_AWP(endf_dict, mt):
     return awp
 
 
+def get_ZAP(endf_dict, mt):
+    ejectile = get_ejectile(endf_dict, mt)
+    zap = PARTICLE_ZAP[ejectile]
+    return zap
+
+
+def is_zap_consistent(endf_dict, mt, zap):
+    try:
+        zap_mt = get_ZAP(endf_dict, mt)
+        return zap_mt == zap
+    except:
+        return True
+
+
 def get_projectile(endf_dict):
     sec = endf_dict[1][451]
     nsub = sec['NSUB']
