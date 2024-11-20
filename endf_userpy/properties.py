@@ -38,9 +38,8 @@ def get_AWI(endf_dict):
     return endf_dict[1][451]['AWI']
 
 
-def get_AWP(endf_dict, mt):
+def get_ejectile(endf_dict, mt):
     projectile = get_projectile(endf_dict)
-    # fission reaction
     if mt in (18, 19, 20, 21, 38):
         ejectile = 'n'
     else:
@@ -49,7 +48,12 @@ def get_AWP(endf_dict, mt):
             raise ValueError(f'AWP cannot be determined for MT={mt}.')
         assert len(ejectiles) == 1 or ejectiles[0][1] == 'n'
         ejectile = ejectiles[0][1]
-    awp = PARTICLE_MASSES_AMU[ejectile] / PARTICLE_MASSES_AMU[projectile]
+    return ejectile
+
+
+def get_AWP(endf_dict, mt):
+    ejectile = get_ejectile(endf_dict, mt)
+    awp = PARTICLE_MASSES_AMU[ejectile] / PARTICLE_MASSES_AMU['n']
     return awp
 
 
