@@ -1,4 +1,5 @@
 import numpy as np
+from .interpolation import interp_tab1
 from .fortran.endf6 import (
     mf6_get_law1,
     mf6_get_law2,
@@ -13,11 +14,20 @@ from .helpers import (
 from .properties import (
     get_AWR,
     get_AWI,
-    get_AWP,
     get_ZA,
     get_ZAI,
     get_QI,
 )
+
+
+def get_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
+    sec = endf_dict[6][mt]
+    subsec = sec[subsec_num]
+    yield_tab = subsec['yields']
+    interp_yields = interp_tab1(
+        energies_in, yield_tab, 'Eint', 'yi'
+    )
+    return interp_yields
 
 
 def get_dist2d_from_subsec_law1(
@@ -285,55 +295,3 @@ def get_dist2d_from_subsec_law7(
             )
             result_arr[i:i+1,:,j:j+1] = cur_result_arr
     return result_arr
-
-
-def contains_subsec_dist2d(endf_dict, mt, subsec_num):
-    sec = endf_dict[6][mt]
-    subsec = sec['subsection'][subsec_num]
-    law = subsec['LAW']
-    return law in (1, 6, 7)
-
-
-def compute_dist1d_from_subsec(
-    endf_dict, mt, subsec_num,
-    energies_in, angle_cosines_out
-):
-    sec = endf_dict[6][mt]
-    subsec = sec['subsection'][subsec_num]
-    law = subsec['LAW']
-    if law == 2:
-        return get_dist1d_from_subsec_law2(
-            endf_dict, mt, subsec_num, energies_in, angle_cosines_out
-        )
-    else:
-        raise NotImplementedError(
-            f'Angular distribution interpretation for LAW={law} not implemented.'
-        )
-
-
-def compute_dist2d_from_subsec(
-    endf_dict, mt, subsec_num,
-    energies_in, energies_out, angle_cosines_out
-):
-    sec = endf_dict[6][mt]
-    subsec = sec['subsection'][subsec_num]
-    law = subsec['LAW']
-    if law == 1:
-        return get_dist2d_from_subsec_law1(
-            endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out
-        )
-    elif law == 6:
-        return get_dist2d_from_subsec_law6(
-            endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out
-        )
-    elif law == 7:
-        return get_dist2d_from_subsec_law7(
-            endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out
-        )
-    else:
-        raise NotImplementedError(
-            f'DDX interpretation for LAW={law} not implemented.'
-        )
