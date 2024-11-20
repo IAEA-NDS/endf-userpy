@@ -1,5 +1,4 @@
 import numpy as np
-from .interpolation import interp_tab1
 from .fortran.endf6 import (
     mf6_get_law1,
     mf6_get_law2,
@@ -18,16 +17,6 @@ from .properties import (
     get_ZAI,
     get_QI,
 )
-
-
-def get_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
-    sec = endf_dict[6][mt]
-    subsec = sec[subsec_num]
-    yield_tab = subsec['yields']
-    interp_yields = interp_tab1(
-        energies_in, yield_tab, 'Eint', 'yi'
-    )
-    return interp_yields
 
 
 def get_dist2d_from_subsec_law1(

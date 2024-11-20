@@ -1,11 +1,22 @@
 import numpy as np
 from .properties import is_zap_consistent
+from .interpolation import interp_tab1
 from .mf6_interpretation_subsecs import (
     get_dist2d_from_subsec_law1,
     get_dist1d_from_subsec_law2,
     get_dist2d_from_subsec_law6,
     get_dist2d_from_subsec_law7,
 )
+
+
+def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
+    sec = endf_dict[6][mt]
+    subsec = sec[subsec_num]
+    yield_tab = subsec['yields']
+    interp_yields = interp_tab1(
+        energies_in, yield_tab, 'Eint', 'yi'
+    )
+    return interp_yields
 
 
 def compute_dist1d_from_subsec(
