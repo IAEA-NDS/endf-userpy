@@ -3,7 +3,10 @@ import os
 import pytest
 import numpy as np
 from endf_parserpy import EndfParserCpp
-from endf_userpy.mf6_interpretation_fortran import compute_ddx_from_subsec
+from endf_userpy.mf6_interpretation_fortran import (
+    compute_dist2d_from_subsec,
+    compute_dist1d_from_subsec,
+)
 from endf_userpy.helpers import deg2rad
 from endf_parserpy.utils.user_tools import show_content
 
@@ -97,7 +100,7 @@ def call_fortran_test(fortran_test_exe, endf_file, include=None):
     return cont, endf_dict
 
 
-def test_ddx_law1_python_interface(endf_file):
+def test_dist2d_law1_python_interface(endf_file):
     cont, endf_dict = call_fortran_test('../tests_fortran/test_mf6', endf_file)
     if 6 not in endf_dict:
         return
@@ -108,7 +111,7 @@ def test_ddx_law1_python_interface(endf_file):
         energies_in = np.unique(ref_res['ei'])
         energies_out = np.unique(ref_res['ep'])
         mu_out = np.unique(ref_res['u'])
-        disc_arr, cont_arr = compute_ddx_from_subsec(
+        disc_arr, cont_arr = compute_dist2d_from_subsec(
             endf_dict, mt, subsec_num, energies_in, energies_out, mu_out
         )
         # retrieve corresponding values from fortran test output
@@ -132,37 +135,36 @@ def test_ddx_law1_python_interface(endf_file):
                 # return
 
 
-def test_ddx_law2_interface():
+def test_dist1d_law2_interface():
     parser = EndfParserCpp()
     endf_file = "data/n-001_H_001.endf"
     endf_dict = parser.parsefile(endf_file) 
     Einc = [50000, 70000]  
     mu = np.cos(deg2rad([30, 50, 70]))
-    Eout = np.linspace(10000, 70000, 5) 
-    cont_arr = compute_ddx_from_subsec(
-        endf_dict, 102, 1, Einc, Eout, mu
+    cont_arr = compute_dist1d_from_subsec(
+        endf_dict, 102, 1, Einc, mu
     )
 
 
-def test_ddx_law6_interface():
+def test_dist2d_law6_interface():
     parser = EndfParserCpp()
     endf_file = "data/n-001_H_002.endf"
     endf_dict = parser.parsefile(endf_file) 
     Einc = [50000, 70000]  
     mu = np.cos(deg2rad([30, 50, 70]))
     Eout = np.linspace(10000, 70000, 5) 
-    cont_arr = compute_ddx_from_subsec(
+    cont_arr = compute_dist2d_from_subsec(
         endf_dict, 16, 1, Einc, Eout, mu
     )
 
 
-def test_ddx_law7_interface():
+def test_dist2d_law7_interface():
     parser = EndfParserCpp()
     endf_file = "data/n-004_Be_009.endf"
     endf_dict = parser.parsefile(endf_file)
     Einc = [1.8e6, 2e6]
     mu = np.cos(deg2rad([30, 50, 70]))
     Eout = np.linspace(10000, 70000, 5)
-    compute_ddx_from_subsec(
+    compute_dist2d_from_subsec(
         endf_dict, 16, 1, Einc, Eout, mu
     )
