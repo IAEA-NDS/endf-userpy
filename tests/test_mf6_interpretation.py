@@ -154,3 +154,15 @@ def test_ddx_law6_interface():
     cont_arr = compute_ddx_from_subsec(
         endf_dict, 16, 1, Einc, Eout, mu
     )
+
+
+def test_ddx_law7_interface():
+    parser = EndfParserCpp()
+    endf_file = "data/n-004_Be_009.endf"
+    endf_dict = parser.parsefile(endf_file)
+    Einc = [1.8e6, 2e6]
+    mu = np.cos(deg2rad([30, 50, 70]))
+    Eout = np.linspace(10000, 70000, 5)
+    compute_ddx_from_subsec(
+        endf_dict, 16, 1, Einc, Eout, mu
+    )
