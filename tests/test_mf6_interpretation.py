@@ -3,7 +3,7 @@ import os
 import pytest
 import numpy as np
 from endf_parserpy import EndfParserCpp
-from endf_userpy.mf6_interpretation_fortran import (
+from endf_userpy.mf6_interpretation_fort import (
     compute_dist2d_from_subsec,
     compute_dist1d_from_subsec,
 )
