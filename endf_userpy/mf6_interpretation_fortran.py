@@ -20,7 +20,7 @@ from .properties import (
 )
 
 
-def get_ddx_from_subsec_law1(
+def get_dist2d_from_subsec_law1(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out
 ):
     sec = endf_dict[6][mt]
@@ -103,7 +103,7 @@ def get_ddx_from_subsec_law1(
     return disc_result_arr, cont_result_arr
 
 
-def get_ddx_from_subsec_law2(
+def get_dist1d_from_subsec_law2(
     endf_dict, mt, subsec_num, energies_in, angle_cosines_out
 ):
     # TODO: how to signal to the user that this is a
@@ -172,7 +172,7 @@ def get_ddx_from_subsec_law2(
     return result_arr
 
 
-def get_ddx_from_subsec_law6(
+def get_dist2d_from_subsec_law6(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out
 ):
     sec = endf_dict[6][mt]
@@ -201,7 +201,7 @@ def get_ddx_from_subsec_law6(
     return result_arr
 
 
-def get_ddx_from_subsec_law7(
+def get_dist2d_from_subsec_law7(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out
 ):
     mu = angle_cosines_out
@@ -287,7 +287,31 @@ def get_ddx_from_subsec_law7(
     return result_arr
 
 
-def compute_ddx_from_subsec(
+def contains_subsec_dist2d(endf_dict, mt, subsec_num):
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    law = subsec['LAW']
+    return law in (1, 6, 7)
+
+
+def compute_dist1d_from_subsec(
+    endf_dict, mt, subsec_num,
+    energies_in, angle_cosines_out
+):
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    law = subsec['LAW']
+    if law == 2:
+        return get_dist1d_from_subsec_law2(
+            endf_dict, mt, subsec_num, energies_in, angle_cosines_out
+        )
+    else:
+        raise NotImplementedError(
+            f'Angular distribution interpretation for LAW={law} not implemented.'
+        )
+
+
+def compute_dist2d_from_subsec(
     endf_dict, mt, subsec_num,
     energies_in, energies_out, angle_cosines_out
 ):
@@ -295,22 +319,17 @@ def compute_ddx_from_subsec(
     subsec = sec['subsection'][subsec_num]
     law = subsec['LAW']
     if law == 1:
-        return get_ddx_from_subsec_law1(
+        return get_dist2d_from_subsec_law1(
             endf_dict, mt, subsec_num,
             energies_in, energies_out, angle_cosines_out
         )
-    elif law == 2:
-        return get_ddx_from_subsec_law2(
-            endf_dict, mt, subsec_num,
-            energies_in, angle_cosines_out
-        )
     elif law == 6:
-        return get_ddx_from_subsec_law6(
+        return get_dist2d_from_subsec_law6(
             endf_dict, mt, subsec_num,
             energies_in, energies_out, angle_cosines_out
         )
     elif law == 7:
-        return get_ddx_from_subsec_law7(
+        return get_dist2d_from_subsec_law7(
             endf_dict, mt, subsec_num,
             energies_in, energies_out, angle_cosines_out
         )
