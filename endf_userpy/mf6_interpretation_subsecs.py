@@ -215,13 +215,12 @@ def get_dist2d_from_subsec_law7(
     result_arr = np.zeros(
         (len(energies_in), len(energies_out), len(angle_cosines_out)), dtype=float
     )
-    cur_result_arr = np.zeros((1, len(energies_out), 1), dtype=float, order='F')
 
     idcs = find_interval(ei_mesh, energies_in)
     for i, curidx in enumerate(idcs): 
         cur_en =  energies_in[i:i+1]
-        en1 = ei_mesh[i]
-        en2 = ei_mesh[i+1]
+        en1 = ei_mesh[curidx]
+        en2 = ei_mesh[curidx+1]
         interp_law = ei_interp[curidx]
         mu_mesh1 = dict2array(subsec['mu'][curidx+1], dtype=float)
         mu_mesh2 = dict2array(subsec['mu'][curidx+2], dtype=float)
@@ -241,36 +240,38 @@ def get_dist2d_from_subsec_law7(
             mu12 = mu_mesh1[idx21+1]
             mu21 = mu_mesh2[idx22]
             mu22 = mu_mesh2[idx22+1]
-            interp_mu_law1 = mu_interpol_arr1[j]
-            interp_mu_law2 = mu_interpol_arr2[j]
+            interp_mu_law1 = mu_interpol_arr1[idx21]
+            interp_mu_law2 = mu_interpol_arr2[idx22]
             curtable11 = subsec['table'][curidx+1][idx21+1]
             curtable12 = subsec['table'][curidx+1][idx21+2]
             curtable21 = subsec['table'][curidx+2][idx22+1]
             curtable22 = subsec['table'][curidx+2][idx22+2]
-            ep11 = np.array(curtable11['Ep'], dtype=float)
-            ep12 = np.array(curtable12['Ep'], dtype=float)
-            ep21 = np.array(curtable21['Ep'], dtype=float)
-            ep22 = np.array(curtable22['Ep'], dtype=float)
-            f11 = np.array(curtable11['f'], dtype=float)
-            f12 = np.array(curtable12['f'], dtype=float)
-            f21 = np.array(curtable21['f'], dtype=float)
-            f22 = np.array(curtable22['f'], dtype=float)
+            ep11 = np.array(curtable11['Ep'], dtype=float, order='F')
+            ep12 = np.array(curtable12['Ep'], dtype=float, order='F')
+            ep21 = np.array(curtable21['Ep'], dtype=float, order='F')
+            ep22 = np.array(curtable22['Ep'], dtype=float, order='F')
+            f11 = np.array(curtable11['f'], dtype=float, order='F')
+            f12 = np.array(curtable12['f'], dtype=float, order='F')
+            f21 = np.array(curtable21['f'], dtype=float, order='F')
+            f22 = np.array(curtable22['f'], dtype=float, order='F')
             np11 = len(ep11)
             np12 = len(ep12)
             np21 = len(ep21)
             np22 = len(ep22)
-            ibt11 = np.array(curtable11['INT'], dtype=float)
-            ibt12 = np.array(curtable12['INT'], dtype=float)
-            ibt21 = np.array(curtable21['INT'], dtype=float)
-            ibt22 = np.array(curtable22['INT'], dtype=float)
-            nbt11 = np.array(curtable11['NBT'], dtype=float)
-            nbt12 = np.array(curtable12['NBT'], dtype=float)
-            nbt21 = np.array(curtable21['NBT'], dtype=float)
-            nbt22 = np.array(curtable22['NBT'], dtype=float)
+            ibt11 = np.array(curtable11['INT'], dtype=float, order='F')
+            ibt12 = np.array(curtable12['INT'], dtype=float, order='F')
+            ibt21 = np.array(curtable21['INT'], dtype=float, order='F')
+            ibt22 = np.array(curtable22['INT'], dtype=float, order='F')
+            nbt11 = np.array(curtable11['NBT'], dtype=float, order='F')
+            nbt12 = np.array(curtable12['NBT'], dtype=float, order='F')
+            nbt21 = np.array(curtable21['NBT'], dtype=float, order='F')
+            nbt22 = np.array(curtable22['NBT'], dtype=float, order='F')
             nr11 = len(ibt11)
             nr12 = len(ibt12)
             nr21 = len(ibt21)
             nr22 = len(ibt22)
+
+            cur_result_arr = np.zeros((1, len(energies_out), 1), dtype=float, order='F')
 
             mf6_get_law7(
                 cur_en, energies_out, cur_mu, 1, interp_law,
@@ -282,5 +283,6 @@ def get_dist2d_from_subsec_law7(
                 mu22, ep22, f22, np22, nbt22, ibt22, nr22,
                 cur_result_arr
             )
+
             result_arr[i:i+1,:,j:j+1] = cur_result_arr
     return result_arr
