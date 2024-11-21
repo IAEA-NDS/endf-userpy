@@ -1,4 +1,7 @@
-from .properties import get_ZAP
+from .properties import (
+    get_ZAP,
+    is_zap_consistent,
+)
 
 
 def is_dist2d_law(law):
@@ -17,6 +20,7 @@ def get_zap_with_check(endf_dict, mt, zap):
         zap = get_ZAP(endf_dict, mt)
     elif not is_zap_consistent(endf_dict, mt, zap):
         raise ValueError(f'provided ZAP={zap} not consistent with MT={mt}')
+    return zap
 
 
 def check_mf6_exists(endf_dict):
@@ -35,7 +39,7 @@ def check_mt_exists_in_mf6(endf_dict, mt):
         )
 
 
-def find_subsec_num(endf_dict, mt, zap): 
+def find_subsec_num(endf_dict, mt, zap):
     sec = endf_dict[6][mt]
     for idx, subsec in sec['subsection'].items():
         if subsec['ZAP'] == zap:
@@ -45,6 +49,25 @@ def find_subsec_num(endf_dict, mt, zap):
     )
 
 
+def find_subsec_nums_by_laws(endf_dict, mt, laws):
+    sec = endf_dict[6][mt]
+    subsec_nums = []
+    for idx, subsec in sec['subsection'].items():
+        if subsec['LAW'] in laws:
+            subsec_nums.append(idx)
+    return subsec_nums
+
+
+def find_subsec_nums_by_law_for_all_mts(endf_dict, laws):
+    sec = endf_dict[6]
+    res = dict()
+    for mt in sec:
+        cur_subsec_nums = find_subsec_nums_by_laws(endf_dict, mt, laws)
+        if len(cur_subsec_nums) > 0:
+            res[mt] = cur_subsec_nums
+    return res
+
+
 def get_zaps_for_mt(endf_dict, mt, dist2d_only=False):
     sec = endf_dict[6][mt]
     subsecs = sec['subsection']
@@ -52,7 +75,17 @@ def get_zaps_for_mt(endf_dict, mt, dist2d_only=False):
     for idx, subsec in subsecs.items():
         law = subsec['LAW']
         zap = subsec['ZAP']
-        if dist2d_only and not _is_dist2d_law(law):
+        if dist2d_only and not is_dist2d_law(law):
             continue
         zaps.append(zap)
     return zaps
+
+
+def get_zaps_for_all_mts(endf_dict, dist2d_only=False):
+    sec = endf_dict[6]
+    res = dict()
+    for mt in sec:
+        cur_zaps = get_zaps_for_mt(endf_dict, mt, dist2d_only)
+        if len(cur_zaps) > 0:
+            res[mt] = cur_zaps
+    return res

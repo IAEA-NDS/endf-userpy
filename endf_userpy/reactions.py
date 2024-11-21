@@ -124,6 +124,11 @@ def get_ejectiles(proj, mt):
     return tuple(result)
 
 
+def get_reaction_string_for_mt(mt):
+    t = REACTION_DICT[mt]
+    return f'({t[0]},{t[1]})'
+
+
 def is_binary_reaction(proj, mt):
     """Determine if binary reaction"""
     ejectiles = get_ejectiles(proj, mt)
