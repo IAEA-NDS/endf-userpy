@@ -49,6 +49,11 @@ def find_subsec_num(endf_dict, mt, zap):
     )
 
 
+def get_subsec(endf_dict, mt, zap):
+    subsec_num = find_subsec_num(endf_dict, mt, zap)
+    return endf_dict[6][mt]['subsection'][subsec_num]
+
+
 def find_subsec_nums_by_laws(endf_dict, mt, laws):
     sec = endf_dict[6][mt]
     subsec_nums = []
