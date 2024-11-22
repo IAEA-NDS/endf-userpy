@@ -22,9 +22,13 @@ from .properties import (
 )
 
 
-def get_energy_range(mf4sec, mt):
-    ens = list(mf4sec[mt]['E'].values())
-    return (np.min(ens), np.max(ens)) 
+def get_incident_energies(mf4sec, mt):
+    return list(mf4sec[mt]['E'].values())
+
+
+def get_incident_energy_range(mf4sec, mt):
+    ens = get_incident_energies(mf4sec, mt)
+    return (np.min(ens), np.max(ens))
 
 
 def has_isotropic_angdist_repr(mf4sec, mt):
