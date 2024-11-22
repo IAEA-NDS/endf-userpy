@@ -1,3 +1,4 @@
+import numpy as np
 from .properties import (
     get_ZAP,
     is_zap_consistent,
@@ -94,3 +95,26 @@ def get_zaps_for_all_mts(endf_dict, dist2d_only=False):
         if len(cur_zaps) > 0:
             res[mt] = cur_zaps
     return res
+
+
+def has_disc_part(endf_dict, mt, zap):
+    subsec = get_subsec(endf_dict, mt, zap)
+    law = subsec['LAW']
+    if law in (2, 3, 4, 5):
+        return True
+    if law == 1:
+        nd_arr = np.array(list(subsec['ND'].values()))
+        nep_arr = np.array(list(subsec['NEP'].values()))
+        return bool(np.any(nd_arr > 0))
+
+
+def has_cont_part(endf_dict, mt, zap):
+    subsec = get_subsec(endf_dict, mt, zap)
+    law = subsec['LAW']
+    if law in (6, 7):
+        return True
+    if law == 1:
+        nd_arr = np.array(list(subsec['ND'].values()))
+        nep_arr = np.array(list(subsec['NEP'].values()))
+        return bool(np.any(nep_arr > nd_arr))
+    return False
