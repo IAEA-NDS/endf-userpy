@@ -278,7 +278,7 @@ def get_angdist_from_mixed(endf_dict, mt, energies, angle_cosines):
     return result_arr
 
 
-def compute_angdist(endf_dict, mt, energies, angle_cosines):
+def compute_angdist_values(endf_dict, mt, energies, angle_cosines):
     mu_lab = angle_cosines
     mf4sec = endf_dict[4][mt]
     ltt = mf4sec['LTT']
