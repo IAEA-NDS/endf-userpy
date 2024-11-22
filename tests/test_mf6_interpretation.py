@@ -111,7 +111,7 @@ def test_dist2d_law1_python_interface(endf_file):
         energies_in = np.unique(ref_res['ei'])
         energies_out = np.unique(ref_res['ep'])
         mu_out = np.unique(ref_res['u'])
-        disc_arr, cont_arr = compute_dist2d_from_subsec(
+        cont_arr = compute_dist2d_from_subsec(
             endf_dict, mt, subsec_num, energies_in, energies_out, mu_out
         )
         # retrieve corresponding values from fortran test output

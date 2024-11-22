@@ -99,7 +99,7 @@ def get_dist2d_from_subsec_law1(
         disc_result_arr[i:i+1,:,:] = cur_disc_res
         cont_result_arr[i:i+1,:,:] = cur_cont_res
 
-    return disc_result_arr, cont_result_arr
+    return cont_result_arr
 
 
 def get_dist1d_from_subsec_law2(
