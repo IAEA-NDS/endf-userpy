@@ -20,7 +20,7 @@ from .properties import (
 
 
 def get_dist2d_from_subsec_law1(
-    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
 ):
     sec = endf_dict[6][mt]
     sec['subsection'][subsec_num]['LAW'] == 1
@@ -34,8 +34,7 @@ def get_dist2d_from_subsec_law1(
     awi = get_AWI(endf_dict)
     za = get_ZA(endf_dict)
     zai = get_ZAI(endf_dict)
-    lct = sec['LCT']
-
+    lct = sec['LCT'] if to_lab else 1
     # subsection variables
     subsec = sec['subsection'][subsec_num]
     zap = subsec['ZAP']
@@ -103,7 +102,7 @@ def get_dist2d_from_subsec_law1(
 
 
 def get_dist1d_from_subsec_law2(
-    endf_dict, mt, subsec_num, energies_in, angle_cosines_out
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
 ):
     # TODO: how to signal to the user that this is a
     #       discrete distribution with a dirac delta in the
@@ -114,7 +113,7 @@ def get_dist1d_from_subsec_law2(
     awi = get_AWI(endf_dict)
     awp = subsec['AWP']
     q = get_QI(endf_dict, mt) 
-    lct = sec['LCT']
+    lct = sec['LCT'] if to_lab else 1
     lang = subsec['LANG']
     ei_mesh = dict2array(subsec['E'], dtype=float)
     int_arr = np.array(subsec['INT'], dtype=int)
@@ -172,8 +171,9 @@ def get_dist1d_from_subsec_law2(
 
 
 def get_dist2d_from_subsec_law6(
-    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
 ):
+    # NOTE: to_lab parameter ignored for LAW=6
     sec = endf_dict[6][mt]
     awr = get_AWR(endf_dict)
     awi = get_AWI(endf_dict)
@@ -201,8 +201,9 @@ def get_dist2d_from_subsec_law6(
 
 
 def get_dist2d_from_subsec_law7(
-    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
 ):
+    # NOTE: to_lab parameter ignored because LAW=7 always in lab system
     mu = angle_cosines_out
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
