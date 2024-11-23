@@ -37,14 +37,14 @@ def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
 
 def compute_dist1d_from_subsec(
     endf_dict, mt, subsec_num,
-    energies_in, angle_cosines_out
+    energies_in, angle_cosines_out, to_lab=True
 ):
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
     law = subsec['LAW']
     if law == 2:
         return get_dist1d_from_subsec_law2(
-            endf_dict, mt, subsec_num, energies_in, angle_cosines_out
+            endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
         )
     else:
         raise NotImplementedError(
@@ -54,7 +54,7 @@ def compute_dist1d_from_subsec(
 
 def compute_dist2d_from_subsec(
     endf_dict, mt, subsec_num,
-    energies_in, energies_out, angle_cosines_out
+    energies_in, energies_out, angle_cosines_out, to_lab=True
 ):
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
@@ -62,17 +62,17 @@ def compute_dist2d_from_subsec(
     if law == 1:
         return get_dist2d_from_subsec_law1(
             endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out
+            energies_in, energies_out, angle_cosines_out, to_lab
         )
     elif law == 6:
         return get_dist2d_from_subsec_law6(
             endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out
+            energies_in, energies_out, angle_cosines_out, to_lab
         )
     elif law == 7:
         return get_dist2d_from_subsec_law7(
             endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out
+            energies_in, energies_out, angle_cosines_out, to_lab
         )
     else:
         raise NotImplementedError(
@@ -91,7 +91,7 @@ def get_incident_energies(endf_dict, mt, zap):
 
 
 def compute_dist2d_values(
-    endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out
+    endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True
 ):
     check_mf6_exists(endf_dict)
     check_mt_exists_in_mf6(endf_dict, mt)
@@ -104,7 +104,7 @@ def compute_dist2d_values(
             f'but only an angular distribution is given (LAW={law})'
         )
     return compute_dist2d_from_subsec(
-        endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out
+        endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
     )
 
 

@@ -132,11 +132,11 @@ def _compute_r2(endf_dict, mt, energies):
     return compute_r2(energies, awi, awr, awp, q)
 
 
-def compute_angdist_values(endf_dict, mt, energies, angle_cosines):
+def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
     mf4sec = endf_dict[4][mt]
     ltt = mf4sec['LTT']
     li = mf4sec['LI']
-    lct = mf4sec['LCT']
+    lct = mf4sec['LCT'] if to_lab else 1
     # convert angle cosines to CM system if indicated
     mu = angle_cosines
     if lct == 1:

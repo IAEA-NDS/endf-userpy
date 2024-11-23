@@ -11,12 +11,12 @@ from .helpers import (
 )
 
 
-def get_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines):
+def get_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines, to_lab):
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
     awr = get_AWR(endf_dict)
     awp = get_AWP(endf_dict, mt)
-    lct = mf4sec['LCT']
+    lct = mf4sec['LCT'] if to_lab else 1
     qm = get_QM(endf_dict, mt)
     qi = get_QI(endf_dict, mt)
     breakup_flag = get_LR(endf_dict, mt)
@@ -51,12 +51,12 @@ def get_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines):
     return result_arr
 
 
-def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
+def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines, to_lab):
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
     awr = get_AWR(endf_dict)
     awp = get_AWP(endf_dict, mt)
-    lct = mf4sec['LCT']
+    lct = mf4sec['LCT'] if to_lab else 1
     q = get_QI(endf_dict, mt)
 
     # get the energy mesh and bookkeeping information
@@ -113,14 +113,14 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines):
     return result_arr
 
 
-def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines):
+def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines, to_lab):
     num_energies = len(energies)
     num_angle_cosines = len(angle_cosines)
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
     awr = get_AWR(endf_dict)
     awp = get_AWP(endf_dict, mt)
-    lct = mf4sec['LCT']
+    lct = mf4sec['LCT'] if to_lab else 1
     qm = get_QM(endf_dict, mt)
     qi = get_QI(endf_dict, mt)
     breakup_flag = get_LR(endf_dict, mt)
@@ -173,7 +173,7 @@ def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines):
     return result_arr
 
 
-def get_angdist_from_mixed(endf_dict, mt, energies, angle_cosines):
+def get_angdist_from_mixed(endf_dict, mt, energies, angle_cosines, to_lab):
     mu = angle_cosines
     mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
     num_energies = len(energies)
@@ -182,7 +182,7 @@ def get_angdist_from_mixed(endf_dict, mt, energies, angle_cosines):
     awi = get_AWI(endf_dict)
     awr = get_AWR(endf_dict)
     awp = get_AWP(endf_dict, mt)
-    lct = mf4sec['LCT']
+    lct = mf4sec['LCT'] if to_lab else 1
     qm = get_QM(endf_dict, mt)
     qi = get_QI(endf_dict, mt)
     breakup_flag = get_LR(endf_dict, mt)
@@ -278,20 +278,19 @@ def get_angdist_from_mixed(endf_dict, mt, energies, angle_cosines):
     return result_arr
 
 
-def compute_angdist_values(endf_dict, mt, energies, angle_cosines):
+def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
     mu_lab = angle_cosines
     mf4sec = endf_dict[4][mt]
     ltt = mf4sec['LTT']
     li = mf4sec['LI']
-    lct = mf4sec['LCT']
     if ltt == 0 and li == 1:
-        return get_angdist_from_isotropic(endf_dict, mt, energies, mu_lab)
+        return get_angdist_from_isotropic(endf_dict, mt, energies, mu_lab, to_lab)
     elif ltt == 1 and li == 0:
-        return get_angdist_from_legendre(endf_dict, mt, energies, mu_lab)
+        return get_angdist_from_legendre(endf_dict, mt, energies, mu_lab, to_lab)
     elif ltt == 2 and li == 0:
-        return get_angdist_from_tabulated(endf_dict, mt, energies, mu_lab)
+        return get_angdist_from_tabulated(endf_dict, mt, energies, mu_lab, to_lab)
     elif ltt == 3 and li == 0:
-        return get_angdist_from_mixed(endf_dict, mt, energies, mu_lab)
+        return get_angdist_from_mixed(endf_dict, mt, energies, mu_lab, to_lab)
 
     raise TypeError(
         f'Interpretation of MF4/MT for LTT={ltt}, LI={li} not implemented.'
