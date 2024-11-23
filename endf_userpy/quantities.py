@@ -1,5 +1,8 @@
 import numpy as np
-from .properties import get_ZAP
+from .properties import (
+    get_ZAP,
+    is_zap_consistent,
+)
 from .mf3_interpretation import (
     compute_cross_section,
 )
@@ -15,7 +18,9 @@ from .mf6_interpretation import (
 compute_xs = compute_cross_section
 
 
-def compute_dxs(endf_dict, mt, energies_in, angle_cosines_out):
+def compute_dxs(endf_dict, mt, zap, energies_in, angle_cosines_out):
+    if not is_zap_consistent(endf_dict, mt, zap):
+        raise ValueError(f'MT={mt} and ZAP={mt} are not consistent')
     angdist = compute_angdist_values(endf_dict, mt, energies_in, angle_cosines_out)
     xs = compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
     return angdist * xs
