@@ -1,7 +1,9 @@
 import numpy as np
 from .interpolation import interp_tab1
-from .properties import get_projectile
-from .reactions import get_reaction_string_for_mt
+from .properties import (
+    get_projectile,
+    get_reaction_string_for_mt,
+)
 
 
 def get_incident_energies(endf_dict, mt):
@@ -15,12 +17,8 @@ def get_reaction_mts(endf_dict):
 
 
 def get_reactions(endf_dict):
-    mts = get_reaction_mts(endf_dict) 
-    proj = get_projectile(endf_dict)
-    reacs = [get_reaction_string_for_mt(r) for r in mts] 
-    reacs = [r.replace('(z,', f'({proj},') for r in reacs]
-    reacs = [r.replace('(y,', f'({proj},') for r in reacs]
-    reacs = [r.replace(',z', f',{proj}') for r in reacs]
+    mts = get_reaction_mts(endf_dict)
+    reacs = [get_reaction_string_for_mt(endf_dict, m) for m in mts] 
     return reacs
 
 
