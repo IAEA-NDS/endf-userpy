@@ -5,6 +5,7 @@ from .physical_constants import (
 from .reactions import (
     is_binary_reaction,
     get_ejectiles,
+    get_raw_reaction_string_for_mt,
 )
 
 
@@ -89,3 +90,12 @@ def get_projectile(endf_dict):
     }
     projectile = part_dict[nsub]
     return projectile
+
+
+def get_reaction_string_for_mt(endf_dict, mt):
+    proj = get_projectile(endf_dict)
+    r = get_raw_reaction_string_for_mt(mt)
+    r = r.replace('(z,', f'({proj},')
+    r = r.replace('(y,', f'({proj},')
+    r = r.replace(',z', f',{proj}')
+    return r
