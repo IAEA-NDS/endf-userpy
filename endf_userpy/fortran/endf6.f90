@@ -1785,7 +1785,7 @@
   function imatch(x0,x,n)
 !
 ! Description
-! Return the index i if the array x contains an element x(i)=x0
+! Return the index i if the array x contains an element abs(x(i))=x0
 ! within a relative fractional error of eps, otherwise return 0
 !
 ! Input:
@@ -1801,7 +1801,8 @@
   dimension x(*)
   imatch=0
   do i=1,n
-    if (abs(x(i)-x0).le.abs(x0*eps)) then
+    xi=abs(x(i))
+    if ((xi-x0).le.abs(x0*eps)) then
       imatch=i
       exit
     endif
