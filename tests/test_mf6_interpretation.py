@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
 import pytest
+import sys
+from pathlib import Path
 import numpy as np
 from endf_parserpy import EndfParserCpp
 from endf_userpy.mf6_interpretation import (
@@ -101,7 +103,10 @@ def call_fortran_test(fortran_test_exe, endf_file, include=None):
 
 
 def test_dist2d_law1_python_interface(endf_file):
-    cont, endf_dict = call_fortran_test('../tests_fortran/test_mf6', endf_file)
+    exefile = 'test_mf6'
+    if sys.platform == 'win32':
+        exefile += '.exe'
+    cont, endf_dict = call_fortran_test(Path('..') / 'tests_fortran' / exefile, endf_file)
     if 6 not in endf_dict:
         return
     mt_ss = find_subsections_by_law(endf_dict, 1)
