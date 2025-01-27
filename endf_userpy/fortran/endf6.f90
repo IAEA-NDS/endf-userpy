@@ -1802,7 +1802,7 @@
   imatch=0
   do i=1,n
     xi=abs(x(i))
-    if ((xi-x0).le.abs(x0*eps)) then
+    if (abs(xi-x0).le.abs(x0*eps)) then
       imatch=i
       exit
     endif
