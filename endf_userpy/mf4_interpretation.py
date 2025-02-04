@@ -22,9 +22,13 @@ from .properties import (
 )
 
 
-def get_energy_range(mf4sec, mt):
-    ens = list(mf4sec[mt]['E'].values())
-    return (np.min(ens), np.max(ens)) 
+def get_incident_energies(mf4sec, mt):
+    return list(mf4sec[mt]['E'].values())
+
+
+def get_incident_energy_range(mf4sec, mt):
+    ens = get_incident_energies(mf4sec, mt)
+    return (np.min(ens), np.max(ens))
 
 
 def has_isotropic_angdist_repr(mf4sec, mt):
@@ -128,11 +132,11 @@ def _compute_r2(endf_dict, mt, energies):
     return compute_r2(energies, awi, awr, awp, q)
 
 
-def compute_angdist(endf_dict, mt, energies, angle_cosines):
+def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
     mf4sec = endf_dict[4][mt]
     ltt = mf4sec['LTT']
     li = mf4sec['LI']
-    lct = mf4sec['LCT']
+    lct = mf4sec['LCT'] if to_lab else 1
     # convert angle cosines to CM system if indicated
     mu = angle_cosines
     if lct == 1:

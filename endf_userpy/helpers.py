@@ -5,13 +5,50 @@ def deg2rad(values):
     return np.pi / 180.0 * np.array(values, copy=None)
 
 
-def dict2array(obj, dtype=None):
-    """Construct (multi-dim) array from nested dictionaries"""
+def _determine_dims(obj):
+    """Determine dimensions to convert ragged nested list to numpy array."""
+    if isinstance(next(iter(obj)), list):
+        dims_tuples = tuple(_determine_dims(v) for v in obj)
+        cur_size = len(dims_tuples)
+        num_dims = len(dims_tuples[0])
+        if not all(len(t) == num_dims for t in dims_tuples):
+            raise IndexError("different levels of nesting encountered")
+        max_dims_tuple = tuple(max(v[i] for v in dims_tuples) for i in range(num_dims))
+        ext_dims = (cur_size,) + max_dims_tuple 
+        return ext_dims
+    else:
+        return (len(obj),)
+
+
+def dict2list(obj):
+    """Convert dict-style array into list-style array."""
     if isinstance(next(iter(obj.values())), dict):
-        lst = list(dict2array(v, dtype) for v in obj.values())
+        lst = list(dict2list(v) for v in obj.values())
     else:
         lst = list(obj.values())
-    return np.array(lst, dtype=dtype)
+    return lst
+
+
+def pad_nested_ragged_lists(obj, fill_value=0.0, dims=None):
+    """Pad a nested list with trailing fill values inplace to obtain regular shape."""
+    if dims is None:
+        dims = _determine_dims(obj)
+    if not isinstance(obj, list):
+        return
+    eff_fill_value = fill_value if len(dims) == 1 else []
+    for i in range(dims[0]):
+        if i == len(obj):
+            obj.append(fill_value)
+        if len(dims) > 1:
+            pad_nested_ragged_lists(obj[i], fill_value, dims[1:])
+
+
+def dict2array(obj, dtype=None, order='K', fill_value=None):
+    """Construct (multi-dim) array from nested dictionaries"""
+    arr_list = dict2list(obj)
+    if fill_value is not None:
+        pad_nested_ragged_lists(arr_list, fill_value)
+    return np.array(arr_list, dtype=dtype, order=order)
 
 
 def check_int_nbt(int_arr, nbt_arr):

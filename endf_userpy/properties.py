@@ -1,7 +1,11 @@
-from .physical_constants import PARTICLE_MASSES_AMU
+from .physical_constants import (
+    PARTICLE_MASSES_AMU,
+    PARTICLE_ZAP,
+)
 from .reactions import (
     is_binary_reaction,
     get_ejectiles,
+    get_raw_reaction_string_for_mt,
 )
 
 
@@ -11,16 +15,8 @@ def get_ZA(endf_dict):
 
 def get_ZAI(endf_dict):
     proj = get_projectile(endf_dict)
-    zai = {
-        'g': 0*1000. + 0,
-        'n': 0*1000. + 1,
-        'p': 1*1000. + 1,
-        'd': 1*1000. + 2,
-        't': 1*1000. + 3,
-        'h': 2*1000. + 3,
-        'a': 2*1000. + 4,
-    }[proj]
-    return endf_dict[1][451]['ZAI']
+    zai = PARTICLE_ZAP[proj]
+    return zai
 
 
 def get_QM(endf_dict, mt):
@@ -43,9 +39,8 @@ def get_AWI(endf_dict):
     return endf_dict[1][451]['AWI']
 
 
-def get_AWP(endf_dict, mt):
+def get_ejectile(endf_dict, mt):
     projectile = get_projectile(endf_dict)
-    # fission reaction
     if mt in (18, 19, 20, 21, 38):
         ejectile = 'n'
     else:
@@ -54,8 +49,31 @@ def get_AWP(endf_dict, mt):
             raise ValueError(f'AWP cannot be determined for MT={mt}.')
         assert len(ejectiles) == 1 or ejectiles[0][1] == 'n'
         ejectile = ejectiles[0][1]
-    awp = PARTICLE_MASSES_AMU[ejectile] / PARTICLE_MASSES_AMU[projectile]
+    return ejectile
+
+
+def get_AWP(endf_dict, mt):
+    ejectile = get_ejectile(endf_dict, mt)
+    awp = PARTICLE_MASSES_AMU[ejectile] / PARTICLE_MASSES_AMU['n']
     return awp
+
+
+def get_ZAP(endf_dict, mt):
+    ejectile = get_ejectile(endf_dict, mt)
+    zap = PARTICLE_ZAP[ejectile]
+    return zap
+
+
+def get_zap_for_particle(particle):
+    return PARTICLE_ZAP[particle]
+
+
+def is_zap_consistent(endf_dict, mt, zap):
+    try:
+        zap_mt = get_ZAP(endf_dict, mt)
+        return zap_mt == zap
+    except:
+        return True
 
 
 def get_projectile(endf_dict):
@@ -72,3 +90,12 @@ def get_projectile(endf_dict):
     }
     projectile = part_dict[nsub]
     return projectile
+
+
+def get_reaction_string_for_mt(endf_dict, mt):
+    proj = get_projectile(endf_dict)
+    r = get_raw_reaction_string_for_mt(mt)
+    r = r.replace('(z,', f'({proj},')
+    r = r.replace('(y,', f'({proj},')
+    r = r.replace(',z', f',{proj}')
+    return r
