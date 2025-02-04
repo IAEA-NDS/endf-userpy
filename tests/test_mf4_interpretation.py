@@ -36,8 +36,8 @@ def test_mf4_legrepr_python_fortran_equivalence():
     endf_dict = parser.parsefile(endf_file)
     energies = np.array([1e6, 2e6, 3e6])
     angcos = np.cos(deg2rad(np.linspace(0.0, 180.0, 5)))
-    res_py = mf4py.compute_angdist(endf_dict, 2, energies, angcos)
-    res_fort = mf4fort.compute_angdist(endf_dict, 2, energies, angcos)
+    res_py = mf4py.compute_angdist_values(endf_dict, 2, energies, angcos)
+    res_fort = mf4fort.compute_angdist_values(endf_dict, 2, energies, angcos)
     assert np.allclose(res_py, res_fort)
 
 
@@ -48,8 +48,8 @@ def test_mf4_tabulated_python_fortran_equivalence():
     endf_dict = parser.parsefile(endf_file)
     energies = np.array([1e6, 2e6, 3e6])
     angcos = np.cos(deg2rad(np.linspace(0.0, 180.0, 5)))
-    res_py = mf4py.compute_angdist(endf_dict, 2, energies, angcos)
-    res_fort = mf4fort.compute_angdist(endf_dict, 2, energies, angcos)
+    res_py = mf4py.compute_angdist_values(endf_dict, 2, energies, angcos)
+    res_fort = mf4fort.compute_angdist_values(endf_dict, 2, energies, angcos)
     assert np.allclose(res_py, res_fort)
 
 
@@ -62,11 +62,11 @@ def test_mf4_python_fortran_equivalence(endf_file, myEndfParser):
     for mt in mf4sec:
         curens = energies
         if not mf4py.has_isotropic_angdist_repr(mf4sec, mt):
-            en_range = mf4py.get_energy_range(mf4sec, mt)
+            en_range = mf4py.get_incident_energy_range(mf4sec, mt)
             en_diff = np.diff(en_range)
             curens = np.linspace(en_range[0], en_range[1], 5)
-        res_py = mf4py.compute_angdist(endf_dict, mt, curens, angcos)
-        res_fort = mf4fort.compute_angdist(endf_dict, mt, curens, angcos)
+        res_py = mf4py.compute_angdist_values(endf_dict, mt, curens, angcos)
+        res_fort = mf4fort.compute_angdist_values(endf_dict, mt, curens, angcos)
         # TODO: If impossible kinematic situation, return 0, not NaN.
         #       After implementation, make test more strict
         assert np.allclose(res_py, res_fort, equal_nan=True)
