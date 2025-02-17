@@ -2031,3 +2031,375 @@
   return
   end
 ! -----------------------------------------------------------------------------
+subroutine tabint(x1,y1,x2,y2,u1,u2,intlaw,yint,uint)
+!
+! Description:
+! tabint analytically calculates the integral between x1 and x2 of the function
+! y(x) given by tabulated data (x1,y1), (x2,y2) with interpolation law intlaw.
+! It also estimates the absolute deviation of the definite integral considering
+! the uncertainties given at the interval boundaries
+! Defining yint=integral(x1,y1,x2,y2) as the definite integral in the
+! interval [x1,x2] considering y(x1)=y1 and y(x2)=y2, then the value of
+! uint is estimated as:
+!  dmin=abs(integral(x1,y1-u1,x2,y2-u2)-integral(x1,y1,x2,y2))
+!  dplus=abs(integral(x1,y1+u1,x2,y2+u2)-integral(x1,y1,x2,y2))
+!  uint=max(dmin,dplus)
+! The range of yint is [yint-uint,yint+uint]
+!
+! Input parameters:
+! x1: lower boundary of the interval
+! y1: value of the function y at x=x1
+! x2: upper boundary of the interval
+! y2: value of the function y at x=x2
+! u1: uncertainty of y at x=x1
+! u2: uncertainty of y at x=x2
+! intlaw: interpolation law between x1 and x2 (intlaw=1,2,3,4,5)
+!         intlaw=1: histogram interpolation (y constant)
+!         intlaw=2: lin-lin (y is linear in x)
+!         intlaw=3: lin-log (y is linear in log(x))
+!         intlaw=4: log-lin (log(y) is linear in x)
+!         intlaw=5: log-log (log(y) is linear in log(x))
+!         Note: for ay other value lin-lin interpolation is assumed
+!
+! Output parameters:
+! yint: integral of y(x) between x1 and x2
+! uint: absolute deviation of yint estimated from u1 and u2
+!
+implicit real*8 (a-h,o-z)
+law=mod(intlaw,10)
+h=x2-x1
+if (h.le.0.0d0) then    ! x2-x1=0.0
+  yint=0.0d0
+  uint=0.0d0
+elseif (law.eq.1.or.y2.eq.y1) then ! histogram interpolation or y2=y1
+  yint=h*y1
+  uint=h*max(abs(u1),abs(u2))
+elseif (law.eq.2) then             ! lin-lin interpolation
+  h2=0.5d0*h
+  yint=h2*(y1+y2)
+  uint=h2*(abs(u1)+abs(u2))
+elseif (law.eq.3) then             ! lin-log interpolation
+  hl=h/log(x2/x1)
+  yint=x2*y2-x1*y1-(y2-y1)*hl
+  du1=x1*u1
+  du2=x2*u2
+  du3=(u2-u1)*hl
+  uint=max(abs(du1-du2+du3),abs(du2-du1-du3))
+elseif (law.eq.4) then             ! log-lin interpolation
+  yint=h*(y2-y1)/log(y2/y1)
+  ya=y1-u1
+  yb=y2-u2
+  dymin=abs(h*(yb-ya)/log(yb/ya)-yint)
+  ya=y1+u1
+  yb=y2+u2
+  dyplus=abs(h*(yb-ya)/log(yb/ya)-yint)
+  uint=max(dymin,dyplus)
+elseif (law.eq.5) then            ! log-log interpolation
+  dxl=log(x2/x1)
+  d1=log(y2/y1)/dxl+1.0d0
+  yint=x1*y1/d1*(exp(d1*dxl)-1.0d0)
+  ya=y1-u1
+  yb=y2-u2
+  d1=log(yb/ya)/dxl+1.0d0
+  dymin=abs(x1*ya/d1*(exp(d1*dxl)-1.0d0)-yint)
+  ya=y1+u1
+  yb=y2+u2
+  d1=log(yb/ya)/dxl+1.0d0
+  dyplus=abs(x1*ya/d1*(exp(d1*dxl)-1.0d0)-yint)
+  uint=max(dymin,dyplus)
+else ! unknown law
+  write(*,*) ' Interpolation law: ',law,' not allowed'
+  stop
+endif
+return
+end
+! ------------------------------------------------------------------------------
+subroutine tablin(x1,y1,x2,y2,u1,u2,intlaw,epsy,epsx,nmax,x,y,u,ulin,n)
+!
+! Description:
+! Subroutine tablin linearizes the function y(x) given by tabulated data (x1,y1)
+! and (x2,y2) and the interpolation law intlaw between x1 and x2. The
+! uncertainties at the interval endpoints u1 and u2 are used to estimate the
+! maximum absolute deviations at intermediate points.
+!
+! Input parameters:
+! x1: lower boundary of the interval
+! y1: value of the function y at x=x1
+! x2: upper boundary of the interval
+! y2: value of the function y at x=x2
+! u1: uncertainty of y(x) at x=x1
+! u2: uncertainty of y(x) at x=x2
+! intlaw: interpolation law between x1 and x2 (intlaw=1,2,3,4,5)
+!         intlaw=1: histogram interpolation (y constant)
+!         intlaw=2: lin-lin (y is linear in x)
+!         intlaw=3: lin-log (y is linear in log(x))
+!         intlaw=4: log-lig (log(y) is linear in x)
+!         intlaw=5: log-log (log(y) is linear in log(x))
+! epsy: fractional tolerance in y for linearization
+! epsx: fractional tolerance in x for linearization
+! nmax: Max. number of points allowed in the interval [x1,x2]
+!       Note: nmax is the dimension of arrays x,y,u and its minimum value
+!             should be 3. The dimension of ulin is equal to nmax-1
+!
+! Output parameters:
+! x: array containing the values of the abscissa x after linearization in the
+!    interval [x1,x2]
+! y: array containing the values of y after linearization y(i)=y(x(i)) in
+!    the interval [x1,x2]
+! u: array containing the pointwise maximum absolute deviations estimated from
+!    the uncertainties u1 and u2 at the interval endpoints
+! ulin: array containing maximum relative differnce due to linearization in the
+!    subinterval [x(i),x(i+1)]
+! n: total number of points after linearization.
+!    Actual size of arrays x, y and u.
+!    the actual size of ulin is n-1 (n-1 = number of subintervals)
+!    Note: 2 <= n <= nmax
+!
+implicit real*8 (a-h,o-z)
+parameter (ymin=1.0d-30)
+dimension x(*),y(*),u(*),ulin(*)
+allocatable xs(:),ys(:)
+law=mod(intlaw,10)
+h=x2-x1
+if (h.le.0.0d0) then                 ! x1=x2
+  x(1)=x1
+  y(1)=y1
+  u(1)=u1
+  x(2)=x1
+  y(2)=y2
+  u(2)=u2
+  n=2
+  ulin(1)=0.0d0
+elseif (law.eq.1.and.y1.ne.y2) then ! law=1 (y=constant)
+  x(1)=x1
+  y(1)=y1
+  u(1)=u1
+  x(2)=x2
+  y(2)=y1
+  u(2)=u1
+  x(3)=x2
+  y(3)=y2
+  u(3)=u2
+  n=3
+  ulin(1)=0.0d0
+  ulin(2)=0.0d0
+elseif (law.eq.2.or.y1.eq.y2) then ! law=2 (lin-lin)
+  x(1)=x1
+  y(1)=y1
+  u(1)=u1
+  x(2)=x2
+  y(2)=y2
+  u(2)=u2
+  n=2
+  ulin(1)=0.0d0
+else ! law=3,4,5 (iterative procedure for linearization)
+  kmax=nmax-1
+  allocate(xs(kmax),ys(kmax))
+  n=1
+  x(n)=x1
+  y(n)=y1
+  xl=x1
+  yl=y1
+  xh=x2
+  yh=y2
+  k=0
+  iconv=0
+  do while (iconv.eq.0) ! interval halving technique
+    if (law.eq.4.or.xh*xl.le.0.0d0) then
+      xm=0.5d0*(xl+xh)
+    else
+      xm=sqrt(xl*xh)
+    endif
+    ym=yinterp(xl,yl,xh,yh,law,xm)
+    erm=errlin(xl,yl,xh,yh,law)
+    ki=n+k
+    if (erm.le.abs(epsy*ym).or.(xh-xm).le.abs(epsx*xh).or.ki.eq.kmax.or.(abs(ym).eq.0.0d0.and.erm.le.epsy*ymin)) then
+      if (ym.ne.0.0d0) then
+        ulin(n)=abs(erm/ym)
+      else
+        ulin(n)=erm/ymin
+      endif
+      n=n+1
+      x(n)=xh
+      y(n)=yh
+      if (k.eq.0) then
+        iconv=1
+      elseif (ki.eq.kmax) then
+        do j=k,1,-1
+          xl=x(n)
+          yl=y(n)
+          xh=xs(j)
+          yh=ys(j)
+          if (law.eq.4.or.xh*xl.le.0.0d0) then
+            xm=0.5d0*(xl+xh)
+          else
+            xm=sqrt(xl*xh)
+          endif
+          ym=yinterp(xl,yl,xh,yh,law,xm)
+          erm=errlin(xl,yl,xh,yh,law)
+          if (ym.ne.0.0d0) then
+            ulin(n)=abs(erm/ym)
+          else
+            ulin(n)=erm/ymin
+          endif
+          n=n+1
+          x(n)=xh
+          y(n)=yh
+        enddo
+        iconv=2
+      else
+        xl=xh
+        yl=yh
+        xh=xs(k)
+        yh=ys(k)
+        k=k-1
+      endif
+    else
+      k=k+1
+      xs(k)=xh
+      ys(k)=yh
+      xh=xm
+      yh=ym
+    endif
+  enddo
+  deallocate(xs,ys)
+  u(1)=u1
+  u(n)=u2
+  do i=2,n-1
+    u(i)=absdev(x1,y1,u1,x2,y2,u2,law,x(i),y(i)) ! absolute deviation estimation
+  enddo
+endif
+return
+end
+! ------------------------------------------------------------------------------
+real*8 function yinterp(x1,y1,x2,y2,law,x)
+!
+! Description:
+! the procedure yinterp calculates the values of the function y at x from the
+! interpolation law given between the tabulated points (x1,y1) and (x2,y2)
+!
+! Input
+! x1: value of abscissa at the lower boundary
+! y1: value of the function y at x=x1
+! x2: value of abscissa at the upper boundary
+! y2: value of the function y at x=x2
+! law: non lin-lin ENDF-6 interpolation law between x1 and x2
+!        law=1: histogram interpolation (y constant)
+!        law=2: lin-lin (y is linear in x)
+!        law=3: lin-log (y is linear in log(x))
+!        law=4: log-lig (log(y) is linear in x)
+!        law=5: log-log (log(y) is linear in log(x))
+! x: value of the abscissa where the function is required (x1<=x<=x2)
+!
+! Output:
+! yinterp: y(x) = value of the function y at x
+!
+implicit real*8 (a-h,o-z)
+if (x2.eq.x1.or.y2.eq.y1.or.x.eq.x1.or.law.eq.1) then ! x2=x1,y2=y1,x=x1,law=1
+  yinterp=y1
+elseif (law.eq.2) then                                ! y is linear in x
+  yinterp=y1+(y2-y1)/(x2-x1)*(x-x1)
+elseif (law.eq.3) then                                ! y is linear in log(x)
+  yinterp=y1+(y2-y1)*log(x/x1)/log(x2/x1)
+elseif (law.eq.4) then                                ! log(y) is linear in x
+  yinterp=y1*exp(log(y2/y1)*(x-x1)/(x2-x1))
+elseif (law.eq.5) then                                ! log(y) is linear in log(x)
+  yinterp=y1*exp(log(y2/y1)*log(x/x1)/log(x2/x1))
+else
+  write(*,*) ' Fatal error: Interpolation law: ',law,' not allowed'
+  stop
+endif
+return
+end
+! ------------------------------------------------------------------------------
+real*8 function errlin(x1,y1,x2,y2,law)
+!
+! Description:
+! the procedure errlin estimates the maximum absolute difference between lin-lin
+! interpolation and the actual interpolation law (law=3,4,5) in the interval
+! [x1,x2]
+!
+! Input
+! x1: value of abscissa at the lower boundary
+! y1: value of the function y at x=x1
+! x2: value of abscissa at the upper boundary
+! y2: value of the function y at x=x2
+! law: non lin-lin ENDF-6 interpolation law between x1 and x2
+!        law=1: histogram interpolation (y constant)
+!        law=2: lin-lin (y is linear in x)
+!        law=3: lin-log (y is linear in log(x))
+!        law=4: log-lig (log(y) is linear in x)
+!        law=5: log-log (log(y) is linear in log(x))
+!
+! Output
+! errlin: Maximum absolute difference between lin-lin interpolation and the
+!         the actual interpolation law (law=3,4,5) in the interval [x1,x2]
+!
+implicit real*8 (a-h,o-z)
+if (x2.eq.x1.or.y2.eq.y1.or.law.eq.1.or.law.eq.2) then ! x2=x1,y2=y1,law=1 or 2
+  errlin=0.0d0
+elseif (law.eq.3) then ! y is linear in log(x)
+  dy=y2-y1
+  a=dy/(x2-x1)
+  b=dy/log(x2/x1)
+  errlin=abs(b*(1-log(b/(a*x1)))-a*x1)
+elseif (law.eq.4) then ! log(y) is linear in x
+  a=(y2-y1)/log(y2/y1)
+  b=a/y1
+  errlin=abs(y1*(1.0d0-b)+a*log(b))
+elseif (law.eq.5) then ! log(y) is linear in log(x)
+  a=(y2-y1)/(x2-x1)
+  b=log(y2/y1)/log(x2/x1)
+  c=exp(log(a*x1/(b*y1))/(b-1.0d0))
+  errlin=abs(y1*(1.0d0-exp(b*log(c)))+a*x1*(c-1.0d0))
+else
+  write(*,*) ' Fatal error: Interpolation law: ',law,' not allowed'
+  stop
+endif
+return
+end
+! ------------------------------------------------------------------------------
+real*8 function absdev(x1,y1,u1,x2,y2,u2,law,x,y)
+!
+! Description:
+! absdev is a function designed to estimate the maximum absolute deviation
+! for y=y(x) considering the uncertainties u1 and u2 at the endpoints of
+! the interval. y(x) is given by a non-linear ENDF-6 interpolation law
+! between x1 and x2.
+! Defining,
+!   y=yinterp(x1,y1,x2,y2,law,x)
+!   ymin=yinterp(x1,y1-u1,x2,y2-u2,law,x)
+!   yplus=yinterp(x1,y1-u1,x2,y2-u2,law,x)
+! then,
+!   absdev=max(abs(y-ymin),abs(yplus-y))
+!
+! Input:
+! x1: value of abscissa at the lower boundary
+! y1: value of the function y at x1
+! u1: uncertainty of y1 at x1
+! x2: value of abscissa at the upper boundary
+! y2: value of the function y at x2
+! u2: uncertainty of y2 at x2
+! law: non lin-lin ENDF-6 interpolation law between x1 and x2
+!        law=1: histogram interpolation (y constant)
+!        law=2: lin-lin (y is linear in x)
+!        law=3: lin-log (y is linear in log(x))
+!        law=4: log-log (log(y) is linear in x)
+!        law=5: log-log (log(y) is linear in log(x))
+! x: value of the abscissa x
+! y: value of the function y(x)
+!
+! Output
+! absdev: maximum absolute deviation of y(x)
+!
+  implicit real*8 (a-h, o-z)
+  ya=y1-u1
+  yb=y2-u2
+  ymin=yinterp(x1,ya,x2,yb,law,x)
+  ya=y1+u1
+  yb=y2+u2
+  yplus=yinterp(x1,ya,x2,yb,law,x)
+  absdev=max(abs(y-ymin),abs(yplus-y))
+return
+end
+! ------------------------------------------------------------------------------
