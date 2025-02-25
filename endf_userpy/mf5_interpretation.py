@@ -30,7 +30,7 @@ def get_incident_energies(contrib_sec):
 
 
 def get_incident_energy_range(mtsec):
-    contributions = dict2array(mtsec['contribution'])
+    contributions = list(mtsec['contribution'].values())
     en_min = np.inf 
     en_max = -np.inf
     for contrib in contributions:
@@ -48,7 +48,7 @@ def compute_tabulated_spectrum(
     int_arr = np.array(contrib_sec['E_interp']['INT'])
     nbt_arr = np.array(contrib_sec['E_interp']['NBT'])
     ein_mesh = dict2array(contrib_sec['E'])
-    tab1_records = dict2array(contrib_sec['spectrum'])
+    tab1_records = list(contrib_sec['spectrum'].values())
     f = interp_tab2(
         ein, eout, ein_mesh, int_arr, nbt_arr, tab1_records, 'Eout', 'g', outside_value=0.0
     )
@@ -126,7 +126,7 @@ def compute_spectrum_contribution(contrib_sec, energies_in, energies_out):
 def compute_spectrum(endf_dict, mt, energies_in, energies_out): 
     ein = energies_in
     eout = energies_out
-    contributions = dict2array(endf_dict[5][mt]['contribution'])
+    contributions = list(endf_dict[5][mt]['contribution'].values())
     res = 0.0
     for contrib in contributions:
         prob = _compute_prob(contrib, ein)
