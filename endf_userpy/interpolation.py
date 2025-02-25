@@ -152,8 +152,41 @@ def interp_tab2(
     x, y, xp, int_arr, nbt_arr, tab1_records, yp_name, fp_name,
     outside_value=None
 ):
+    """Perform 2d interpolation using TAB2/TAB1 record sequence
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Target x value
+    y: numpy.ndarray
+        Target y value
+    xp : numpy.ndarray
+        Mesh of x-values
+    int_arr : numpy.ndarray
+        Interpolation types for x-segments
+    nbt_arr : numpy.ndarray
+        Definition of x-segments
+    tab1_records : list
+        List of ENDF TAB1 records
+    yp_name : str
+        Key name for y-mesh in all TAB1 records
+    fp_name : str
+        Key name for mesh of associated function values
+        in TAB1 record
+    outside_value : bool
+        Returned value for point with x-value outside x-mesh limits.
+        If `None`, a `ValueError` is raised if outside points encountered.
+
+    Returns
+    -------
+    numpy.ndarray
+        A two-dimensional array with the interpolated function values.
+        The value in the i-th row and j-th column corresponds is the
+        function values for `x[i]` and `y[j]`.
+    """
     if y.ndim == 1:
         y = y.reshape(1, -1)
+
     idcs = find_interval(xp, x)
     interp_arr = convert_interp_repr(int_arr, nbt_arr)
     # interpolation between angles
