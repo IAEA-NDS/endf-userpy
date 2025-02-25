@@ -17,3 +17,14 @@ PARTICLE_ZAP = {
     'h': 1000 * 2.0 + 3.0,
     'a': 1000 * 2.0 + 4.0,
 }
+
+
+ZAP_PARTICLE = {v: k for k, v in PARTICLE_ZAP.items()}
+
+
+def get_zap_for_particle(particle):
+    return PARTICLE_ZAP[particle]
+
+
+def get_particle_for_zap(zap):
+    return ZAP_PARTICLE[zap]

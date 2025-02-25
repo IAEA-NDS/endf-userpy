@@ -64,10 +64,6 @@ def get_ZAP(endf_dict, mt):
     return zap
 
 
-def get_zap_for_particle(particle):
-    return PARTICLE_ZAP[particle]
-
-
 def is_zap_consistent(endf_dict, mt, zap):
     try:
         zap_mt = get_ZAP(endf_dict, mt)
