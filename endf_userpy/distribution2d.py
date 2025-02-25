@@ -2,7 +2,9 @@ import numpy as np
 from . import mf4_interpretation_fort as mf4_interp 
 from . import mf5_interpretation as mf5_interp
 from . import mf6_interpretation as mf6_interp 
-from .properties import get_zap_for_particle 
+from .properties import (
+    get_zap_for_particle, has_mf4_mt, has_mf5_mt, has_mf6_mt
+)
 
 
 def compute_dist2d_values_from_mf4_mf5(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True):
@@ -32,5 +34,23 @@ def compute_dist2d_values_from_mf6(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True
 ):
     return mf6_interp.compute_dist2d_values(
+        endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
+    )
+
+
+def compute_dist2d_values(
+    endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True
+):
+    if has_mf6_mt(endf_dict, mt):
+        func = compute_dist2d_values_from_mf6
+    elif has_mf4_mt(endf_dict, mt) and has_mf5_mt(endf_dict, mt):
+        func = compute_dist2d_values_from_mf4_mf5
+    else:
+        raise IndexError(
+            f"Cannot reconstruct double-differential distribution for MT={mt} "
+            "because the required data is not available."
+        )
+
+    return func(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
     )
