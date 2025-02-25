@@ -2,8 +2,9 @@ import numpy as np
 from . import mf4_interpretation_fort as mf4_interp 
 from . import mf5_interpretation as mf5_interp
 from . import mf6_interpretation as mf6_interp 
+from .physical_constants import get_zap_for_particle
 from .properties import (
-    get_zap_for_particle, has_mf4_mt, has_mf5_mt, has_mf6_mt
+    has_mf4_mt, has_mf5_mt, has_mf6_mt
 )
 
 
