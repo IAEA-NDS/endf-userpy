@@ -99,3 +99,15 @@ def get_reaction_string_for_mt(endf_dict, mt):
     r = r.replace('(y,', f'({proj},')
     r = r.replace(',z', f',{proj}')
     return r
+
+
+def has_mf4_mt(endf_dict, mt):
+    return 4 in endf_dict and mt in endf_dict[4]
+
+
+def has_mf5_mt(endf_dict, mt):
+    return 5 in endf_dict and mt in endf_dict[5]
+
+
+def has_mf6_mt(endf_dict, mt):
+    return 6 in endf_dict and mt in endf_dict[6]
