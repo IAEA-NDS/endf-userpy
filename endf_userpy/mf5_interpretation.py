@@ -24,17 +24,18 @@ def _compute_theta(contrib_sec, energies_in):
     ).reshape(-1, 1)  
 
 
-def get_incident_energies(contrib_sec):
+def get_incident_energies_of_contribution(contrib_sec):
     en_mesh = np.array(contrib_sec['p_table']['E'], dtype=float)
     return en_mesh
 
 
-def get_incident_energy_range(mtsec):
+def get_incident_energy_range(endf_dict, mt):
+    mtsec = endf_dict[5][mt]
     contributions = list(mtsec['contribution'].values())
     en_min = np.inf 
     en_max = -np.inf
     for contrib in contributions:
-        ens = get_incident_energies(contrib)
+        ens = get_incident_energies_of_contribution(contrib)
         en_min = min(np.min(ens), en_min)
         en_max = max(np.max(ens), en_max)
     return (en_min, en_max)

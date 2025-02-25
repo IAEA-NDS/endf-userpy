@@ -34,6 +34,6 @@ def test_mf5_interpretation_never_fails(endf_file, myEndfParser):
     eout = np.linspace(1e-5, 20e6, 10)
     for mt in mf5sec:
         mtsec = mf5sec[mt]
-        ein_min, ein_max = get_incident_energy_range(mtsec)
+        ein_min, ein_max = get_incident_energy_range(endf_dict, mt)
         ein = np.linspace(ein_min, ein_max,  10)
         compute_spectrum(endf_dict, mt, ein, eout) 

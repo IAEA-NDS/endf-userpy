@@ -22,16 +22,17 @@ from .properties import (
 )
 
 
-def get_incident_energies(mf4sec, mt):
-    return list(mf4sec[mt]['E'].values())
+def get_incident_energies(endf_dict, mt):
+    return list(endf_dict[4][mt]['E'].values())
 
 
-def get_incident_energy_range(mf4sec, mt):
-    ens = get_incident_energies(mf4sec, mt)
+def get_incident_energy_range(endf_dict, mt):
+    ens = get_incident_energies(endf_dict, mt)
     return (np.min(ens), np.max(ens))
 
 
-def has_isotropic_angdist_repr(mf4sec, mt):
+def has_isotropic_angdist_repr(endf_dict, mt):
+    mf4sec = endf_dict[4]
     return mf4sec[mt]['LTT'] == 0 and mf4sec[mt]['LI'] == 1
 
 
