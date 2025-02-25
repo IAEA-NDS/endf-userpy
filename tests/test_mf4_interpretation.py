@@ -61,8 +61,8 @@ def test_mf4_python_fortran_equivalence(endf_file, myEndfParser):
     mf4sec = endf_dict[4]
     for mt in mf4sec:
         curens = energies
-        if not mf4py.has_isotropic_angdist_repr(mf4sec, mt):
-            en_range = mf4py.get_incident_energy_range(mf4sec, mt)
+        if not mf4py.has_isotropic_angdist_repr(endf_dict, mt):
+            en_range = mf4py.get_incident_energy_range(endf_dict, mt)
             en_diff = np.diff(en_range)
             curens = np.linspace(en_range[0], en_range[1], 5)
         res_py = mf4py.compute_angdist_values(endf_dict, mt, curens, angcos)
