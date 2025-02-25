@@ -1,6 +1,5 @@
 import numpy as np
 from .properties import (
-    get_ZAP,
     is_zap_consistent,
 )
 from .mf3_interpretation import (
