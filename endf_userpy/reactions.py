@@ -1,5 +1,6 @@
 import types
 from collections.abc import Sequence
+from .physical_constants import get_particle_for_zap
 
 
 def _create_tuple(*args):
@@ -122,6 +123,19 @@ def get_ejectiles(proj, mt):
             return tuple(result)
         i += 1
     return tuple(result)
+
+
+def get_multiplicity_for_ejectile(proj, mt, ejectile):
+    ejectiles = get_ejectiles(proj, mt)
+    for m, part in ejectiles:
+        if part == ejectile:
+            return m
+    return 0
+
+
+def get_multiplicity_for_zap(proj, mt, zap):
+    ejectile = get_particle_for_zap(zap)
+    return get_multiplicity_for_ejectile(proj, mt, ejectile)
 
 
 def get_raw_reaction_string_for_mt(mt):
