@@ -44,6 +44,8 @@ def compute_dist2d_values(
 ):
     if has_mf6_mt(endf_dict, mt):
         func = compute_dist2d_values_from_mf6
+        if mt == 18 and endf_dict[6][mt]['JP'] > 0:
+            func = compute_dist2d_values_from_mf4_mf5
     elif has_mf4_mt(endf_dict, mt) and has_mf5_mt(endf_dict, mt):
         func = compute_dist2d_values_from_mf4_mf5
     else:
