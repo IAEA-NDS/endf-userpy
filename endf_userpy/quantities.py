@@ -18,7 +18,7 @@ from .distribution2d import compute_dist2d_values
 compute_xs = mf3_interp.compute_cross_section
 
 
-def compute_dxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
+def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
     if not is_zap_consistent(endf_dict, mt, zap):
         raise ValueError(f'MT={mt} and ZAP={mt} are not consistent')
     angdist = mf4_interp.compute_angdist_values(
