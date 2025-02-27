@@ -34,9 +34,6 @@ def compute_yields(endf_dict, mt, zap, energies_in):
 
 
 def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
-    if not is_zap_consistent(endf_dict, mt, zap):
-        raise ValueError(f'MT={mt} and ZAP={mt} are not consistent')
-
     yields = compute_yields(endf_dict, mt, zap, energies_in).reshape(-1, 1)
     xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1)
     angdist = compute_angdist_values(
@@ -46,9 +43,9 @@ def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
 
 
 def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True):
+    yields = compute_yields(endf_dict, mt, zap, energies_in).reshape(-1, 1, 1)
+    xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
     )
-    yields = compute_yields(endf_dict, mt, zap, energies_in).reshape(-1, 1, 1)
-    xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1, 1)
     return f * yields * xs / (2*np.pi)
