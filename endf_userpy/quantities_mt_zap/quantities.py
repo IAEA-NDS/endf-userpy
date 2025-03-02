@@ -16,9 +16,12 @@ from .distribution1d import (
 from .distribution2d import compute_dist2d_values
 
 # functions borrowed as is
-from ..mfsec_interpretation.mf3_interpretation import compute_cross_section as compute_xs
-from ..mfsec_interpretation.mf3_interpretation import get_incident_energy_range
-from ..mfsec_interpretation.mf3_interpretation import get_incident_energies
+from ..mfsec_interpretation.mf3_interpretation import (
+    compute_cross_section as compute_xs,
+    get_incident_energy_range,
+    get_incident_energies,
+    get_reaction_mts as get_reaction_mt_numbers,
+)
 
 
 def compute_yields(endf_dict, mt, zap, energies_in):
