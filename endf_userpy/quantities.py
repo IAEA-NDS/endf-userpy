@@ -14,7 +14,11 @@ from .distribution1d import (
     compute_energydist_values,
 )
 from .distribution2d import compute_dist2d_values
+
+# functions borrowed as is
 from .mf3_interpretation import compute_cross_section as compute_xs
+from .mf3_interpretation import get_incident_energy_range
+from .mf3_interpretation import get_incident_energies
 
 
 def compute_yields(endf_dict, mt, zap, energies_in):
