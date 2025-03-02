@@ -6,6 +6,7 @@ from .helpers import (
     find_interval,
     get_enclosing_points,
     convert_interp_repr,
+    treat_duplicates,
 )
 
 
@@ -68,6 +69,7 @@ def interp(x, xp, fp, interp_type, outside_value=None):
 def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
     check_int_nbt(int_arr, nbt_arr)
     x = np.array(x, copy=None)
+    treat_duplicates(xp, inplace=True)
     # TODO: Here we provisionally let NaN values pass through the
     #       program logic for comparison with the Fortran routines.
     #       However, eventually no NaN values should appear in x.
