@@ -30,7 +30,7 @@ def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
     subsec = sec['subsection'][subsec_num]
     yield_tab = subsec['yields']
     interp_yields = interp_tab1(
-        energies_in, yield_tab, 'Eint', 'yi'
+        energies_in, yield_tab, 'Eint', 'yi', outside_value=0.0
     )
     return interp_yields
 
