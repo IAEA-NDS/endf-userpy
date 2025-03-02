@@ -22,8 +22,30 @@ PARTICLE_ZAP = {
 ZAP_PARTICLE = {v: k for k, v in PARTICLE_ZAP.items()}
 
 
+PARTICLE_NAME_SYNONYMS = {
+    'g': ('gamma',),
+    'n': ('neutron',),
+    'p': ('proton',),
+    'd': ('deuteron',),
+    't': ('triton',),
+    'h': ('helion', 'helium-3'),
+    'a': ('alpha',),
+}
+
+
+PARTICLE_NAME_MAP = {
+    v: k for k, t in PARTICLE_NAME_SYNONYMS.items() for v in t
+}
+PARTICLE_NAME_MAP.update({k: k for k in PARTICLE_NAME_SYNONYMS})
+
+
+def is_valid_particle_string(particle):
+    return particle.lower() in PARTICLE_NAME_MAP
+
+
 def get_zap_for_particle(particle):
-    return PARTICLE_ZAP[particle]
+    part = PARTICLE_NAME_MAP[particle.lower()]
+    return PARTICLE_ZAP[part]
 
 
 def get_particle_for_zap(zap):
