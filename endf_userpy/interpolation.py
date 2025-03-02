@@ -187,6 +187,12 @@ def interp_tab2(
     if y.ndim == 1:
         y = y.reshape(1, -1)
 
+    if outside_value is not None:
+        is_inside = (x >= np.min(xp)) & (x <= np.max(xp))
+        any_outside = not np.all(is_inside)
+        x_orig = x
+        x = x_orig[is_inside]
+
     idcs = find_interval(xp, x)
     interp_arr = convert_interp_repr(int_arr, nbt_arr)
     # interpolation between angles
@@ -235,5 +241,11 @@ def interp_tab2(
                 interp(cur_x, red_xp , red_f[:,j], eff_interp_type)
 
         result_arr[i,:] = curres
+
+    if outside_value is not None and any_outside:
+            full_result_dim = (len(x_orig), y.shape[1])
+            full_result_arr = np.full(full_result_dim, outside_value, dtype=float)
+            full_result_arr[is_inside, :] = result_arr
+            result_arr = full_result_arr
 
     return result_arr

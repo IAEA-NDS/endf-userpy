@@ -30,4 +30,4 @@ def get_incident_energy_range(endf_dict, mt):
 def compute_cross_section(endf_dict, mt, energies_in):
     sec = endf_dict[3][mt]
     xstab = sec['xstable']
-    return interp_tab1(energies_in, xstab, 'E', 'xs')
+    return interp_tab1(energies_in, xstab, 'E', 'xs', outside_value=0.0)
