@@ -25,15 +25,23 @@ def pad_outside_values(func):
         endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, *args, **kwargs
     ):
         eincs = energies_in
+        eouts = energies_out
         subsec = endf_dict[6][mt]['subsection'][subsec_num]
         ei_mesh = dict2array(subsec['E'], dtype=float)
-        is_inside = (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
-        eincs_inside = eincs[is_inside]
-        res_dim = (len(eincs), len(energies_out), len(angle_cosines_out))
+        is_inside_x = (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
+        is_inside_y = (eouts >= 1e-20)
+        eincs_inside = eincs[is_inside_x]
+        eouts_inside = eouts[is_inside_y]
+        res_dim = (len(eincs), len(eouts), len(angle_cosines_out))
         res_arr = np.full(res_dim, 0.0, dtype=float)
-        res_arr[is_inside, :, :] = func(
-            endf_dict, mt, subsec_num, eincs_inside, energies_out, angle_cosines_out, *args, **kwargs
+        if len(eincs_inside) == 0 or len(eouts_inside) == 0:
+            return res_arr
+        arr_inside = func(
+            endf_dict, mt, subsec_num,
+            eincs_inside, eouts_inside, angle_cosines_out,
+            *args, **kwargs
         )
+        res_arr[np.ix_(is_inside_x, is_inside_y, np.array([True]))] =  arr_inside
         return res_arr
 
     return wrapfunc
