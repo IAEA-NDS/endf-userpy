@@ -1,9 +1,8 @@
 import numpy as np
 from scipy.integrate import quad
-from .mfsec_interpretation import mf4_interpretation as mf4_interp
-from .mfsec_interpretation import mf5_interpretation as mf5_interp
-from .distribution2d import compute_dist2d_values
-from .primitives.properties import (
+from ..mfsec_interpretation import mf4_interpretation as mf4_interp
+from ..mfsec_interpretation import mf5_interpretation as mf5_interp
+from ..primitives.properties import (
     is_zap_consistent,
     has_mf4_mt,
     has_mf5_mt,
@@ -11,6 +10,7 @@ from .primitives.properties import (
     get_QM,
     get_QI,
 )
+from .distribution2d import compute_dist2d_values
 
 
 def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
