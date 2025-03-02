@@ -1,6 +1,6 @@
 import numpy as np
-from .helpers import dict2array
-from .interpolation import endf_interp1d
+from ..primitives.helpers import dict2array
+from ..primitives.interpolation import endf_interp1d
 
 
 def _compute_yields_from_polynomial(coefs, energies_in):

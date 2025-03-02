@@ -1,22 +1,22 @@
 import numpy as np
-from .interpolation import (
+from ..primitives.interpolation import (
     evaluate_interp_legendre_polynomials,
     interp,
     endf_interp1d,
     interp_tab2,
 )
-from .conversion import (
+from ..primitives.conversion import (
     compute_r2,
     convert_angcos_to_cmsys,
     convert_angdist_to_labsys,
 )
-from .helpers import (
+from ..primitives.helpers import (
     deg2rad,
     dict2array,
     find_interval,
     convert_interp_repr,
 )
-from .properties import (
+from ..primitives.properties import (
     get_AWR, get_AWI, get_AWP,
     get_QM, get_QI, get_LR,
 )

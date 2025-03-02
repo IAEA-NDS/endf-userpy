@@ -1,14 +1,14 @@
 import numpy as np
 from scipy.integrate import quad
-from . import properties
-from . import reactions as reaction
-from .physical_constants import get_zap_for_particle
-from .properties import (
+from .primitives import properties
+from .primitives import reactions as reaction
+from .primitives.physical_constants import get_zap_for_particle
+from .primitives.properties import (
     is_zap_consistent,
     has_mf6_mt,
 )
-from . import mf1_interpretation as mf1_interp
-from . import mf6_interpretation as mf6_interp
+from .mfsec_interpretation import mf1_interpretation as mf1_interp
+from .mfsec_interpretation import mf6_interpretation as mf6_interp
 from .distribution1d import (
     compute_angdist_values,
     compute_energydist_values,
@@ -16,9 +16,9 @@ from .distribution1d import (
 from .distribution2d import compute_dist2d_values
 
 # functions borrowed as is
-from .mf3_interpretation import compute_cross_section as compute_xs
-from .mf3_interpretation import get_incident_energy_range
-from .mf3_interpretation import get_incident_energies
+from .mfsec_interpretation.mf3_interpretation import compute_cross_section as compute_xs
+from .mfsec_interpretation.mf3_interpretation import get_incident_energy_range
+from .mfsec_interpretation.mf3_interpretation import get_incident_energies
 
 
 def compute_yields(endf_dict, mt, zap, energies_in):

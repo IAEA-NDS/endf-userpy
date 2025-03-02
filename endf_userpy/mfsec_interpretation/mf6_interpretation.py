@@ -1,9 +1,9 @@
 import numpy as np
-from .properties import (
+from ..primitives.properties import (
     is_zap_consistent,
     get_ZAP,
 )
-from .interpolation import interp_tab1
+from ..primitives.interpolation import interp_tab1
 from .mf6_interpretation_helpers import (
     check_mf6_exists,
     check_mt_exists_in_mf6,
