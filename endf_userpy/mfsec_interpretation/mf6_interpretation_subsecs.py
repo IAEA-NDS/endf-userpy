@@ -32,6 +32,14 @@ def pad_outside_values(func):
         is_inside_y = (eouts >= 1e-20)
         eincs_inside = eincs[is_inside_x]
         eouts_inside = eouts[is_inside_y]
+        # special casing regular case with all points within mesh for small speedup
+        if len(eincs_inside) == len(eincs) and len(eouts_inside) == len(eouts):
+            return func(
+                endf_dict, mt, subsec_num,
+                eincs, eouts, angle_cosines_out,
+                *args, **kwargs
+            )
+        # special treatment if some points outside mesh
         res_dim = (len(eincs), len(eouts), len(angle_cosines_out))
         res_arr = np.full(res_dim, 0.0, dtype=float)
         if len(eincs_inside) == 0 or len(eouts_inside) == 0:
