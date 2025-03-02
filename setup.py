@@ -1,4 +1,4 @@
-from setuptools import setup, Extension
+from setuptools import setup, Extension, find_packages
 from setuptools.command.build_ext import build_ext as build_ext_orig
 import numpy
 import subprocess
@@ -92,7 +92,8 @@ extension = Extension(
 setup(
     name='endf-userpy',
     version='0.0',
-    packages=['endf_userpy'],
+    #packages=['endf_userpy'],
+    packages=find_packages(),
     ext_modules=[extension],
     cmdclass={'build_ext': build_ext},
     install_requires=[

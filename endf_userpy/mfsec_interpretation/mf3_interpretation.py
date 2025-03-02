@@ -1,7 +1,7 @@
 import numpy as np
-from .helpers import treat_duplicates
-from .interpolation import interp_tab1
-from .properties import (
+from ..primitives.helpers import treat_duplicates
+from ..primitives.interpolation import interp_tab1
+from ..primitives.properties import (
     get_projectile,
     get_reaction_string_for_mt,
 )

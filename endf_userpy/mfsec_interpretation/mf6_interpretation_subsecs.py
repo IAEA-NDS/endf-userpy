@@ -1,16 +1,16 @@
 import numpy as np
-from .fortran.endf6 import (
+from ..fortran.endf6 import (
     mf6_get_law1,
     mf6_get_law2,
     mf6_get_law6,
     mf6_get_law7,
 )
-from .helpers import (
+from ..primitives.helpers import (
     dict2array,
     convert_interp_repr,
     find_interval,
 )
-from .properties import (
+from ..primitives.properties import (
     get_AWR,
     get_AWI,
     get_ZA,

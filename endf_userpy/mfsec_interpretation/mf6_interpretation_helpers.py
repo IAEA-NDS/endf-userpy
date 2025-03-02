@@ -1,5 +1,5 @@
 import numpy as np
-from .properties import (
+from ..primitives.properties import (
     get_ZAP,
     is_zap_consistent,
 )

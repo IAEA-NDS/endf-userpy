@@ -1,9 +1,9 @@
 import numpy as np
-from .helpers import (
+from ..primitives.helpers import (
     dict2array,
     erf,
 )
-from .interpolation import (
+from ..primitives.interpolation import (
     endf_interp1d,
     interp_tab1,
     interp_tab2,

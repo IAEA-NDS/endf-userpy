@@ -1,9 +1,9 @@
 import numpy as np
 from scipy.integrate import quad
-from . import mf4_interpretation as mf4_interp
-from . import mf5_interpretation as mf5_interp
+from .mfsec_interpretation import mf4_interpretation as mf4_interp
+from .mfsec_interpretation import mf5_interpretation as mf5_interp
 from .distribution2d import compute_dist2d_values
-from .properties import (
+from .primitives.properties import (
     is_zap_consistent,
     has_mf4_mt,
     has_mf5_mt,

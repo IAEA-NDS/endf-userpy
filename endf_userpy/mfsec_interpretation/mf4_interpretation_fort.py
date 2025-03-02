@@ -1,11 +1,11 @@
 import numpy as np
-from .fortran.endf6 import mf4_get_leg, mf4_get_tab
-from .interpolation import find_interval
-from .properties import (
+from ..fortran.endf6 import mf4_get_leg, mf4_get_tab
+from ..primitives.interpolation import find_interval
+from ..primitives.properties import (
     get_AWI, get_AWR, get_AWP,
     get_QM, get_QI, get_LR,
 )
-from .helpers import (
+from ..primitives.helpers import (
     dict2array,
     convert_interp_repr,
 )
