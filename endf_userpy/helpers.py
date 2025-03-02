@@ -60,6 +60,25 @@ def check_int_nbt(int_arr, nbt_arr):
         raise IndexError('`int_arr` and `nbt_arr` must be of same size')
 
 
+def is_sorted(arr):
+    return np.all(arr[:-1] <= arr[1:])
+
+
+def treat_duplicates(arr, releps=1e-8, inplace=False):
+    """Deduplicate values in an array."""
+    if not inplace:
+        arr = arr.copy()
+    if not is_sorted(arr):
+        raise ValueError('array not sorted')
+    elems, counts = np.unique(arr, return_counts=True)
+    elem_idx = 0
+    for curelem, curcount in zip(elems, counts):
+        if curcount > 1:
+            arr[elem_idx:elem_idx+curcount] *= (1 - releps * np.arange(curcount-1, -1, -1))
+        elem_idx += curcount
+    return arr
+
+
 def convert_interp_repr(int_arr, nbt_arr):
     num_elements = nbt_arr[-1]
     interp_arr = np.zeros(num_elements, dtype=int)
