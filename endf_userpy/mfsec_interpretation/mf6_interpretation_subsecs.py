@@ -19,6 +19,27 @@ from ..primitives.properties import (
 )
 
 
+def pad_outside_values(func):
+
+    def wrapfunc(
+        endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, *args, **kwargs
+    ):
+        eincs = energies_in
+        subsec = endf_dict[6][mt]['subsection'][subsec_num]
+        ei_mesh = dict2array(subsec['E'], dtype=float)
+        is_inside = (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
+        eincs_inside = eincs[is_inside]
+        res_dim = (len(eincs), len(energies_out), len(angle_cosines_out))
+        res_arr = np.full(res_dim, 0.0, dtype=float)
+        res_arr[is_inside, :, :] = func(
+            endf_dict, mt, subsec_num, eincs_inside, energies_out, angle_cosines_out, *args, **kwargs
+        )
+        return res_arr
+
+    return wrapfunc
+
+
+@pad_outside_values
 def get_dist2d_from_subsec_law1(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
 ):
@@ -101,6 +122,7 @@ def get_dist2d_from_subsec_law1(
     return cont_result_arr
 
 
+@pad_outside_values
 def get_dist1d_from_subsec_law2(
     endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
 ):
@@ -200,6 +222,7 @@ def get_dist2d_from_subsec_law6(
     return result_arr
 
 
+@pad_outside_values
 def get_dist2d_from_subsec_law7(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
 ):
