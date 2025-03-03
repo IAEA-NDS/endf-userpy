@@ -1,4 +1,5 @@
 import numpy as np
+from ..primitives.interpolation import interp_tab1
 from ..fortran.endf6 import (
     mf6_get_law1,
     mf6_get_law2,
@@ -326,3 +327,65 @@ def get_dist2d_from_subsec_law7(
 
             result_arr[i:i+1,:,j:j+1] = cur_result_arr
     return result_arr
+
+
+def get_incident_energies_from_subsec(endf_dict, mt, subsec_num):
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    yield_tab = subsec['yields']
+    return np.array(yield_tab['Eint'], copy=True)
+
+
+def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    yield_tab = subsec['yields']
+    interp_yields = interp_tab1(
+        energies_in, yield_tab, 'Eint', 'yi', outside_value=0.0
+    )
+    return interp_yields
+
+
+def compute_dist1d_from_subsec(
+    endf_dict, mt, subsec_num,
+    energies_in, angle_cosines_out, to_lab=True
+):
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    law = subsec['LAW']
+    if law == 2:
+        return get_dist1d_from_subsec_law2(
+            endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
+        )
+    else:
+        raise NotImplementedError(
+            f'Angular distribution interpretation for LAW={law} not implemented.'
+        )
+
+
+def compute_dist2d_from_subsec(
+    endf_dict, mt, subsec_num,
+    energies_in, energies_out, angle_cosines_out, to_lab=True
+):
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    law = subsec['LAW']
+    if law == 1:
+        return get_dist2d_from_subsec_law1(
+            endf_dict, mt, subsec_num,
+            energies_in, energies_out, angle_cosines_out, to_lab
+        )
+    elif law == 6:
+        return get_dist2d_from_subsec_law6(
+            endf_dict, mt, subsec_num,
+            energies_in, energies_out, angle_cosines_out, to_lab
+        )
+    elif law == 7:
+        return get_dist2d_from_subsec_law7(
+            endf_dict, mt, subsec_num,
+            energies_in, energies_out, angle_cosines_out, to_lab
+        )
+    else:
+        raise NotImplementedError(
+            f'DDX interpretation for LAW={law} not implemented.'
+        )
