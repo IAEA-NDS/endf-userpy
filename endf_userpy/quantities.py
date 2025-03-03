@@ -4,6 +4,10 @@ from .quantities_mt_zap.quantities import (
     compute_yields,
     compute_xs,
     get_reaction_mt_numbers,
+    compute_cumulative_quantity,
+)
+from .quantities_mt_zap.selectors import (
+    contains_zap
 )
 
 
@@ -12,16 +16,14 @@ from .quantities_mt_zap.quantities import (
 
 def get_particle_production_xs(endf_dict, particle, energies_in):
     zap = get_zap_for_particle(particle)
-    prodxs = np.zeros_like(energies_in, dtype=float)
-    mt_list = get_reaction_mt_numbers(endf_dict)
-    for mt in mt_list:
-        try:
-            particle_yield = compute_yields(endf_dict, mt, zap, energies_in)
-        except Exception:
-            continue
-        curxs = compute_xs(endf_dict, mt, energies_in)
-        prodxs += curxs * particle_yield
-    return prodxs
+    return compute_cumulative_quantity(
+        lambda endf_dict, mt, zap, energies_in: (
+            compute_yields(endf_dict, mt, zap, energies_in) *
+            compute_xs(endf_dict, mt, energies_in)
+        ),
+        lambda endf_dict, mt, zap, energies_in: contains_zap(endf_dict, mt, zap),
+        endf_dict, zap, energies_in
+    )
 
 
 def get_particle_production_dxs_dmu(endf_dict, particle, energies_in, angle_cosines_out):
