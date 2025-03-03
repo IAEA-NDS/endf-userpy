@@ -87,6 +87,11 @@ def get_zaps_for_mt(endf_dict, mt, dist2d_only=False):
     return zaps
 
 
+def contains_zap(endf_dict, mt, zap):
+    zaps = get_zaps_for_mt(endf_dict, mt)
+    return zap in zaps
+
+
 def get_zaps_for_all_mts(endf_dict, dist2d_only=False):
     sec = endf_dict[6]
     res = dict()
