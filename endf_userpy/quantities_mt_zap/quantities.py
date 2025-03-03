@@ -68,3 +68,23 @@ def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_ou
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
     )
     return f * yields * xs / (2*np.pi)
+
+
+def compute_cumulative_quantity(func, select, endf_dict, *args, **kwargs):
+    mt_list = get_reaction_mt_numbers(endf_dict)
+    is_first = True
+    cum_res = None
+    for mt in mt_list:
+
+        if select is not None:
+            if not select(endf_dict, mt, *args, **kwargs):
+                continue
+
+        cur_res = func(endf_dict, mt, *args, **kwargs)
+        if is_first:
+            cum_res = cur_res
+            is_first = False
+        else:
+            cum_res += cur_res
+
+    return cum_res
