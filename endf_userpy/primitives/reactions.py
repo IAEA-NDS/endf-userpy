@@ -127,6 +127,8 @@ def get_ejectiles(proj, mt):
 
 def get_multiplicity_for_ejectile(proj, mt, ejectile):
     ejectiles = get_ejectiles(proj, mt)
+    if ejectiles is None:
+        return None
     for m, part in ejectiles:
         if part == ejectile:
             return m
