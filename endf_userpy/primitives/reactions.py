@@ -140,6 +140,11 @@ def get_multiplicity_for_zap(proj, mt, zap):
     return get_multiplicity_for_ejectile(proj, mt, ejectile)
 
 
+def contains_zap(proj, mt, zap):
+    mult = get_multiplicity_for_zap(proj, mt, zap)
+    return mult > 0 if mult is not None else None
+
+
 def get_raw_reaction_string_for_mt(mt):
     t = REACTION_DICT[mt]
     return f'({t[0]},{t[1]})'
