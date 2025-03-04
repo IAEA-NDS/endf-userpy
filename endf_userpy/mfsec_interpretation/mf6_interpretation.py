@@ -8,7 +8,7 @@ from .mf6_interpretation_helpers import (
 )
 from .mf6_interpretation_subsecs import (
     compute_dist2d_from_subsec,
-    compute_dist1d_from_subsec,
+    compute_angdist_from_subsec,
     compute_yields_from_subsec,
 )
 
@@ -25,6 +25,31 @@ def get_incident_energies(endf_dict, mt, zap):
         )
         energies.extend(cur_energies)
     return np.unique(energies)
+
+
+def compute_angdist_values(
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
+):
+    check_mf6_exists(endf_dict)
+    check_mt_exists_in_mf6(endf_dict, mt)
+    zap = zap if zap is not None else get_ZAP(endf_dict, mt)
+    subsec_nums = find_subsec_nums(endf_dict, mt, zap)
+    found_angdist = False
+    angdist = 0.0  # will be broadcasted to correct shape
+    for subsec_num in subsec_nums:
+        if contains_subsec_dist2d(endf_dict, mt, subsec_num):
+            continue
+        found_angdist = True
+        angdist += compute_angdist_from_subsec(
+            endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
+        )
+    if not found_angdist:
+        law = endf_dict[6][mt]['subsection'][subsec_num]['LAW']
+        raise ValueError(
+            f'Found product ZAP={zap} in MF6/MT{mt}/subsection[{subsec_num}] '
+            f'but only double-differential distribution is given (LAW={law})'
+        )
+    return angdist
 
 
 def compute_dist2d_values(

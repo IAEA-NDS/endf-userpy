@@ -20,7 +20,7 @@ from ..primitives.properties import (
 )
 
 
-def pad_outside_values(func):
+def pad_outside_dist2d_values(func):
 
     def wrapfunc(
         endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, *args, **kwargs
@@ -56,7 +56,37 @@ def pad_outside_values(func):
     return wrapfunc
 
 
-@pad_outside_values
+def pad_outside_angdist_values(func):
+
+    def wrapfunc(
+        endf_dict, mt, subsec_num, energies_in, angle_cosines_out, *args, **kwargs
+    ):
+        eincs = energies_in
+        mus_out = angle_cosines_out
+        subsec = endf_dict[6][mt]['subsection'][subsec_num]
+        ei_mesh = dict2array(subsec['E'], dtype=float)
+        is_inside = (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
+        eincs_inside = eincs[is_inside]
+        # special casing regular case with all points within mesh for small speedup
+        if len(eincs_inside) == len(eincs):
+            return func(
+                endf_dict, mt, subsec_num, eincs, mus_out, *args, **kwargs
+            )
+        # special treatment if some points outside mesh
+        res_dim = (len(eincs), len(mus_out))
+        res_arr = np.full(res_dim, 0.0, dtype=float)
+        if len(eincs_inside) == 0:
+            return res_arr
+        arr_inside = func(
+            endf_dict, mt, subsec_num, eincs_inside, mus_out, *args, **kwargs
+        )
+        res_arr[is_inside, :] =  arr_inside
+        return res_arr
+
+    return wrapfunc
+
+
+@pad_outside_dist2d_values
 def get_dist2d_from_subsec_law1(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
 ):
@@ -139,8 +169,8 @@ def get_dist2d_from_subsec_law1(
     return cont_result_arr
 
 
-@pad_outside_values
-def get_dist1d_from_subsec_law2(
+@pad_outside_angdist_values
+def get_angdist_from_subsec_law2(
     endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
 ):
     # TODO: how to signal to the user that this is a
@@ -239,7 +269,7 @@ def get_dist2d_from_subsec_law6(
     return result_arr
 
 
-@pad_outside_values
+@pad_outside_dist2d_values
 def get_dist2d_from_subsec_law7(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
 ):
@@ -346,7 +376,7 @@ def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
     return interp_yields
 
 
-def compute_dist1d_from_subsec(
+def compute_angdist_from_subsec(
     endf_dict, mt, subsec_num,
     energies_in, angle_cosines_out, to_lab=True
 ):
@@ -388,4 +418,23 @@ def compute_dist2d_from_subsec(
     else:
         raise NotImplementedError(
             f'DDX interpretation for LAW={law} not implemented.'
+        )
+
+
+def compute_angdist_from_subsec(
+    endf_dict, mt, subsec_num,
+    energies_in, angle_cosines_out, to_lab=True
+):
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    law = subsec['LAW']
+    if law == 2:
+        return get_angdist_from_subsec_law2(
+            endf_dict, mt, subsec_num,
+            energies_in, angle_cosines_out, to_lab
+        )
+    else:
+        raise NotImplementedError(
+            f'Angular distribution interpretation for LAW={law} '
+            'not implemented.'
         )
