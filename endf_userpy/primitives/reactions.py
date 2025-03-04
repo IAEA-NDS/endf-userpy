@@ -3,6 +3,10 @@ from collections.abc import Sequence
 from .physical_constants import get_particle_for_zap
 
 
+def _rng(start, stop):
+    return tuple(range(start, stop+1))
+
+
 def _create_tuple(*args):
     res = []
     for arg in args:
@@ -97,6 +101,23 @@ REACTIONS = _create_tuple(
 REACTION_DICT = {t[0]: (t[1], t[2]) for t in REACTIONS}  
 
 
+SUM_RULES = {
+      4: _rng(50, 91),
+     16: _rng(875, 891),
+     18: (19, 20, 21, 38),
+     27: (18,) + _rng(102, 117) + (155, 182) + _rng(191, 193) + (197,),
+    101: _rng(102, 117) + (155, 182) + _rng(191, 193) + (197,),
+    103: _rng(600, 649),
+    104: _rng(650, 699),
+    105: _rng(700, 749),
+    106: _rng(750, 799),
+    107: _rng(800, 849),
+    516: (515, 517),
+}
+
+SUM_RULE_MAP = {mt: k for k, v in SUM_RULES.items() for mt in v}
+
+
 def get_ejectiles(proj, mt):
     """Get ejectiles and their multiplicities"""
     result = []
@@ -156,3 +177,19 @@ def is_binary_reaction(proj, mt):
     if ejectiles is None:
         return False
     return len(ejectiles) == 1 and ejectiles[0][0] == 1 
+
+
+def is_sum_mt(mt):
+    return mt in SUM_RULES
+
+
+def is_in_sum_mt(mt):
+    return mt in SUM_RULE_MAP
+
+
+def get_sum_mt_from_part_mt(mt):
+    return SUM_RULE_MAP[mt]
+
+
+def get_part_mts_from_sum_mt(mt):
+    return SUM_RULES[mt]
