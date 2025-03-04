@@ -2,6 +2,8 @@ import numpy as np
 from scipy.integrate import quad
 from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf5_interpretation as mf5_interp
+from ..mfsec_interpretation import mf6_interpretation as mf6_interp
+from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..primitives.properties import (
     is_zap_consistent,
     has_mf4_mt,
@@ -13,31 +15,55 @@ from ..primitives.properties import (
 from .distribution2d import compute_dist2d_values
 
 
+def _integrate_mf6_dist2d_over_eout(
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
+):
+    angdist = np.zeros((len(energies_in), len(angle_cosines_out)), dtype=float)
+    ens_inc = energies_in
+    mus_out = angle_cosines_out
+    q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
+    for i in range(len(energies_in)):
+        for j in range(len(angle_cosines_out)):
+            eout_max = (energies_in[i] + q) * 1.1
+            if eout_max <= 0:
+                angdist[i, j] = 0.0
+                continue
+            dist2d_func = lambda x: compute_dist2d_values(
+                endf_dict, mt, zap, ens_inc[i:i+1], np.array([x], dtype=float), mus_out[j:j+1], to_lab
+            )
+            angdist[i, j] = quad(dist2d_func, 0.0, eout_max, epsrel=1e-4)[0]
+    return angdist
+
+
 def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
     if not is_zap_consistent(endf_dict, mt, zap):
         raise ValueError(f'MT={mt} and ZAP={mt} are not consistent')
 
+    print(f'MT: {mt}')  # debug
+
     if has_mf4_mt(endf_dict, mt):
+        print('--> found discrete LAW in MF4')  # debug
         return mf4_interp.compute_angdist_values(
             endf_dict, mt, energies_in, angle_cosines_out, to_lab
         )
 
     elif has_mf6_mt(endf_dict, mt):
-        angdist = np.zeros((len(energies_in), len(angle_cosines_out)), dtype=float)
-        ens_inc = energies_in
-        mus_out = angle_cosines_out
-        q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
-        for i in range(len(energies_in)):
-            for j in range(len(angle_cosines_out)):
-                eout_max = (energies_in[i] + q) * 1.1
-                if eout_max <= 0:
-                    angdist[i, j] = 0.0
-                    continue
-                dist2d_func = lambda x: compute_dist2d_values(
-                    endf_dict, mt, zap, ens_inc[i:i+1], np.array([x], dtype=float), mus_out[j:j+1]
-                )
-                angdist[i, j] = quad(dist2d_func, 0.0, eout_max, epsrel=1e-4)[0]
-        return angdist
+        found_angdist = False
+        angdist = 0.0
+        if mf6_help.has_cont_part(endf_dict, mt, zap):
+            print('--> integrate MF6')  # debug
+            found_angdist = True
+            angdist += _integrate_mf6_dist2d_over_eout(
+                endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
+            )
+        if mf6_help.has_angdist_part(endf_dict, mt, zap):
+            print('--> found discrete LAW in MF6')  # debug
+            found_angdist = True
+            angdist += mf6_interp.compute_angdist_values(
+                endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
+            )
+        if found_angdist:
+            return angdist
 
     raise IndexError(
         f'Required data to reconstruct angular distribution '
