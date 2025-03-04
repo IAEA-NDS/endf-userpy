@@ -40,19 +40,23 @@ def check_mt_exists_in_mf6(endf_dict, mt):
         )
 
 
-def find_subsec_num(endf_dict, mt, zap):
+def find_subsec_nums(endf_dict, mt, zap):
     sec = endf_dict[6][mt]
+    idcs = tuple()
     for idx, subsec in sec['subsection'].items():
         if subsec['ZAP'] == zap:
-            return idx
-    raise IndexError(
-        f'subsection with ZAP={zap} not found in MF6/MT{mt}'
-    )
+            idcs += (idx,)
+    if len(idcs) == 0:
+        raise IndexError(
+            f'subsection with ZAP={zap} not found in MF6/MT{mt}'
+        )
+    return idcs
 
 
-def get_subsec(endf_dict, mt, zap):
-    subsec_num = find_subsec_num(endf_dict, mt, zap)
-    return endf_dict[6][mt]['subsection'][subsec_num]
+def get_subsecs(endf_dict, mt, zap):
+    subsec_nums = find_subsec_nums(endf_dict, mt, zap)
+    subsecs = endf_dict[6][mt]['subsection']
+    return tuple(subsecs[idx] for idx in subsec_nums)
 
 
 def find_subsec_nums_by_laws(endf_dict, mt, laws):

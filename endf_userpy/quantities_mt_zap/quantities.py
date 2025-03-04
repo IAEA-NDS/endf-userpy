@@ -24,7 +24,7 @@ from ..mfsec_interpretation.mf3_interpretation import (
 )
 
 
-def compute_yields(endf_dict, mt, zap, energies_in):
+def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True):
     if mt == 18:
         neutron_zap = get_zap_for_particle('n')
         if zap != neutron_zap:
@@ -35,7 +35,9 @@ def compute_yields(endf_dict, mt, zap, energies_in):
         # if MT=18 (n,f), we assume user wants to know prompt neutron yields
         yields = mf1_interp.compute_yields(endf_dict, 456, energies_in)
     elif has_mf6_mt(endf_dict, mt):
-        yields = mf6_interp.compute_yields(endf_dict, mt, zap, energies_in)
+        yields = mf6_interp.compute_yields(
+            endf_dict, mt, zap, energies_in, include_discrete
+        )
     else:
         proj = properties.get_projectile(endf_dict)
         mult = reaction.get_multiplicity_for_zap(proj, mt, zap)
@@ -44,7 +46,9 @@ def compute_yields(endf_dict, mt, zap, energies_in):
 
 
 def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
-    yields = compute_yields(endf_dict, mt, zap, energies_in).reshape(-1, 1)
+    yields = compute_yields(
+        endf_dict, mt, zap, energies_in, include_discrete=False
+    ).reshape(-1, 1)
     xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1)
     angdist = compute_angdist_values(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
@@ -53,7 +57,9 @@ def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
 
 
 def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
-    yields = compute_yields(endf_dict, mt, zap, energies_in).reshape(-1, 1)
+    yields = compute_yields(
+        endf_dict, mt, zap, energies_in, include_discrete=False
+    ).reshape(-1, 1)
     xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1)
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab
@@ -62,7 +68,9 @@ def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
 
 
 def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True):
-    yields = compute_yields(endf_dict, mt, zap, energies_in).reshape(-1, 1, 1)
+    yields = compute_yields(
+        endf_dict, mt, zap, energies_in, include_discrete=False
+    ).reshape(-1, 1, 1)
     xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
