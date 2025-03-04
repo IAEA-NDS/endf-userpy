@@ -88,7 +88,7 @@ def get_particle_production_dxs_dmu(endf_dict, particle, energies_in, angle_cosi
     zap = physconst.get_zap_for_particle(particle)
     return compute_cumulative_quantity(
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
-            compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out)
+            compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True)
         ),
         lambda endf_dict, mt, zap, energies_in, energies_out: (
             contains_zap_with_select_heuristic(endf_dict, mt, zap)
