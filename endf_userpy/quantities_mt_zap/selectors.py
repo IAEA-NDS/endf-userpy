@@ -1,6 +1,7 @@
 from ..primitives import properties as prop 
 from ..primitives import reactions as reac
 from ..primitives import physical_constants as physconst
+from ..mfsec_interpretation import mf3_interpretation as mf3interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6help
 from .quantities import (
     get_reaction_mt_numbers
@@ -9,7 +10,7 @@ from .quantities import (
 
 def contains_zap(endf_dict, mt, zap):
     if mt in (18, 19, 20, 21, 38):
-        return zap == PARTICLE_ZAP['n']
+        return zap == physconst.PARTICLE_ZAP['n']
     elif prop.has_mf6_mt(endf_dict, mt):
         return mf6help.contains_zap(endf_dict, mt, zap)
     else:
