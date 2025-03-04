@@ -99,6 +99,7 @@ REACTIONS = _create_tuple(
 
 
 REACTION_DICT = {t[0]: (t[1], t[2]) for t in REACTIONS}  
+INV_REACTION_DICT = {v: k for k, v in REACTION_DICT.items()}
 
 
 SUM_RULES = {
@@ -166,9 +167,29 @@ def contains_zap(proj, mt, zap):
     return mult > 0 if mult is not None else None
 
 
+def is_discrete_level_scattering(mt):
+    return '_' in REACTION_DICT[mt][1]
+
+
 def get_raw_reaction_string_for_mt(mt):
     t = REACTION_DICT[mt]
     return f'({t[0]},{t[1]})'
+
+
+def translate_reaction_string_to_mt(reacstr):
+    reacstr = reacstr.lstrip('(').rstrip(')').replace(' ','')
+    proj, ejectiles = reacstr.split(',')
+    mt = INV_REACTION_DICT.get(('z', ejectiles), None)
+    if mt is not None:
+        return mt
+    mt = INV_REACTION_DICT.get(('y', ejectiles), None)
+    if mt is not None:
+        return mt
+    if proj == 'n':
+        mt = INV_REACTION_DICT.get(('n', ejectiles), None)
+        if mt is not None:
+            return mt
+    raise ValueError('invalid reaction string')
 
 
 def is_binary_reaction(proj, mt):
