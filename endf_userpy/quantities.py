@@ -7,7 +7,7 @@ from .quantities_mt_zap.quantities import (
     compute_cumulative_quantity,
 )
 from .quantities_mt_zap.selectors import (
-    contains_zap
+    contains_zap_with_select_heuristic,
 )
 
 
@@ -18,10 +18,13 @@ def get_particle_production_xs(endf_dict, particle, energies_in):
     zap = get_zap_for_particle(particle)
     return compute_cumulative_quantity(
         lambda endf_dict, mt, zap, energies_in: (
-            compute_yields(endf_dict, mt, zap, energies_in) *
-            compute_xs(endf_dict, mt, energies_in)
+            compute_yields(
+                endf_dict, mt, zap, energies_in, include_discrete=True
+            ) * compute_xs(endf_dict, mt, energies_in)
         ),
-        lambda endf_dict, mt, zap, energies_in: contains_zap(endf_dict, mt, zap),
+        lambda endf_dict, mt, zap, energies_in: (
+            contains_zap_with_select_heuristic(endf_dict, mt, zap)
+        ),
         endf_dict, zap, energies_in
     )
 
