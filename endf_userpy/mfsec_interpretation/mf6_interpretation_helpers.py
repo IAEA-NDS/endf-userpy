@@ -107,23 +107,32 @@ def get_zaps_for_all_mts(endf_dict, dist2d_only=False):
 
 
 def has_disc_part(endf_dict, mt, zap):
-    subsec = get_subsec(endf_dict, mt, zap)
-    law = subsec['LAW']
-    if law in (2, 3, 4, 5):
-        return True
-    if law == 1:
-        nd_arr = np.array(list(subsec['ND'].values()))
-        nep_arr = np.array(list(subsec['NEP'].values()))
-        return bool(np.any(nd_arr > 0))
+    subsecs = get_subsecs(endf_dict, mt, zap)
+    for subsec in subsecs:
+        if law == 1:
+            nd_arr = np.array(list(subsec['ND'].values()))
+            nep_arr = np.array(list(subsec['NEP'].values()))
+            return bool(np.any(nd_arr > 0))
+    return False
 
 
 def has_cont_part(endf_dict, mt, zap):
-    subsec = get_subsec(endf_dict, mt, zap)
-    law = subsec['LAW']
-    if law in (6, 7):
-        return True
-    if law == 1:
-        nd_arr = np.array(list(subsec['ND'].values()))
-        nep_arr = np.array(list(subsec['NEP'].values()))
-        return bool(np.any(nep_arr > nd_arr))
+    subsecs = get_subsecs(endf_dict, mt, zap)
+    for subsec in subsecs:
+        law = subsec['LAW']
+        if law in (6, 7):
+            return True
+        if law == 1:
+            nd_arr = np.array(list(subsec['ND'].values()))
+            nep_arr = np.array(list(subsec['NEP'].values()))
+            return bool(np.any(nep_arr > nd_arr))
+    return False
+
+
+def has_angdist_part(endf_dict, mt, zap):
+    subsecs = get_subsecs(endf_dict, mt, zap)
+    for subsec in subsecs:
+        law = subsec['LAW']
+        if law in (2, 3, 4):
+            return True
     return False
