@@ -5,6 +5,8 @@ from .primitives import reactions as reac
 from .quantities_mt_zap.quantities import (
     compute_yields,
     compute_xs,
+    compute_dexs,
+    compute_daxs,
     get_reaction_mt_numbers,
     compute_cumulative_quantity,
 )
@@ -69,15 +71,27 @@ def get_particle_production_xs(endf_dict, particle, energies_in):
     )
 
 
+def get_particle_production_dxs_dE(endf_dict, particle, energies_in, energies_out):
+    zap = physconst.get_zap_for_particle(particle)
+    return compute_cumulative_quantity(
+        lambda endf_dict, mt, zap, energies_in, energies_out: (
+            compute_dexs(endf_dict, mt, zap, energies_in, energies_out)
+        ),
+        lambda endf_dict, mt, zap, energies_in, energies_out: (
+            contains_zap_with_select_heuristic(endf_dict, mt, zap)
+        ),
+        endf_dict, zap, energies_in, energies_out
+    )
+
+
 def get_particle_production_dxs_dmu(endf_dict, particle, energies_in, angle_cosines_out):
     zap = physconst.get_zap_for_particle(particle)
-    res = np.zeros((len(energies_in), len(angle_cosines_out)), dtype=float)
-    mt_list = get_reaction_mt_numbers(endf_dict)
-    for mt in mt_list:
-        try:
-            particle_yield = compute_yields(endf_dict, mt, zap, energies_in)
-        except Exception:
-            continue
-        curres = compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out)  
-        res += curres 
-    return res
+    return compute_cumulative_quantity(
+        lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
+            compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out)
+        ),
+        lambda endf_dict, mt, zap, energies_in, energies_out: (
+            contains_zap_with_select_heuristic(endf_dict, mt, zap)
+        ),
+        endf_dict, zap, energies_in, angle_cosines_out
+    )
