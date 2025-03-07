@@ -1,3 +1,7 @@
+AMU_TO_EV = 9.3149410242e8  # eV / c^2
+AMU_TO_MEV = AMU_TO_EV * 1e-6  # MeV / c^2
+
+
 PARTICLE_MASSES_AMU = {
     'n': 1.00866491578, 
     'p': 1.00727646688, 
@@ -50,3 +54,12 @@ def get_zap_for_particle(particle):
 
 def get_particle_for_zap(zap):
     return ZAP_PARTICLE[zap]
+
+
+def get_particle_mass(particle):
+    return PARTICLE_MASSES_AMU[particle] * AMU_TO_EV
+
+
+def get_particle_mass_for_zap(zap):
+    part = get_particle_for_zap(zap)
+    return get_particle_mass(part)
