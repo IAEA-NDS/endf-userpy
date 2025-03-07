@@ -64,7 +64,7 @@ def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab
     )
-    return energydist * yields * xs / (2*np.pi)
+    return energydist * yields * xs
 
 
 def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True):
