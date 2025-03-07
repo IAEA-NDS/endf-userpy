@@ -1,6 +1,7 @@
 from .physical_constants import (
     PARTICLE_MASSES_AMU,
     PARTICLE_ZAP,
+    get_particle_mass,
 )
 from .reactions import (
     is_binary_reaction,
@@ -25,6 +26,10 @@ def get_QM(endf_dict, mt):
 
 def get_QI(endf_dict, mt):
     return endf_dict[3][mt]['QI']
+
+
+def get_reaction_qvalue(endf_dict, mt):
+    return get_QI(endf_dict, mt)
 
 
 def get_LR(endf_dict, mt):
@@ -86,6 +91,18 @@ def get_projectile(endf_dict):
     }
     projectile = part_dict[nsub]
     return projectile
+
+
+def get_projectile_mass(endf_dict):
+    projectile = get_projectile(endf_dict)
+    mass = get_particle_mass(projectile)
+    return mass
+
+
+def get_target_mass(endf_dict):
+    awr = get_AWR(endf_dict)
+    mass_neutron = get_particle_mass('n')
+    return awr * mass_neutron
 
 
 def get_reaction_string_for_mt(endf_dict, mt):
