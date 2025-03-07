@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.integrate import quad
 from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf5_interpretation as mf5_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
@@ -9,30 +8,13 @@ from ..primitives.properties import (
     has_mf4_mt,
     has_mf5_mt,
     has_mf6_mt,
-    get_QM,
-    get_QI,
 )
-from .distribution2d import compute_dist2d_values
-
-
-def _integrate_mf6_dist2d_over_eout(
-    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
-):
-    angdist = np.zeros((len(energies_in), len(angle_cosines_out)), dtype=float)
-    ens_inc = energies_in
-    mus_out = angle_cosines_out
-    q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
-    for i in range(len(energies_in)):
-        for j in range(len(angle_cosines_out)):
-            eout_max = (energies_in[i] + q) * 1.1
-            if eout_max <= 0:
-                angdist[i, j] = 0.0
-                continue
-            dist2d_func = lambda x: compute_dist2d_values(
-                endf_dict, mt, zap, ens_inc[i:i+1], np.array([x], dtype=float), mus_out[j:j+1], to_lab
-            )
-            angdist[i, j] = quad(dist2d_func, 0.0, eout_max, epsrel=1e-4)[0]
-    return angdist
+from .distribution1d_helpers import (
+    integrate_mf6_dist2d_over_eout,
+    integrate_mf6_dist2d_over_mu,
+    convert_mf4_angdist_to_energydist,
+    convert_mf6_angdist_to_energydist,
+)
 
 
 def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
@@ -53,7 +35,7 @@ def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, t
         if mf6_help.has_cont_part(endf_dict, mt, zap):
             print('--> integrate MF6')  # debug
             found_angdist = True
-            angdist += _integrate_mf6_dist2d_over_eout(
+            angdist += integrate_mf6_dist2d_over_eout(
                 endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
             )
         if mf6_help.has_angdist_part(endf_dict, mt, zap):
@@ -75,27 +57,42 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
     if not is_zap_consistent(endf_dict, mt, zap):
         raise ValueError(f'MT={mt} and ZAP={mt} are not consistent')
 
+    print(f'MT: {mt}')  # debug
+
     if has_mf5_mt(endf_dict, mt):
         if to_lab is not True:
             raise ValueError(
                 f"Energy spectrum for MT={mt}, ZAP={zap} reconstruction "
                 "from MF5 only possible with `to_lab=True` argument."
             )
+        print('--> found energy spectrum in MF5')  # debug
         return mf5_interp.compute_spectrum(
             endf_dict, mt, energies_in, energies_out
         )
 
+    elif has_mf4_mt(endf_dict, mt):
+        print('--> found discrete angdist in MF4')  # debug
+        return convert_mf4_angdist_to_energydist(
+            endf_dict, mt, zap, energies_in, energies_out, to_lab
+        )
+
     elif has_mf6_mt(endf_dict, mt):
-        energydist = np.zeros((len(energies_in), len(energies_out)), dtype=float)
-        ens_inc = energies_in
-        ens_out = energies_out
-        for i in range(len(ens_inc)):
-            for j in range(len(ens_out)):
-                dist2d_func = lambda x: compute_dist2d_values(
-                    endf_dict, mt, zap, ens_inc[i:i+1], ens_out[j:j+1], np.array([x], dtype=float)
-                )
-                energydist[i, j] = quad(dist2d_func, -1.0, 1.0, epsrel=1e-4)[0]
-        return energydist
+        found_energydist = False
+        energydist = 0.0  # will be broadcasted to correct 2d shape
+        if mf6_help.has_cont_part(endf_dict, mt, zap):
+            print('--> integrate MF6')  # debug
+            found_energydist = True
+            energydist += integrate_mf6_dist2d_over_mu(
+                endf_dict, mt, zap, energies_in, energies_out, to_lab
+            )
+        if mf6_help.has_angdist_part(endf_dict, mt, zap):
+            print('--> found discrete angdist in MF6')  # debug
+            found_energydist = True
+            energydist += convert_mf6_angdist_to_energydist(
+                endf_dict, mt, zap, energies_in, energies_out, to_lab
+            )
+        if found_energydist:
+            return energydist
 
     raise IndexError(
         f'Required data to reconstruct energy spectrum '
