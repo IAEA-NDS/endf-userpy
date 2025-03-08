@@ -5,11 +5,11 @@ import sys
 from pathlib import Path
 import numpy as np
 from endf_parserpy import EndfParserCpp
-from endf_userpy.mf6_interpretation import (
+from endf_userpy.mfsec_interpretation.mf6_interpretation_subsecs import (
     compute_dist2d_from_subsec,
-    compute_dist1d_from_subsec,
+    compute_angdist_from_subsec,
 )
-from endf_userpy.helpers import deg2rad
+from endf_userpy.primitives.helpers import deg2rad
 from endf_parserpy.utils.user_tools import show_content
 
 import subprocess
@@ -144,9 +144,9 @@ def test_dist1d_law2_interface():
     parser = EndfParserCpp()
     endf_file = "data/n-001_H_001.endf"
     endf_dict = parser.parsefile(endf_file) 
-    Einc = [50000, 70000]  
+    Einc = np.array([50000, 70000], dtype=float)
     mu = np.cos(deg2rad([30, 50, 70]))
-    cont_arr = compute_dist1d_from_subsec(
+    cont_arr = compute_angdist_from_subsec(
         endf_dict, 102, 1, Einc, mu
     )
 
@@ -155,7 +155,7 @@ def test_dist2d_law6_interface():
     parser = EndfParserCpp()
     endf_file = "data/n-001_H_002.endf"
     endf_dict = parser.parsefile(endf_file) 
-    Einc = [50000, 70000]  
+    Einc = np.array([50000, 70000])
     mu = np.cos(deg2rad([30, 50, 70]))
     Eout = np.linspace(10000, 70000, 5) 
     cont_arr = compute_dist2d_from_subsec(
@@ -167,7 +167,7 @@ def test_dist2d_law7_interface():
     parser = EndfParserCpp()
     endf_file = "data/n-004_Be_009.endf"
     endf_dict = parser.parsefile(endf_file)
-    Einc = [1.8e6, 2e6]
+    Einc = np.array([1.8e6, 2e6])
     mu = np.cos(deg2rad([30, 50, 70]))
     Eout = np.linspace(10000, 70000, 5)
     compute_dist2d_from_subsec(

@@ -2,8 +2,8 @@ from pathlib import Path
 import pytest
 import numpy as np
 from endf_parserpy import EndfParserCpp
-from endf_userpy.mf5_interpretation import compute_spectrum 
-from endf_userpy.mf5_interpretation import get_incident_energy_range
+from endf_userpy.mfsec_interpretation.mf5_interpretation import compute_spectrum 
+from endf_userpy.mfsec_interpretation.mf5_interpretation import get_incident_energy_range
 
 
 @pytest.fixture(scope="module")
