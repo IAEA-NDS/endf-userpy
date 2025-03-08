@@ -20,6 +20,10 @@ def get_ZAI(endf_dict):
     return zai
 
 
+def get_ELIS(endf_dict):
+    return endf_dict[1][451]['ELIS']
+
+
 def get_QM(endf_dict, mt):
     return endf_dict[3][mt]['QM']
 
