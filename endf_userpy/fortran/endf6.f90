@@ -2463,7 +2463,7 @@ subroutine init_trans2yield(elis,maxlevel,nlevel,qm,qi,ee,r,a)
 return
 end
 !
-subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nk,es,eg,y)
+subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nko,es,eg,y)
 !
 ! Description:
 !  The subroutine trans2yield converts transition probability arrays given for inelastic
@@ -2498,7 +2498,7 @@ subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nk,es,eg,y)
 !   maxnk: maximum number of photons. Pre-dimension of arrays es, eg and y
 !
 ! Output:
-!   nk: Actual number of emitted photons for the inelastic reaction mt
+!   nko: Actual number of emitted photons for the inelastic reaction mt [nko(1)]
 !   es(k): energy of the level from which the k-th photon originates. [es(k),k=1,nk]
 !   eg(k): k-th photon energy [eg(k), k=1, nk]
 !   y(k):  yield of k-th photon [y(k), k=1, nk]
@@ -2506,6 +2506,7 @@ subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nk,es,eg,y)
   implicit real*8 (a-h, o-z)
   dimension esi(*),tp(*),gp(*),ee(*),r(maxlevel,*),a(maxlevel,*)  ! input arrays (transition data)
   dimension es(*),eg(*),y(*) ! output arrays (yield data)
+  integer(8), dimension(1) :: nko
   ! check discrete reaction and assign first level mt1 according to reaction mt
   if (mt.gt.50.and.mt.lt.91) then       ! mt0=50    mtc=91
     mt0=50
@@ -2596,6 +2597,7 @@ subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nk,es,eg,y)
       enddo
     enddo
   endif
+  nko(1) = nk
 return
 end
 !-------------------------------------------------------------------------------------------------------------------------------
