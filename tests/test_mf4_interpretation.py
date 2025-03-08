@@ -2,10 +2,10 @@ from pathlib import Path
 import pytest
 import numpy as np
 from endf_parserpy import EndfParserCpp
-import endf_userpy.mf4_interpretation as mf4py
-import endf_userpy.mf4_interpretation_fort as mf4fort
-from endf_userpy.helpers import deg2rad
-from endf_userpy.reactions import is_binary_reaction
+import endf_userpy.mfsec_interpretation.mf4_interpretation as mf4py
+import endf_userpy.mfsec_interpretation.mf4_interpretation_fort as mf4fort
+from endf_userpy.primitives.helpers import deg2rad
+from endf_userpy.primitives.reactions import is_binary_reaction
 
 
 @pytest.fixture(scope="module")
