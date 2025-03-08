@@ -177,8 +177,8 @@
       do ju=1,nuu
         u=uu(ju)
         call mf6lab2cm(awr,awi,awp,lct,e,ep,u,tp,w,dinv)
-        call f6law1(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,&
-                    e2,nd2,na2,nep2,ep2,b2,fdis,fcon)
+        fdis=f6law1dis(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)
+        fcon=f6law1con(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)
         f6dis(ie,je,ju)=fdis*dinv
         f6con(ie,je,ju)=fcon*dinv
       enddo
@@ -495,8 +495,7 @@
   return
   end
 ! ------------------------------------------------------------------------------
-  subroutine f6law1(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1, &
-                    e2,nd2,na2,nep2,ep2,b2,f6dis,f6con)
+  real*8 function f6law1dis(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)
 ! e:   incident energy
 ! tp:  outgoing particle energy
 ! w:   cosine value
@@ -533,70 +532,193 @@
 ! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(nep2,na2)]
 !
 ! Output
-!  f6dis: Discrete contribution to angle-energy distribution at e,tp,w
-!  f6con: Continuum contribution to angle-energy distribution at e,tp,w
+!  f6law1dis: Discrete contribution to angle-energy distribution at e,tp,w
 !
   implicit real*8 (a-h, o-z)
   dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
-  if (e.lt.e1.or.e.gt.e2) then
+  if (e.lt.e1.or.e.gt.e2.or.(nd1.le.0.and.nd2.le.0)) then
 !
-!   e is out of range
+!   e is out of range nor discrete data
 !
-    f6dis=0.0d0
-    f6con=0.0d0
+    f6law1dis=0.0d0
   else
+!
+!   discrete data processing
+!
     law=mod(lei,10)
-!
-!   process discrete part, if any
-!
-    if (nd1.le.0.and.nd2.le.0) then
-      f6dis=0.0d0
+    if (nd1.le.0) then
+      f1=0.0d0
     else
-      if (nd1.le.0) then
-        f1=0.0d0
-      else
-        f1=f6law1_dis(e1,tp,w,za,zai,zap,lang,nd1,na1,nep1,ep1,b1)
-      endif
-      if (nd2.le.0) then
-        f2=0.0d0
-      else
-        f2=f6law1_dis(e2,tp,w,za,zai,zap,lang,nd2,na2,nep2,ep2,b2)
-      endif
-      f6dis=yintp(e1,f1,e2,f2,law,e)
+      f1=f6law1_dis(e1,tp,w,za,zai,zap,lang,nd1,na1,nep1,ep1,b1)
     endif
-!
-!   process continuum part
-!
-    if (nep1.le.nd1.and.nep2.le.nd2) then
-      f6con=0.0d0
+    if (nd2.le.0) then
+      f2=0.0d0
     else
-      if (nep1.le.nd1) then
-        f1=0.0d0
-        f2=f6law1_con(e2,tp,w,za,zai,zap,lang,lep,nd2,na2,nep2,ep2,b2)
-      elseif (nep2.le.nd2) then
-        f1=f6law1_con(e1,tp,w,za,zai,zap,lang,lep,nd1,na1,nep1,ep1,b1)
-        f2=0.0d0
-      else
-        x1low=ep1(nd1+1)
-        x1high=ep1(nep1)
-        x1range=x1high-x1low
-        x2low=ep2(nd2+1)
-        x2high=ep2(nep2)
-        x2range=x2high-x2low
-        yslope=(e-e1)/(e2-e1)
-        xlow=x1low+yslope*(x2low-x1low)
-        xhigh=x1high+yslope*(x2high-x1high)
-        xrange=xhigh-xlow
-        xslope=(tp-xlow)/xrange
-        x=x1low+xslope*x1range
-        f1=f6law1_con(e1,x,w,za,zai,zap,lang,lep,nd1,na1,nep1,ep1,b1)
-        f1=f1*x1range/xrange
-        x=x2low+xslope*x2range
-        f2=f6law1_con(e2,x,w,za,zai,zap,lang,lep,nd2,na2,nep2,ep2,b2)
-        f2=f2*x2range/xrange
-      endif
-      f6con=yintp(e1,f1,e2,f2,law,e)
+      f2=f6law1_dis(e2,tp,w,za,zai,zap,lang,nd2,na2,nep2,ep2,b2)
     endif
+    f6law1dis=yintp(e1,f1,e2,f2,law,e)
+  endif
+  return
+  end
+!-------------------------------------------------------------------------------
+  real*8 function f6law1_dis(e,tp,w,za,zai,zap,lang,nd,na,nep,ep,b)
+!
+! Description:
+! Calculate the discrete contribution to the energy-angle distribution
+! at (e,tp,w) represented by MF6/LAW1
+!
+! Input:
+! e:   incident energy
+! tp:  outgoing particle energy
+! w:   cosine value
+! za:  ZA number of the target (ZA=1000*Z+A)
+! zai: ZA number of the incident particle
+! zap: ZA number of the outgoing particle
+! lang: Angular representation flag:
+!        lang=1, Legendre coefficients
+!        lang=2, Kalbach-Mann systematics
+!        lang=11-15, tabulated angular distribution
+! nd:  number of outgoing energies for the discrete part of the distribution
+! na:  number of angular parameters at e
+!       lang=1, na=Legendre expansion order
+!       lang=2, na=1 r is given by the evaluator and a should be calculated
+!               na=2 r and a are given by the evaluator
+!       lang=11-15, na/2 pairs (u,p(u)) are tabulated
+!               na=0, isotropic distribution for all representations
+!       the total number of angular parameters is nt=na+1
+! nep: total number of outgoing energies given at e
+!      the number of continumm outgoing energies is nepc=nep-nd
+! ep: outgoing energy values at e. 1D-array [ep(nep)]
+! b: outgoing energy-angle distribution at e. 2D-array [b(nep,na)]
+!
+! Output:
+!  f6law1_dis: discrete contribution to energy-angle distribution at (e,tp,w)
+!
+  implicit real*8 (a-h,o-z)
+  dimension ep(*),b(nep,*)
+  allocatable a(:),y(:)
+  allocatable nbt(:),ibt(:)
+  i=imatch(tp,ep,nd)
+  if (i.gt.0) then
+    if (lang.eq.1.or.lang.eq.2) then
+      nt=na+1
+      allocate(a(nt))
+      do j=1,nt
+        a(j)=b(i,j)
+      enddo
+      if (lang.eq.1) then
+        f6law1_dis=yleg(w,a,na)
+      else
+        f6law1_dis=ykalbach(zai,zap,za,e,tp,w,a,na)
+      endif
+      deallocate(a)
+    elseif (lang.ge.11.and.lang.le.15) then
+      f0=b(i,1)
+      if (na.gt.0) then
+        nmu=na/2
+        nr=1
+        allocate(a(nmu),y(nmu))
+        allocate(nbt(nr),ibt(nr))
+        k=1
+        do j=1,nmu
+          k=k+1
+          a(j)=b(i,k)
+          k=k+1
+          y(j)=2.0d0*f0*b(i,k)
+        enddo
+        lmu=lang-10
+        nbt(1)=nmu
+        ibt(1)=lmu
+        f6law1_dis=tab1intp(a,y,nmu,nbt,ibt,nr,w)
+        deallocate(a,y)
+        deallocate(nbt,ibt)
+      else
+        f6law1_dis=0.5d0*f0
+      endif
+    endif
+  else
+    f6law1_dis=0.0d0
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------
+  real*8 function f6law1con(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)
+! e:   incident energy
+! tp:  outgoing particle energy
+! w:   cosine value
+! za:  ZA number of the target (ZA=1000*Z+A)
+! zai: ZA number of the incident particle
+! zap: ZA number of the outgoing particle
+! lang: Angular representation flag:
+!        lang=1, Legendre coefficients
+!        lang=2, Kalbach-Mann systematics
+!        lang=11-15, tabulated angular distribution
+! lep: interpolation scheme for outgoing energies
+! lei: interpolation scheme between incident energies e1 and e2
+! e1:  incident energy of the lower panel
+! nd1: Number of dicrete energies given at e1
+! na1: number of angular parameters at e1
+!       lang=1, na1=Legendre expansion order
+!       lang=2, na1=1 r is given by the evaluator and a should be calculated
+!               na1=2 r and a are given by the evaluator
+!       lang=11-15, na1/2 pairs (u,p(u)) are tabulated
+!               na1=0, isotropic distribution for all representations
+! nep1: number of outgoing energies given at e1
+! ep1: outgoing energy values at e1. 1D-array [ep1(npe1)]
+! b1:  outgoing energy-angle distribution at e1. 2D-array [b1(nep1,na1)]
+! e2:  incident energy of the upper panel
+! nd2: Number of dicrete energies given at e2
+! na2: number of angular parameters at e2
+!       lang=1, na2=Legendre expansion order
+!       lang=2, na2=1 r is given by the evaluator and a should be calculated
+!               na2=2 r and a are given by the evaluator
+!       lang=11-15, na2/2 [u,p(u)] pairs are given
+!               na2=0, isotropic distribution for all representations
+! nep2: number of outgoing energies given at e2
+! ep2: outgoing energy values at e2. 1D-array [ep2(npe2)]
+! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(nep2,na2)]
+!
+! Output
+!  f6law1con: Continuum contribution to angle-energy distribution at e,tp,w
+!
+  implicit real*8 (a-h, o-z)
+  dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
+  if (e.lt.e1.or.e.gt.e2.or.(nep1.le.nd1.and.nep2.le.nd2)) then
+!
+!   e is out of range nor continuum data
+!
+    f6law1con=0.0d0
+  else
+!
+!   continuum part processing
+!
+    law=mod(lei,10)
+    if (nep1.le.nd1) then
+      f1=0.0d0
+      f2=f6law1_con(e2,tp,w,za,zai,zap,lang,lep,nd2,na2,nep2,ep2,b2)
+    elseif (nep2.le.nd2) then
+      f1=f6law1_con(e1,tp,w,za,zai,zap,lang,lep,nd1,na1,nep1,ep1,b1)
+      f2=0.0d0
+    else
+      x1low=ep1(nd1+1)
+      x1high=ep1(nep1)
+      x1range=x1high-x1low
+      x2low=ep2(nd2+1)
+      x2high=ep2(nep2)
+      x2range=x2high-x2low
+      yslope=(e-e1)/(e2-e1)
+      xlow=x1low+yslope*(x2low-x1low)
+      xhigh=x1high+yslope*(x2high-x1high)
+      xrange=xhigh-xlow
+      xslope=(tp-xlow)/xrange
+      x=x1low+xslope*x1range
+      f1=f6law1_con(e1,x,w,za,zai,zap,lang,lep,nd1,na1,nep1,ep1,b1)
+      f1=f1*x1range/xrange
+      x=x2low+xslope*x2range
+      f2=f6law1_con(e2,x,w,za,zai,zap,lang,lep,nd2,na2,nep2,ep2,b2)
+      f2=f2*x2range/xrange
+    endif
+    f6law1con=yintp(e1,f1,e2,f2,law,e)
   endif
   return
   end
@@ -695,87 +817,6 @@
     endif
   else
     f6law1_con=0.0d0
-  endif
-  return
-  end
-! ------------------------------------------------------------------------------
-  real*8 function f6law1_dis(e,tp,w,za,zai,zap,lang,nd,na,nep,ep,b)
-!
-! Description:
-! Calculate the discrete contribution to the energy-angle distribution
-! at (e,tp,w) represented by MF6/LAW1
-!
-! Input:
-! e:   incident energy
-! tp:  outgoing particle energy
-! w:   cosine value
-! za:  ZA number of the target (ZA=1000*Z+A)
-! zai: ZA number of the incident particle
-! zap: ZA number of the outgoing particle
-! lang: Angular representation flag:
-!        lang=1, Legendre coefficients
-!        lang=2, Kalbach-Mann systematics
-!        lang=11-15, tabulated angular distribution
-! nd:  number of outgoing energies for the discrete part of the distribution
-! na:  number of angular parameters at e
-!       lang=1, na=Legendre expansion order
-!       lang=2, na=1 r is given by the evaluator and a should be calculated
-!               na=2 r and a are given by the evaluator
-!       lang=11-15, na/2 pairs (u,p(u)) are tabulated
-!               na=0, isotropic distribution for all representations
-!       the total number of angular parameters is nt=na+1
-! nep: total number of outgoing energies given at e
-!      the number of continumm outgoing energies is nepc=nep-nd
-! ep: outgoing energy values at e. 1D-array [ep(nep)]
-! b: outgoing energy-angle distribution at e. 2D-array [b(nep,na)]
-!
-! Output:
-!  f6law1_dis: discrete contribution to energy-angle distribution at (e,tp,w)
-!
-  implicit real*8 (a-h,o-z)
-  dimension ep(*),b(nep,*)
-  allocatable a(:),y(:)
-  allocatable nbt(:),ibt(:)
-  i=imatch(tp,ep,nd)
-  if (i.gt.0) then
-    if (lang.eq.1.or.lang.eq.2) then
-      nt=na+1
-      allocate(a(nt))
-      do j=1,nt
-        a(j)=b(i,j)
-      enddo
-      if (lang.eq.1) then
-        f6law1_dis=yleg(w,a,na)
-      else
-        f6law1_dis=ykalbach(zai,zap,za,e,tp,w,a,na)
-      endif
-      deallocate(a)
-    elseif (lang.ge.11.and.lang.le.15) then
-      f0=b(i,1)
-      if (na.gt.0) then
-        nmu=na/2
-        nr=1
-        allocate(a(nmu),y(nmu))
-        allocate(nbt(nr),ibt(nr))
-        k=1
-        do j=1,nmu
-          k=k+1
-          a(j)=b(i,k)
-          k=k+1
-          y(j)=2.0d0*f0*b(i,k)
-        enddo
-        lmu=lang-10
-        nbt(1)=nmu
-        ibt(1)=lmu
-        f6law1_dis=tab1intp(a,y,nmu,nbt,ibt,nr,w)
-        deallocate(a,y)
-        deallocate(nbt,ibt)
-      else
-        f6law1_dis=0.5d0*f0
-      endif
-    endif
-  else
-    f6law1_dis=0.0d0
   endif
   return
   end
@@ -1728,20 +1769,27 @@
 !
   implicit real*8 (a-h, o-z)
   parameter (d2min=1.0d-38, cmin=1.0d-19)
-  if (lct.eq.2.or.(lct.eq.3.and.awp.le.4.0d0)) then
-    c=sqrt(awi*awp*e/ep)/(awi+awr)
-    d2=1.0d0+c*c-2.0d0*c*u
-    if (d2.lt.d2min) then
-      d2=d2min
-      c=u-cmin
-    endif
-    tp=ep*d2
-    dinv=1/sqrt(d2)
-    w=dinv*(u-c)
-    if (w.gt.1.0d0) then
-      w=1.0d0
-    elseif (w.lt.-1.0d0) then
+  if (lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0).or.e.le.0.0d0) then
+    if (ep.gt.0.0d0) then
+      c=sqrt(awi*awp*e/ep)/(awi+awr)
+      d2=1.0d0+c*c-2.0d0*c*u
+      if (d2.lt.d2min) then
+        d2=d2min
+        c=u-cmin
+      endif
+      tp=ep*d2
+      dinv=1.0d0/sqrt(d2)
+      w=dinv*(u-c)
+      if (w.gt.1.0d0) then
+        w=1.0d0
+      elseif (w.lt.-1.0d0) then
+        w=-1.0d0
+      endif
+    else
+      c=awi*awp*e/(awi+awr)
+      tp=awi*awp*e/((awi+awr)*(awi+awr))
       w=-1.0d0
+      dinv=0.0d0
     endif
   else
     tp=ep
@@ -1824,9 +1872,8 @@
 !  Output:
 !  (x,yintp) is the interpolated point
 !
-
   implicit real*8 (a-h,o-z)
-  parameter (zero=0.0d0, small=1.0d-38, big=1.0d+38)
+  parameter (zero=0.0d0, small=1.0d-38)
 !
 ! *** x1=x2 or x=x1
   if (x2.eq.x1.or.x.eq.x1) then
@@ -1863,7 +1910,7 @@
 ! ***coulomb penetrability law or other law
   else
     write(*,*) ' Interpolation law: ',i,' not coded.'
-    yint=-big
+    stop
   endif
   return
   end
@@ -2030,7 +2077,9 @@
   endif
   return
   end
-! -----------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
+! Set of procedures for analytical integration of tabulated ENDF-6 data
+!-------------------------------------------------------------------------------------------------------------------------------
 subroutine tabint(x1,y1,x2,y2,u1,u2,intlaw,yint,uint)
 !
 ! Description:
@@ -2114,7 +2163,7 @@ endif
 return
 end
 ! ------------------------------------------------------------------------------
-subroutine tablin(x1,y1,x2,y2,u1,u2,intlaw,epsy,epsx,nmax,x,y,u,ulin,n)
+subroutine tablin(x1,y1,x2,y2,u1,u2,intlaw,epsy,epsx,nmax,x,y,u,ulin,n,iconv)
 !
 ! Description:
 ! Subroutine tablin linearizes the function y(x) given by tabulated data (x1,y1)
@@ -2154,6 +2203,9 @@ subroutine tablin(x1,y1,x2,y2,u1,u2,intlaw,epsy,epsx,nmax,x,y,u,ulin,n)
 !    Actual size of arrays x, y and u.
 !    the actual size of ulin is n-1 (n-1 = number of subintervals)
 !    Note: 2 <= n <= nmax
+! iconv: convergence trigger
+!       iconv=1 converged
+!       iconv=2 maximum number of point (nmax) reached without convergence
 !
 implicit real*8 (a-h,o-z)
 parameter (ymin=1.0d-30)
@@ -2170,6 +2222,7 @@ if (h.le.0.0d0) then                 ! x1=x2
   u(2)=u2
   n=2
   ulin(1)=0.0d0
+  iconv=1
 elseif (law.eq.1.and.y1.ne.y2) then ! law=1 (y=constant)
   x(1)=x1
   y(1)=y1
@@ -2183,6 +2236,7 @@ elseif (law.eq.1.and.y1.ne.y2) then ! law=1 (y=constant)
   n=3
   ulin(1)=0.0d0
   ulin(2)=0.0d0
+  iconv=1
 elseif (law.eq.2.or.y1.eq.y2) then ! law=2 (lin-lin)
   x(1)=x1
   y(1)=y1
@@ -2192,6 +2246,7 @@ elseif (law.eq.2.or.y1.eq.y2) then ! law=2 (lin-lin)
   u(2)=u2
   n=2
   ulin(1)=0.0d0
+  iconv=1
 else ! law=3,4,5 (iterative procedure for linearization)
   kmax=nmax-1
   allocate(xs(kmax),ys(kmax))
@@ -2203,14 +2258,13 @@ else ! law=3,4,5 (iterative procedure for linearization)
   xh=x2
   yh=y2
   k=0
-  iconv=0
   do while (iconv.eq.0) ! interval halving technique
     if (law.eq.4.or.xh*xl.le.0.0d0) then
       xm=0.5d0*(xl+xh)
     else
       xm=sqrt(xl*xh)
     endif
-    ym=yinterp(xl,yl,xh,yh,law,xm)
+    ym=yintp(xl,yl,xh,yh,law,xm)
     erm=errlin(xl,yl,xh,yh,law)
     ki=n+k
     if (erm.le.abs(epsy*ym).or.(xh-xm).le.abs(epsx*xh).or.ki.eq.kmax.or.(abs(ym).eq.0.0d0.and.erm.le.epsy*ymin)) then
@@ -2235,7 +2289,7 @@ else ! law=3,4,5 (iterative procedure for linearization)
           else
             xm=sqrt(xl*xh)
           endif
-          ym=yinterp(xl,yl,xh,yh,law,xm)
+          ym=yintp(xl,yl,xh,yh,law,xm)
           erm=errlin(xl,yl,xh,yh,law)
           if (ym.ne.0.0d0) then
             ulin(n)=abs(erm/ym)
@@ -2271,47 +2325,7 @@ else ! law=3,4,5 (iterative procedure for linearization)
 endif
 return
 end
-! ------------------------------------------------------------------------------
-real*8 function yinterp(x1,y1,x2,y2,law,x)
-!
-! Description:
-! the procedure yinterp calculates the values of the function y at x from the
-! interpolation law given between the tabulated points (x1,y1) and (x2,y2)
-!
-! Input
-! x1: value of abscissa at the lower boundary
-! y1: value of the function y at x=x1
-! x2: value of abscissa at the upper boundary
-! y2: value of the function y at x=x2
-! law: non lin-lin ENDF-6 interpolation law between x1 and x2
-!        law=1: histogram interpolation (y constant)
-!        law=2: lin-lin (y is linear in x)
-!        law=3: lin-log (y is linear in log(x))
-!        law=4: log-lig (log(y) is linear in x)
-!        law=5: log-log (log(y) is linear in log(x))
-! x: value of the abscissa where the function is required (x1<=x<=x2)
-!
-! Output:
-! yinterp: y(x) = value of the function y at x
-!
-implicit real*8 (a-h,o-z)
-if (x2.eq.x1.or.y2.eq.y1.or.x.eq.x1.or.law.eq.1) then ! x2=x1,y2=y1,x=x1,law=1
-  yinterp=y1
-elseif (law.eq.2) then                                ! y is linear in x
-  yinterp=y1+(y2-y1)/(x2-x1)*(x-x1)
-elseif (law.eq.3) then                                ! y is linear in log(x)
-  yinterp=y1+(y2-y1)*log(x/x1)/log(x2/x1)
-elseif (law.eq.4) then                                ! log(y) is linear in x
-  yinterp=y1*exp(log(y2/y1)*(x-x1)/(x2-x1))
-elseif (law.eq.5) then                                ! log(y) is linear in log(x)
-  yinterp=y1*exp(log(y2/y1)*log(x/x1)/log(x2/x1))
-else
-  write(*,*) ' Fatal error: Interpolation law: ',law,' not allowed'
-  stop
-endif
-return
-end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
 real*8 function errlin(x1,y1,x2,y2,law)
 !
 ! Description:
@@ -2358,7 +2372,7 @@ else
 endif
 return
 end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
 real*8 function absdev(x1,y1,u1,x2,y2,u2,law,x,y)
 !
 ! Description:
@@ -2367,9 +2381,9 @@ real*8 function absdev(x1,y1,u1,x2,y2,u2,law,x,y)
 ! the interval. y(x) is given by a non-linear ENDF-6 interpolation law
 ! between x1 and x2.
 ! Defining,
-!   y=yinterp(x1,y1,x2,y2,law,x)
-!   ymin=yinterp(x1,y1-u1,x2,y2-u2,law,x)
-!   yplus=yinterp(x1,y1-u1,x2,y2-u2,law,x)
+!   y=yintp(x1,y1,x2,y2,law,x)
+!   ymin=yintp(x1,y1-u1,x2,y2-u2,law,x)
+!   yplus=yintp(x1,y1-u1,x2,y2-u2,law,x)
 ! then,
 !   absdev=max(abs(y-ymin),abs(yplus-y))
 !
@@ -2395,11 +2409,546 @@ real*8 function absdev(x1,y1,u1,x2,y2,u2,law,x,y)
   implicit real*8 (a-h, o-z)
   ya=y1-u1
   yb=y2-u2
-  ymin=yinterp(x1,ya,x2,yb,law,x)
+  ymin=yintp(x1,ya,x2,yb,law,x)
   ya=y1+u1
   yb=y2+u2
-  yplus=yinterp(x1,ya,x2,yb,law,x)
+  yplus=yintp(x1,ya,x2,yb,law,x)
   absdev=max(abs(y-ymin),abs(yplus-y))
 return
 end
-! ------------------------------------------------------------------------------
+!-------------------------------------------------------------------------------------------------------------------------------
+! Procedures to convert transition probabilities in MF12 to yields
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine init_trans2yield(elis,maxlevel,nlevel,qm,qi,ee,r,a)
+!
+!  Description:
+!   The subroutine init_trans2yield initializes the transition data to be used by
+!   subroutine trans2yield. Particularly, the level energy and probability matrices
+!   are initialized for further use.
+!
+!  Input parameters:
+!   elis: Excitation energy of the target nucleus relative to 0.0 for the ground state
+!   maxlevel: Maximum number of levels for inelastic reactions (z,x') x=n,p,d,t,he-3,he-4
+!             Dimension of arrays ee, a and r.
+!   nlevels: Number of the discrete inelastic reactions (z,x') found in the evaluated data file
+!   qm(i): Qm value of the inelastic reaction i ordered from the first to the last excited level
+!          [qm(i), i=1,nlevel] i=1 for first level, i=nlevel for the last discrete inelastic level found
+!   qi(i): Qi value of the inelastic reaction i ordered from the first to the last excited level
+!          [qi(i), i=1,nlevel] i=1 for first level, i=nlevel for the last discrete inelastic level found
+!
+!  Output parameters:
+!   ee(i):  Energy of the excited level i. [ee(i),i=1,maxlevel]
+!   a(i,j): Probability that a gamma ray of energy eg is emitted in the transition from
+!           level j to i, taken as the gamma-ray branching ratio, [a(i,j),i=1,maxlevel,j=1,maxlevel]
+!   r(i,j): Probability that the nucleus initially excited at level i de-excites
+!           at level j through all possible transitions [r(i,j),i=1,maxlevel,j=1,maxlevel]
+!
+  implicit real*8 (a-h, o-z)
+  dimension qm(*),qi(*)                       ! input arrays of q values
+  dimension ee(*),r(maxlevel,*),a(maxlevel,*) ! transitions matrices and level energies
+  do i=1,maxlevel
+    ee(i)=0.0d0
+    do k=1,maxlevel
+      if (i.eq.k) then
+        r(i,k)=1.0d0
+      else
+        r(i,k)=0.0d0
+      endif
+      a(i,k)=0.0d0
+    enddo
+  enddo
+  do i=1,nlevel
+    ee(i+1)=qm(i)+elis-qi(i)
+  enddo
+return
+end
+!
+subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nk,es,eg,y)
+!
+! Description:
+!  The subroutine trans2yield converts transition probability arrays given for inelastic
+!  discrete reactions in file MF12 to the corresponding yields. The routine should be
+!  successively called from the first to the last excited level presented in the evaluation
+!  to produce the yields at each level.
+!
+!  The array ee, and the matrices a and r contain the transition data up to the level NS-1
+!  The data corresponding to the current level NS is added and yield data is computed.
+!
+! Input parameters:
+!   mt: MT number of the inelastic reaction
+!   esns: Energy of the residual excited state level for reaction mt (excited level NS=1,2,3,...)
+!         Below the level numbered as NS there are NS levels including the ground level.
+!         NS=mt-mt0, where mt0=50 for (z,n'),  mt0=600 for (z,p'), mt0=650 for (z,d'),
+!                          mt0=700 for (z,t'), mt0=750 for (z,he3'), mt0=800 for (z,he4')
+!   nt: Number of direct transitions for which data are given
+!       (i.e., number of non-zero transition probabilities), nt <= NS
+!   esi(i): energy of the i-th level to wich direct transitions are possible from level NS
+!           esi(i) = 0.0 implies the ground state. [esi(i), i=1,nt]
+!   tp(i): probability of a direct transition from level NS to a lower level i [tp(i),i=1,nt]
+!   gp(i): probability that, given a transition from level NS to level i, the transition is
+!          a photon transition (i.e., the conditional probability of photon emission)
+!          gp(i)= 1.0 for pure photon transitions [gp(i),i=1,nt]
+!   maxlevel: Maximum number of levels for inelastic reactions (z,x') x=n,p,d,t,he-3,he-4
+!   ee(i):  Energy of the excited level i. [ee(i),i=1,maxlevel]
+!   r(i,j): Probability that the nucleus initially excited at level i de-excites
+!           at level j through all possible transitions [a(i,j),i=1,maxlevel, j=1,maxlevel]
+!   a(i,j): Probability that a gamma ray of energy eg is emitted in the transition from
+!           level j to i, taken as the gamma-ray branching ratio,
+!           [a(i,j),i=1,maxlevel, j=1,maxlevel]
+!   maxnk: maximum number of photons. Pre-dimension of arrays es, eg and y
+!
+! Output:
+!   nk: Actual number of emitted photons for the inelastic reaction mt
+!   es(k): energy of the level from which the k-th photon originates. [es(k),k=1,nk]
+!   eg(k): k-th photon energy [eg(k), k=1, nk]
+!   y(k):  yield of k-th photon [y(k), k=1, nk]
+!
+  implicit real*8 (a-h, o-z)
+  dimension esi(*),tp(*),gp(*),ee(*),r(maxlevel,*),a(maxlevel,*)  ! input arrays (transition data)
+  dimension es(*),eg(*),y(*) ! output arrays (yield data)
+  ! check discrete reaction and assign first level mt1 according to reaction mt
+  if (mt.gt.50.and.mt.lt.91) then       ! mt0=50    mtc=91
+    mt0=50
+  elseif (mt.gt.600.and.mt.lt.649) then ! mt0=600  mtc=649
+    mt0=600
+  elseif (mt.gt.650.and.mt.lt.699) then ! mt0=650  mtc=699
+    mt0=650
+  elseif (mt.gt.700.and.mt.lt.749) then ! mt0=700  mtc=749
+    mt0=700
+  elseif (mt.gt.750.and.mt.lt.799) then ! mt0=750  mtc=799
+    mt0=750
+  elseif (mt.gt.800.and.mt.lt.849) then ! mt0=800  mtc=849
+    mt0=800
+  elseif (mt.gt.875.and.mt.lt.891) then ! mt0=875  mtc=891
+    mt0=875
+  else
+    write(*,*)' Fatal error: Transition probabilities given for a non discrete reaction MT=',mt
+    stop
+  endif
+  !  generating/updating the transition probability matrices
+  j=mt-mt0+1
+  ee(j)=esns
+  jm1=j-1
+  do kk=1,jm1
+    k=jm1-kk+1
+    eek=ee(k)
+    ii=0
+    do i=1,nt
+      esii=esi(i)
+      if ((esii.eq.0.0d0.and.eek.eq.0.0d0).or.((esii.ne.0.0d0).and.(abs(esii-eek).le.0.0001d0*esii))) then
+        ii=i
+        exit
+      endif
+    enddo
+    if (ii.eq.0) then
+      r(k,j)=0.0d0
+      a(k,j)=0.0d0
+    else
+      p=tp(ii)
+      r(k,j)=p
+      a(k,j)=p*gp(ii)
+    endif
+    if (k.ne.jm1) then
+      kp1=k+1
+      do i=kp1,jm1
+        r(k,j)=r(k,j)+a(k,i)*r(i,j)
+      enddo
+    endif
+  enddo
+! calculating the yields for reaction mt
+  nk=0
+  do i=2,j
+    j1=j+2-i
+    ej1=ee(j1)
+    do ii=1,jm1
+      j2=j-ii
+      ej2=ee(j2)
+      yld=a(j2,j1)*r(j1,j)
+      if (yld.gt.0.0d0) then
+        nk=nk+1
+        if (nk.gt.maxnk) then
+          write(*,*)' Fatal error: too many photons from transition probabilities, increase maxnk=',maxnk
+          stop
+        endif
+        eg(nk)=ej1-ej2
+        es(nk)=ej1
+        y(nk)=yld
+      endif
+    enddo
+  enddo
+  ! re-ordering data in descending order of gamma energies for reaction mt
+  if (nk.gt.1) then
+    lm1=nk-1
+    do i=1,lm1
+      ip1=i+1
+      do ii=ip1,nk
+        if (eg(i).lt.eg(ii)) then
+          temp=eg(i)
+          eg(i)=eg(ii)
+          eg(ii)=temp
+          temp=y(i)
+          y(i)=y(ii)
+          y(ii)=temp
+          temp=es(i)
+          es(i)=es(ii)
+          es(ii)=temp
+        endif
+      enddo
+    enddo
+  endif
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+! Procedures for integration of MF6/LAW=1,6 and 7 (ddxs integration)
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine feep_full_law1con(e,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                             tol,nepu,epu,nepmax,ep,feep,fdev,nep)
+implicit real*8 (a-h, o-z)
+parameter (ksmax=20, tolx=1.0d-6)
+dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
+dimension epu(*),ep(*),feep(*),fdev(*)
+dimension xs(ksmax),ys(ksmax),dys(ksmax)
+allocatable ep0(:)
+np0=max(nep1-nd1,0)+max(nep2-nd2,0)+max(nepu,0)+2
+allocate(ep0(np0))
+call initial_epgrid(e,awr,awi,awp,lct,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,nepu,epu,ep0,np0)
+if (nepmax.le.0) then
+  nn=abs(nepmax)
+  if (nn.ge.np0) then
+    nep=np0
+    do i=1,nep
+      ep(i)=ep0(i)
+    enddo
+    call feep_points_law1con(e,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                             tol,nep,ep,feep,fdev)
+  else
+    write(*,*)' Fatal error: increase the maximum number of final energy points nepmax=',nn
+    stop
+  endif
+else
+  x1=ep0(1)
+  call feep_law1con(e,x1,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                    tol,y1,dy1)
+  ep(1)=x1
+  feep(1)=y1
+  fdev(1)=dy1
+  j=1
+  do i=2,np0
+    x2=ep0(i)
+    call feep_law1con(e,x2,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                      tol,y2,dy2)
+    k=0
+    istop=0
+    do while (istop.eq.0)
+      yl=0.5d0*(y1+y2)
+      xm=0.5d0*(x1+x2)
+      hm=xm-x1
+      call feep_law1con(e,xm,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                        tol,ym,dym)
+      slope1=(ym-y1)/hm
+      slope2=(y2-ym)/hm
+      if ((abs(ym-yl).le.abs(tol*ym).and.slope1*slope2.gt.0.0d0).or.(y2.eq.ym.and.y1.eq.ym).or. &
+            abs(x2-x1).le.abs(tolx*x2).or.k.eq.ksmax) then
+        j=j+1
+        if (j.gt.nepmax) then
+          write(*,*)' Fatal error: increase the maximum number of outgoing energy points nepmax=',nepmax
+          stop
+        endif
+        ep(j)=x2
+        feep(j)=y2
+        fdev(j)=dy2
+        if (k.eq.0) then
+          istop=1
+        else
+          x1=x2
+          y1=y2
+          dy1=dy2
+          x2=xs(k)
+          y2=ys(k)
+          dy2=dys(k)
+          k=k-1
+        endif
+      else
+        k=k+1
+        xs(k)=x2
+        ys(k)=y2
+        dys(k)=dy2
+        x2=xm
+        y2=ym
+        dy2=dym
+      endif
+    enddo
+    x1=x2
+    y1=y2
+    dy1=dy2
+  enddo
+  nep=j
+endif
+deallocate(ep0)
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine feep_points_law1con(e,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                           tol,nepu,epu,fepu,fdevu)
+implicit real*8 (a-h, o-z)
+dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
+dimension epu(*),fepu(*),fdevu(*)
+do i=1,nepu
+  call feep_law1con(e,epu(i),awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                    tol,fepu(i),fdevu(i))
+enddo
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine feep_law1con(e,ep,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                       tol,fep,fdev)
+implicit real*8 (a-h, o-z)
+parameter (hz=0.25d0)
+dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
+awip=awi*awp
+umax=1.0d0
+if ((lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)).and.(awip*e.gt.0.0d0)) then
+  c0=sqrt(awip)/(awi+awr)
+  if (ep.gt.0.0d0) then
+    c=c0*sqrt(e1/ep)
+    umin1=0.5d0*(1.0d0+c*c-ep1(nep1)/ep)/c
+    write(*,*)' umin1 e1 ep c ',umin1,e1,ep,c,c0
+    c=c0*sqrt(e2/ep)
+    umin2=0.5d0*(1.0d0+c*c-ep2(nep2)/ep)/c
+    write(*,*)' umin2 e2 ep c ',umin2,e2,ep,c,c0
+    umin=umin1+(umin2-umin1)*(e-e1)/(e2-e1)
+    write(*,*)' umin e ep ',umin,e,ep
+    if (umin.lt.-1.0d0) umin=-1.0d0
+    if (umin.gt.1.0d0)  umin=1.0d0
+  else
+    umin=1.0d0
+  endif
+else
+  umin=-1.0d0
+endif
+write(*,*)' umin umax ',umin,umax
+if (umax.gt.umin) then
+  zmin=acos(umin)
+  nu=int(zmin/hz)
+  nu=max(nu,3)
+  dz=zmin/dble(nu)
+  z1=zmin-dz
+  u1=cos(z1)
+  call feep_uint_law1con(e,ep,umin,u1,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                         tol,f,err)
+  fep=f
+  fdev=err
+  do i=2,nu-1
+    z2=z1-dz
+    u2=cos(z2)
+    call feep_uint_law1con(e,ep,u1,u2,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                          tol,f,err)
+    fep=fep+f
+    fdev=fdev+err
+    z1=z2
+    u1=u2
+  enddo
+  call feep_uint_law1con(e,ep,u1,umax,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                        tol,f,err)
+  fep=fep+f
+  fdev=fdev+err
+else
+  fep=0.0d0
+  fdev=0.0d0
+endif
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine feep_uint_law1con(e,ep,u1,u2,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
+                            tol,fep,err)
+implicit real*8 (a-h, o-z)
+parameter (nmax=12)
+dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
+dimension r0(nmax),r1(nmax)
+if (u2.gt.u1.and.ep.gt.0.0d0) then
+  call mf6lab2cm(awr,awi,awp,lct,e,ep,u1,tp,w,dinv)
+  y1=f6law1con(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)*dinv
+  call mf6lab2cm(awr,awi,awp,lct,e,ep,u2,tp,w,dinv)
+  y2=f6law1con(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)*dinv
+  call romberg_init(i,jmax,u1,y1,u2,y2,h,r0)
+  do while (i.lt.nmax)
+    sum=0.0d0
+    do j=1,jmax
+      u=u1+dble(2*j-1)*h
+      call mf6lab2cm(awr,awi,awp,lct,e,ep,u,tp,w,dinv)
+      y=f6law1con(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)*dinv
+      sum=sum+y
+    enddo
+    call richardson(i,jmax,h,sum,r0,r1,nmax,tol,n)
+  enddo
+  fep=r1(n)
+  err=abs(r1(n)-r1(n-1))
+else
+ fep=0.0d0
+ err=0.0d0
+endif
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine romberg_init(i,jmax,u1,y1,u2,y2,h,r0)
+implicit real*8 (a-h, o-z)
+dimension r0(*)
+i=1
+jmax=1
+h=0.5d0*(u2-u1)
+r0(1)=h*(y1+y2)
+return
+end
+!
+subroutine richardson(i,jmax,h,sum,r0,r1,nmax,tol,n)
+implicit real*8 (a-h, o-z)
+dimension r0(*),r1(*)
+r1(1)=0.5d0*r0(1)+h*sum
+pow=4.0d0
+do k=1,i
+  r1(k+1)=r1(k)+(r1(k)-r0(k))/(pow-1.0d0)
+  pow=4.0d0*pow
+enddo
+n=i+1
+if (abs(r1(n)-r1(i)).le.abs(tol*r1(n)).or.n.eq.nmax) then
+  i=nmax
+else
+  h=0.5d0*h
+  jmax=2*jmax
+  do k=1,n
+    r0(k)=r1(k)
+  enddo
+  i=n
+endif
+return
+end
+! ------------------------------------------------------------------------------------------------------------------------------
+subroutine get_griddata(e,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,ep1min,ep1range,ep2min,ep2range,epmin,eprange,epmax)
+implicit real*8 (a-h, o-z)
+dimension ep1(*),ep2(*)
+n1=nd1+1
+n2=nd2+1
+if (nep1.gt.n1) then
+  ep1min=ep1(n1)
+  ep1max=ep1(nep1)
+else
+  ep1min=0.0d0
+  ep1max=0.0d0
+endif
+ep1range=ep1max-ep1min
+if (nep2.gt.n2) then
+  ep2min=ep2(n2)
+  ep2max=ep2(nep2)
+else
+  ep2min=0.0d0
+  ep2max=0.0d0
+endif
+ep2range=ep2max-ep2min
+slope=(e-e1)/(e2-e1)
+epmin=ep1min+(ep2min-ep1min)*slope
+epmax=ep1max+(ep2max-ep1max)*slope
+eprange=epmax-epmin
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine initial_epgrid(e,awr,awi,awp,lct,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,nepu,epu,ep0,np0)
+implicit real*8 (a-h, o-z)
+parameter (tol0=1.0d-6)
+dimension ep1(*),ep2(*),epu(*),ep0(*)
+n1=nd1+1
+n2=nd2+1
+elabmin=0.0d0
+elabmax=0.0d0
+k=0
+if (lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)) then
+  k=k+1
+  ep0(k)=elabmin
+  if (nep1.gt.n1.and.e.ne.e2) then
+    c=sqrt(awi*awp*e1)/(awi+awr)
+    cc=c*c
+    do i=n1,nep1
+      k=k+1
+      ep0(k)=ep1(i)+cc
+    enddo
+    er=sqrt(ep1(nep1))+c
+    elabmax=er*er
+  endif
+  if (nep2.gt.n2.and.e.ne.e1) then
+    c=sqrt(awi*awp*e2)/(awi+awr)
+    cc=c*c
+    do i=n2,nep2
+      k=k+1
+      ep0(k)=ep2(i)+cc
+    enddo
+    er=sqrt(ep2(nep2))+c
+    elabmax=max(elabmax,er*er)
+  endif
+  k=k+1
+  ep0(k)=elabmax
+else
+  if (nep1.gt.n1.and.e.ne.e2) then
+    do i=n1,nep1
+      k=k+1
+      ep0(k)=ep1(i)
+    enddo
+  endif
+  if (nep2.gt.n2.and.e.ne.e1) then
+    do i=n2,nep2
+      k=k+1
+      ep0(k)=ep2(i)
+    enddo
+  endif
+endif
+do i=1,nepu
+  k=k+1
+  ep0(k)=epu(i)
+enddo
+irem=1
+call orderx(ep0,k,tol0,irem)
+np0=k
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine orderx(x,n,tol,irem)
+!
+! the n elements of array x are ordered in ascending order
+! if irem is greater than 0, then elements within relative
+! tolerance tol are removed
+!
+implicit real*8 (a-h, o-z)
+dimension x(*)
+if (n.gt.1) then
+  m=n
+  i=0
+  do while (i.lt.m-1)
+    i=i+1
+    j=i
+    do while (j.lt.m)
+      j=j+1
+      if (x(j).lt.x(i)) then
+        temp=x(j)
+        x(j)=x(i)
+        x(i)=temp
+      endif
+    enddo
+    if (i.gt.1) then
+      if (irem.gt.0.and.abs(x(i)-x(i-1)).le.abs(tol*x(i))) then
+        m=m-1
+        if (i.ge.m) then
+           if (irem.gt.0.and.abs(x(m)-x(m-1)).le.abs(tol*x(m))) m=m-1
+           n=m
+           return
+        endif
+         do k=i,m
+           x(k)=x(k+1)
+         enddo
+         i=i-1
+      endif
+    endif
+  enddo
+  if (irem.gt.0.and.abs(x(m)-x(m-1)).le.abs(tol*x(m))) m=m-1
+  n=m
+endif
+return
+end
+! ------------------------------------------------------------------------------------------------------------------------------
