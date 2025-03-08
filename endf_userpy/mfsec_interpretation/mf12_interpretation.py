@@ -114,8 +114,6 @@ def compute_cascade_photon_yields(endf_dict, mts):
         )
 
     disc_mts, state_cache = init_trans2yield(endf_dict, mts[0]) 
-    if mts is None:
-        mts = disc_mts
 
     user_mts = set(mts)
     user_max_mt = max(user_mts)
