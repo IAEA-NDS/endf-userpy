@@ -1,5 +1,12 @@
 import numpy as np
+from ..primitives.helpers import dict2array
 from ..primitives.interpolation import endf_interp1d
+
+
+def get_photon_energies(endf_dict, mt):
+    mtsec = endf_dict[13][mt]
+    pe = [s['EG'] for s in mtsec['subsection'].values()]
+    return np.array(pe, dtype=float)
 
 
 def _compute_total_production_xs(endf_dict, mt, energies_in):
