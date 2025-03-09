@@ -8,6 +8,15 @@ from .mf12_interpretation_helpers import (
 )
 
 
+def get_photon_energies(endf_dict, mt):
+    mtsec = endf_dict[12][mt]
+    if mtsec['LO'] == 1:
+        return dict2array(mtsec['Eg'])
+    elif mtsec['LO'] == 2:
+        res = compute_photon_yields_from_transition_probabilities(endf_dict, mt)
+        return res['photon_energy']
+
+
 def compute_photon_yields_from_transition_probabilities(endf_dict, mts):
     scalar_mt = not hasattr(mts, '__iter__')
     if scalar_mt:
