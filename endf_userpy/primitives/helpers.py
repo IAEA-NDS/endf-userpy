@@ -110,6 +110,25 @@ def find_interval(a, v):
     return idcs
 
 
+def find_indices_with_tol(a, v, atol, rtol):
+    a = np.array(a)
+    v = np.array(v)
+    # bring into order
+    ordidcs = np.argsort(a)
+    a = a[ordidcs]
+    # match elements
+    idcs = np.minimum(np.searchsorted(a, v), len(a)-1)
+    s = np.isclose(a[idcs], v, atol=atol, rtol=rtol)
+    rem_idcs = np.maximum(idcs[~s]-1, 0)
+    idcs[~s] = rem_idcs
+    s[~s] = np.isclose(a[rem_idcs], v[~s], atol=atol, rtol=rtol)
+    idcs[~s] = -1  # indication for not found
+    # map to original order
+    found_sel = idcs != -1
+    idcs[found_sel] = ordidcs[idcs[found_sel]]
+    return idcs
+
+
 def get_enclosing_points(x, xp, fp):
     x = np.array(x, copy=None)
     xp = np.array(xp, copy=None)
