@@ -1769,9 +1769,10 @@
 !
   implicit real*8 (a-h, o-z)
   parameter (d2min=1.0d-38, cmin=1.0d-19)
-  if (lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0).or.e.le.0.0d0) then
+  c0=sqrt(awi*awp)/(awi+awr)
+  if ((lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)).and.e*c0.gt.0.0d0) then
     if (ep.gt.0.0d0) then
-      c=sqrt(awi*awp*e/ep)/(awi+awr)
+      c=c0*sqrt(e/ep)
       d2=1.0d0+c*c-2.0d0*c*u
       if (d2.lt.d2min) then
         d2=d2min
@@ -1786,8 +1787,7 @@
         w=-1.0d0
       endif
     else
-      c=awi*awp*e/(awi+awr)
-      tp=awi*awp*e/((awi+awr)*(awi+awr))
+      tp=c0*c0*e
       w=-1.0d0
       dinv=0.0d0
     endif
@@ -2609,7 +2609,7 @@ dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
 dimension epu(*),ep(*),feep(*),fdev(*)
 dimension xs(ksmax),ys(ksmax),dys(ksmax)
 allocatable ep0(:)
-np0=max(nep1-nd1,0)+max(nep2-nd2,0)+max(nepu,0)+2
+np0=max(nep1-nd1,0)+max(nep2-nd2,0)+max(nepu,0)+5
 allocate(ep0(np0))
 call initial_epgrid(e,awr,awi,awp,lct,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,nepu,epu,ep0,np0)
 if (nepmax.le.0) then
@@ -2705,28 +2705,21 @@ subroutine feep_law1con(e,ep,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,
 implicit real*8 (a-h, o-z)
 parameter (hz=0.25d0)
 dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
+call get_griddata(e,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,ep1min,ep1range,ep2min,ep2range,epmin,eprange,epmax)
 awip=awi*awp
 umax=1.0d0
 if ((lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)).and.(awip*e.gt.0.0d0)) then
   c0=sqrt(awip)/(awi+awr)
   if (ep.gt.0.0d0) then
-    c=c0*sqrt(e1/ep)
-    umin1=0.5d0*(1.0d0+c*c-ep1(nep1)/ep)/c
-    write(*,*)' umin1 e1 ep c ',umin1,e1,ep,c,c0
-    c=c0*sqrt(e2/ep)
-    umin2=0.5d0*(1.0d0+c*c-ep2(nep2)/ep)/c
-    write(*,*)' umin2 e2 ep c ',umin2,e2,ep,c,c0
-    umin=umin1+(umin2-umin1)*(e-e1)/(e2-e1)
-    write(*,*)' umin e ep ',umin,e,ep
-    if (umin.lt.-1.0d0) umin=-1.0d0
-    if (umin.gt.1.0d0)  umin=1.0d0
+    umin=(ep+c0*c0*e-epmax)/(2.0d0*c0*sqrt(ep*e))
+    umin=max(umin,-1.0d0)
+    umin=min(umin,1.0d0)
   else
     umin=1.0d0
   endif
 else
   umin=-1.0d0
 endif
-write(*,*)' umin umax ',umin,umax
 if (umax.gt.umin) then
   zmin=acos(umin)
   nu=int(zmin/hz)
@@ -2857,47 +2850,54 @@ parameter (tol0=1.0d-6)
 dimension ep1(*),ep2(*),epu(*),ep0(*)
 n1=nd1+1
 n2=nd2+1
-elabmin=0.0d0
-elabmax=0.0d0
-k=0
+call get_griddata(e,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,ep1min,ep1range,ep2min,ep2range,epmin,eprange,epmax)
+k=1
+ep0(k)=0.0d0
 if (lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)) then
+  c0=sqrt(awi*awp)/(awr+awi)
+  c=c0*c0*e
   k=k+1
-  ep0(k)=elabmin
+  ep0(k)=c
+  el=sqrt(epmax)+c0*sqrt(e)
+  k=k+1
+  ep0(k)=el*el
   if (nep1.gt.n1.and.e.ne.e2) then
-    c=sqrt(awi*awp*e1)/(awi+awr)
-    cc=c*c
     do i=n1,nep1
+      ep=epmin+(ep1(i)-ep1min)*eprange/ep1range
       k=k+1
-      ep0(k)=ep1(i)+cc
+      ep0(k)=ep+c
     enddo
-    er=sqrt(ep1(nep1))+c
-    elabmax=er*er
+    el1=sqrt(ep1min+ep1range)+c0*sqrt(e1)
+    k=k+1
+    ep0(k)=el1*el1
   endif
   if (nep2.gt.n2.and.e.ne.e1) then
-    c=sqrt(awi*awp*e2)/(awi+awr)
-    cc=c*c
     do i=n2,nep2
+      ep=epmin+(ep2(i)-ep2min)*eprange/ep2range
       k=k+1
-      ep0(k)=ep2(i)+cc
+      ep0(k)=ep+c
     enddo
-    er=sqrt(ep2(nep2))+c
-    elabmax=max(elabmax,er*er)
+    el2=sqrt(ep2min+ep2range)+c0*sqrt(e2)
+    k=k+1
+    ep0(k)=el2*el2
   endif
-  k=k+1
-  ep0(k)=elabmax
 else
   if (nep1.gt.n1.and.e.ne.e2) then
     do i=n1,nep1
       k=k+1
-      ep0(k)=ep1(i)
+      ep0(k)=epmin+(ep1(i)-ep1min)*eprange/ep1range
     enddo
+    k=k+1
+    ep0(k)=ep1(nep1)
   endif
   if (nep2.gt.n2.and.e.ne.e1) then
     do i=n2,nep2
       k=k+1
-      ep0(k)=ep2(i)
+      ep0(k)=epmin+(ep2(i)-ep2min)*eprange/ep2range
     enddo
   endif
+  k=k+1
+  ep0(k)=ep2(nep2)
 endif
 do i=1,nepu
   k=k+1
@@ -2934,8 +2934,7 @@ if (n.gt.1) then
     if (i.gt.1) then
       if (irem.gt.0.and.abs(x(i)-x(i-1)).le.abs(tol*x(i))) then
         m=m-1
-        if (i.ge.m) then
-           if (irem.gt.0.and.abs(x(m)-x(m-1)).le.abs(tol*x(m))) m=m-1
+        if (i.gt.m) then
            n=m
            return
         endif
