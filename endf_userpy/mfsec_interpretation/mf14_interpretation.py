@@ -20,8 +20,8 @@ def compute_angdist_from_isotropic(
     endf_dict, mt, energies_in, photon_energies, angle_cosines
 ): 
     num_eincs_in = len(energies_in)
-    num_angcos_out = len(angle_cosines)
-    num_photens_out = len(photon_energies)
+    num_angcos_out = len(photon_energies)
+    num_photens_out = len(angle_cosines)
     return np.full((num_eincs_in, num_angcos_out, num_photens_out), 0.5)
 
 
