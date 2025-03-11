@@ -3,11 +3,13 @@ from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf5_interpretation as mf5_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
+from ..mfsec_interpretation import mf15_interpretation as mf15_interp
 from ..primitives.properties import (
     is_zap_consistent,
     has_mf4_mt,
     has_mf5_mt,
     has_mf6_mt,
+    has_mf15_mt,
 )
 from .distribution1d_helpers import (
     integrate_mf6_dist2d_over_eout,
@@ -93,6 +95,12 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
             )
         if found_energydist:
             return energydist
+
+    elif has_mf15_mt(endf_dict, mt) and zap == get_zap_for_particle('g'):
+        print('--> found continuous gamma energy spectrum in MF15')  # debug
+        return mf15_interp.compute_spectrum(
+            endf_dict, mt, energies_in, energies_out
+        )
 
     raise IndexError(
         f'Required data to reconstruct energy spectrum '
