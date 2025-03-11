@@ -1,5 +1,8 @@
 import numpy as np
-from ..primitives.helpers import dict2array
+from ..primitives.helpers import (
+    dict2array,
+    find_indices_with_tol,
+)
 from ..primitives.interpolation import endf_interp1d
 from .mf12_interpretation_helpers import (
     get_discrete_series_mts,
@@ -76,11 +79,11 @@ def compute_photon_yields_from_tabulated_yields(endf_dict, mt, energies_in):
     }
 
 
-def compute_photon_yields(endf_dict, mt, energies_in):
+def compute_photon_yields(endf_dict, mt, energies_in, photon_energies):
     mtsec = endf_dict[12][mt]
     LO_value = mtsec['LO']
     if LO_value == 1:
-        return compute_photon_yields_from_tabulated_yields(
+        res = compute_photon_yields_from_tabulated_yields(
             endf_dict, mt, energies_in
         )
     elif LO_value == 2:
@@ -91,8 +94,18 @@ def compute_photon_yields(endf_dict, mt, energies_in):
         res['photon_yield'] = (
             res['photon_yield'].reshape(1,-1) * ones_vec
         )
-        return res
     else:
         raise ValueError(
             'Invalid value LO={LO_value}'
         )
+
+    # select the requested photon energies
+    idcs = find_indices_with_tol(
+        res['photon_energy'], photon_energies, atol=1e-4, rtol=1e-5
+    )
+    if np.any(idcs == -1):
+        raise ValueError(
+            'All user-supplied `photon_energies` must exist '
+            f'in MF12/MT{mt} but this is not the case.'
+        )
+    return res['photon_yield'][:, idcs]
