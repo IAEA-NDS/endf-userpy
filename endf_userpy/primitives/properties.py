@@ -128,3 +128,19 @@ def has_mf5_mt(endf_dict, mt):
 
 def has_mf6_mt(endf_dict, mt):
     return 6 in endf_dict and mt in endf_dict[6]
+
+
+def has_mf12_mt(endf_dict, mt):
+    return 12 in endf_dict and mt in endf_dict[12]
+
+
+def has_mf13_mt(endf_dict, mt):
+    return 12 in endf_dict and mt in endf_dict[12]
+
+
+def has_mf14_mt(endf_dict, mt):
+    return 14 in endf_dict and mt in endf_dict[14]
+
+
+def has_mf15_mt(endf_dict, mt):
+    return 15 in endf_dict and mt in endf_dict[15]
