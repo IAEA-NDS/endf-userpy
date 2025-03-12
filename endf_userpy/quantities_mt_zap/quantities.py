@@ -58,7 +58,7 @@ def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
 
 def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
     yields = compute_yields(
-        endf_dict, mt, zap, energies_in, include_discrete=False
+        endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
     xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1)
     energydist = compute_energydist_values(
