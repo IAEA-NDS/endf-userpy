@@ -115,7 +115,7 @@
       do while (mt.gt.0)
         call findnextmt(nin,6,mt)
         if (mt.gt.0) then
-!          imt=imt+1
+          imt=imt+1
 !
 !         processing MF6 by sections
 !
@@ -244,14 +244,35 @@
                 write(nou,'(a,i2,a,1pe13.6,a,i2)')' LAW=',law,' APSX=',apsx,' NPSX=',npsx
                 write(nou,'(110a1)')('=',i=1,110)
                  if (q.lt.zero) then
-                   e0=(awr+awi)/awr*(-q)*1.00001d0
+                   e0=(awr+awi)/awr*(-q)
                  else
                    e0=emin
                  endif
                  e2=emax
                  h=(e2-e0)/dble(neu-1)
+!                 nepmax=-abs(nepmax)
                  do i=1,neu
-                   eu(i)=e0+h*dble(i-1)
+                   ei=e0+h*dble(i-1)
+                   nepuu=2
+                   epu(1)=10.
+                   epu(2)=50.
+                   call feep_full_law6(ei,awr,awi,awp,q,apsx,npsx,nepuu,epu,tol,nepmax,ep,feep,fdev,nep)
+                   write(*,*)' i=',' incident energy=',ei,' mt=',mt,' zap=',int(zap+1.0d-3),' nep=',nep
+                   write(nou,*)' i=',' incident energy=',ei,' mt=',mt,' zap=',int(zap+1.0d-3),' nep=',nep
+                   write(*,'(a6,4a20,a6,i6)')' No.',' E',' Ep','f(E,Ep)',' dev(E,Ep)',' nep=',nep !DLA
+                   write(nou,'(a6,4a20)')' No.',' E',' Ep','f(E,Ep)',' dev(E,Ep)' !DLA
+                   sum=0.0d0
+                   sdev=tol
+                   do j=1,nep
+                     write(*,'(i6,1p4e20.11)')j,ei,ep(j),feep(j),fdev(j)
+                     write(nou,'(i6,1p4e20.11)')j,ei,ep(j),feep(j),fdev(j)
+                     if (j.gt.1) then
+                       sum=sum+0.5d0*(ep(j)-ep(j-1))*(feep(j)+feep(j-1))
+                       sdev=sdev+0.5d0*(ep(j)-ep(j-1))*(fdev(j)+fdev(j-1))
+                     endif
+                   enddo
+                   write(nou,'(a6,40x,3f20.11)')' sum',sum,sdev,(1.0d0-sum)
+                   write(*,'(a,3i4,f8.1,f15.10,1p2e15.6)')' i mt lct zap sum=',i,mt,lct,zap,sum,sdev,(1.0d0-sum)
                  enddo
               else
                 write(nou,'(a,i2)')' LAW=',law
