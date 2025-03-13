@@ -1,14 +1,14 @@
-! ========================================================================================
+! ==============================================================================================================================
 !
 !  endf6py.f90 library for ENDF-6 processing
 !
-! ========================================================================================
+! ==============================================================================================================================
   subroutine mf4_get_leg(awr,awi,awp,q,lct,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f4)
 !
 ! Descrption:
 ! Get the angular distribution f(E,u) given by Legendre expansion for a set
 ! of incident energies e(ne) at different cosines xmu(nmu) supplied by the
-! user. The results are returned in the f4(ie,ju) array.
+! user. The results are given in the f4(ie,ju) array.
 !
 ! Input:
 ! awr: relative atomic mass of the target
@@ -50,7 +50,7 @@
   enddo
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf4_get_tab(awr,awi,awp,q,lct,e1,u1,f1,np1,nbt1,ibt1,nr1, &
                          e2,u2,f2,np2,nbt2,ibt2,nr2,ilaw,e,ne,xmu,nmu,f4)
 !
@@ -106,7 +106,7 @@
   enddo
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf6_get_law1(eu,neu,epu,nepu,uu,nuu,&
                           awr,awi,awp,za,zai,zap,lct,lang,lep,lei, &
                           e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
@@ -161,7 +161,7 @@
 ! ep2: outgoing energy values at e2. 1D-array [ep2(npe2)]
 ! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(nep2,na2)]
 !
-! Output
+! Output:
 ! f6dis: discrete contribution to energy-angle distribution at [eu,epu,uu].
 ! f6con: continuum contribution to energy-angle distribution at [eu,epu,uu].
 !
@@ -186,7 +186,7 @@
   enddo
   return
   end
-! ---------------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf6_get_law2(awr,awi,awp,q,lct,lang,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f6)
 !
 ! Description:
@@ -241,7 +241,7 @@
   enddo
   return
   end
-! -----------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf6_get_law5(za,awr,zap,awp,spi,lidp,lei,ltp, &
                           e1,nl1,a1,e2,nl2,a2,eni,sni,np,nbt,ibt,nr, &
                           e,ne,xmu,nmu,f65)
@@ -268,7 +268,7 @@
   enddo
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf6_get_law6(awr,awi,awp,q,apsx,npsx,e,ne,ep,nep,xmu,nmu,f6)
 !
 ! Description:
@@ -307,7 +307,7 @@
   enddo
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf6_get_law7(e,ne,ep,nep,xmu,nmu,lei, &
                          e1,lmu1,u11,ep11,f11,np11,nbt11,ibt11,nr11, &
                                  u12,ep12,f12,np12,nbt12,ibt12,nr12, &
@@ -381,11 +381,11 @@
   enddo
   return
   end
-! ==============================================================================
+! ==============================================================================================================================
 !
 ! representation based procedures for MF4 and MF6
 !
-! ==============================================================================
+! ==============================================================================================================================
   real*8 function f4leg(e1,a1,nl1,e2,a2,nl2,ilaw,e,u)
 !
 ! Descrption:
@@ -445,7 +445,7 @@
   deallocate(b1,b2)
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function f4tab(e1,u1,f1,np1,nbt1,ibt1,nr1, &
                         e2,u2,f2,np2,nbt2,ibt2,nr2,ilaw,e,u)
 !
@@ -494,7 +494,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function f6law1dis(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)
 ! e:   incident energy
 ! tp:  outgoing particle energy
@@ -531,7 +531,7 @@
 ! ep2: outgoing energy values at e2. 1D-array [ep2(npe2)]
 ! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(nep2,na2)]
 !
-! Output
+! Output:
 !  f6law1dis: Discrete contribution to angle-energy distribution at e,tp,w
 !
   implicit real*8 (a-h, o-z)
@@ -560,7 +560,7 @@
   endif
   return
   end
-!-------------------------------------------------------------------------------
+!-------------------------------------------------------------------------------------------------------------------------------
   real*8 function f6law1_dis(e,tp,w,za,zai,zap,lang,nd,na,nep,ep,b)
 !
 ! Description:
@@ -641,7 +641,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function f6law1con(e,tp,w,za,zai,zap,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2)
 ! e:   incident energy
 ! tp:  outgoing particle energy
@@ -678,7 +678,7 @@
 ! ep2: outgoing energy values at e2. 1D-array [ep2(npe2)]
 ! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(nep2,na2)]
 !
-! Output
+! Output:
 !  f6law1con: Continuum contribution to angle-energy distribution at e,tp,w
 !
   implicit real*8 (a-h, o-z)
@@ -722,7 +722,7 @@
   endif
   return
   end
-!-------------------------------------------------------------------------------
+!-------------------------------------------------------------------------------------------------------------------------------
   real*8 function f6law1_con(e,tp,w,za,zai,zap,lang,lep,nd,na,nep,ep,b)
 !
 ! Description:
@@ -820,7 +820,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function f6law2(lang,e1,a1,nl1,e2,a2,nl2,ilaw,e,u)
 !
 ! Description:
@@ -888,7 +888,7 @@
   endif
   return
   end
-! -----------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function f6law5(e,u,za,awr,zap,awp,spi,lidp,lei,ltp, &
                          e1,nl1,a1,e2,nl2,a2, &
                          eni,sni,np,nbt,ibt,nr)
@@ -1120,7 +1120,7 @@
   f6law5=two*pi*sige ! to convert barn/sr to barn/(unit_cosine)
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function f6law6(awr,awi,awp,q,apsx,npsx,e,ep,u)
 !
 ! Description:
@@ -1161,12 +1161,12 @@
       else
         cn=0.0d0
       endif
-      f6law6=cn*sqrt(ep)*(eimax-epc)**(1.5d0*dble(npsx)-4.0d0)
+      f6law6=cn*sqrt(ep)*((eimax-epc)**(1.5d0*dble(npsx)-4.0d0))
     endif
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function f6law7(e,ep,u,lei, &
                          e1,lmu1,u11,ep11,f11,np11,nbt11,ibt11,nr11, &
                                  u12,ep12,f12,np12,nbt12,ibt12,nr12, &
@@ -1240,9 +1240,9 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
 ! basic procedures for law formalism
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function yleg(x,a,na)
 !
 ! Description:
@@ -1267,7 +1267,7 @@
   enddo
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine legndr(x,p,nl)
 !
 ! Description
@@ -1296,7 +1296,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function ykalbach(zai,zap,zat,e,ep,u,b,na)
 !
 ! Description:
@@ -1349,7 +1349,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
    real*8 function bachaa(zai,zap,zat,ee,epe)
 !
 !  Description:
@@ -1462,7 +1462,7 @@
    bachaa=bb
    return
    end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function sctnae(e,u,za,awr,zap,awp,spi,lidp,a,b,nl)
 !
 ! Description:
@@ -1536,7 +1536,7 @@
   deallocate(p)
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function sctrxe(e,u,za,awr,zap,awp,spi,lidp,c,nl)
 !
 ! Description:
@@ -1590,7 +1590,7 @@
   deallocate(p)
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function sctnpi(e,u,za,awr,zap,awp,spi,lidp,sni,pni)
 !
 ! Description:
@@ -1617,7 +1617,7 @@
   sctnpi=sigc+sni*pni ! Coulomb + (nuclear+interference contribution)
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function coul(e,u,za,awr,zap,awp,spi,lidp,eta)
 !
 ! Description:
@@ -1669,9 +1669,9 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
 ! procedures for LAB to CM conversion
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf4lab2cm(lct,awr,awi,awp,q,e,u,w,dinv)
 !
 ! Description:
@@ -1746,7 +1746,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf6lab2cm(awr,awi,awp,lct,e,ep,u,tp,w,dinv)
 !
 ! Description:
@@ -1769,9 +1769,10 @@
 !
   implicit real*8 (a-h, o-z)
   parameter (d2min=1.0d-38, cmin=1.0d-19)
-  if (lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0).or.e.le.0.0d0) then
+  c0=sqrt(awi*awp)/(awi+awr)
+  if ((lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)).and.e*c0.gt.0.0d0) then
     if (ep.gt.0.0d0) then
-      c=sqrt(awi*awp*e/ep)/(awi+awr)
+      c=c0*sqrt(e/ep)
       d2=1.0d0+c*c-2.0d0*c*u
       if (d2.lt.d2min) then
         d2=d2min
@@ -1786,8 +1787,7 @@
         w=-1.0d0
       endif
     else
-      c=awi*awp*e/(awi+awr)
-      tp=awi*awp*e/((awi+awr)*(awi+awr))
+      tp=c0*c0*e
       w=-1.0d0
       dinv=0.0d0
     endif
@@ -1798,9 +1798,9 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
 ! auxiliary functions
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   function ihigh(x0,x,i0,n)
 !
 ! Description
@@ -1829,7 +1829,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   function imatch(x0,x,n)
 !
 ! Description
@@ -1857,9 +1857,9 @@
   enddo
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
 !   interpolation functions
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function yintp(x1,y1,x2,y2,i,x)
 !
 !  Description:
@@ -1914,7 +1914,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function tab1intp(x,y,np,nbt,ibt,nr,x0)
 !
 ! Description:
@@ -1964,7 +1964,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine list_intp(e1,a1,n1,e2,a2,n2,ilaw,e,a,na)
 !
 ! Description:
@@ -2021,7 +2021,7 @@
   endif
   return
   end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
   real*8 function unit_base_intp(y1,x1,f1,np1,nbt1,ibt1,nr1, &
                           y2,x2,f2,np2,nbt2,ibt2,nr2,inty,y0,x0)
 ! Description:
@@ -2162,7 +2162,7 @@ else ! unknown law
 endif
 return
 end
-! ------------------------------------------------------------------------------
+! ------------------------------------------------------------------------------------------------------------------------------
 subroutine tablin(x1,y1,x2,y2,u1,u2,intlaw,epsy,epsx,nmax,x,y,u,ulin,n,iconv)
 !
 ! Description:
@@ -2333,7 +2333,7 @@ real*8 function errlin(x1,y1,x2,y2,law)
 ! interpolation and the actual interpolation law (law=3,4,5) in the interval
 ! [x1,x2]
 !
-! Input
+! Input:
 ! x1: value of abscissa at the lower boundary
 ! y1: value of the function y at x=x1
 ! x2: value of abscissa at the upper boundary
@@ -2345,7 +2345,7 @@ real*8 function errlin(x1,y1,x2,y2,law)
 !        law=4: log-lig (log(y) is linear in x)
 !        law=5: log-log (log(y) is linear in log(x))
 !
-! Output
+! Output:
 ! errlin: Maximum absolute difference between lin-lin interpolation and the
 !         the actual interpolation law (law=3,4,5) in the interval [x1,x2]
 !
@@ -2403,7 +2403,7 @@ real*8 function absdev(x1,y1,u1,x2,y2,u2,law,x,y)
 ! x: value of the abscissa x
 ! y: value of the function y(x)
 !
-! Output
+! Output:
 ! absdev: maximum absolute deviation of y(x)
 !
   implicit real*8 (a-h, o-z)
@@ -2601,17 +2601,75 @@ subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nko,es,eg,y)
 return
 end
 !-------------------------------------------------------------------------------------------------------------------------------
-! Procedures for integration of MF6/LAW=1,6 and 7 (ddxs integration)
+! Procedures for integration of MF6/LAW=1 (ddxs integration)
 !-------------------------------------------------------------------------------------------------------------------------------
 subroutine feep_full_law1con(e,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
                              tol,nepu,epu,nepmax,ep,feep,fdev,nep)
+!
+! Description:
+!   The subroutine feep_full_law1con computes the spectrum of the emitted particle f(e,ep) given by mf6/law1,
+!   ensuring that the values are linearly interpolable within a tolerance of tol.
+!   Subroutines initial_epgrid and feep_law1con are called.
+!   The values of the spectrum are in the laboratory system
+!   The user can specify a set of output energy values of interest.
+!   If nepmax<0 the linearization is not applied and the spectrum is calculated at the np0 points of
+!   an internally computed initial grid, if abs(nepmax) >= np0
+!
+! Input parameters:
+! e: incident energy in the laboratory system e1<= e <= e2
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the required outgoing particle in MF6
+! za:  ZA number of the target (ZA=1000*Z+A)
+! zai: ZA number of the incident particle
+! zap: ZA number of the outgoing particle
+! lct: Reference system for the energy-angular distribution
+! lang: Angular representation flag:
+!        lang=1, Legendre coefficients
+!        lang=2, Kalbach-Mann systematics
+!        lang=11-15, tabulated angular distribution
+! lep: interpolation scheme for outgoing energies
+! lei: interpolation scheme between incident energies e1 and e2
+! e1:  incident energy of the lower panel
+! nd1: Number of dicrete energies given at e1
+! na1: number of angular parameters at e1
+!       lang=1, na1=Legendre expansion order
+!       lang=2, na1=1 r is given by the evaluator and a should be calculated
+!               na1=2 r and a are given by the evaluator
+!       lang=11-15, na1/2 pairs (u,p(u)) are tabulated
+!               na1=0, isotropic distribution for all representations
+! nep1: number of outgoing energies given at e1
+! ep1: outgoing energy values at e1. 1D-array [ep1(i),i=1...npe1]
+! b1:  outgoing energy-angle distribution at e1. 2D-array [b1(i,j),i=1...nep1,j=1...na1+1)]
+! e2:  incident energy of the upper panel
+! nd2: Number of dicrete energies given at e2
+! na2: number of angular parameters at e2
+!       lang=1, na2=Legendre expansion order
+!       lang=2, na2=1 r is given by the evaluator and a should be calculated
+!               na2=2 r and a are given by the evaluator
+!       lang=11-15, na2/2 [u,p(u)] pairs are given
+!               na2=0, isotropic distribution for all representations
+! nep2: number of outgoing energies given at e2
+! ep2: outgoing energy values at e2. 1D-array [ep2(i),i=1...npe2]
+! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(i,j),i=1...nep2,j=1...na2+1)]
+! tol: Relative tolerance for integration and linearization
+! nepu: number of fixed outgoing energies provided by user
+! epu:  outgoing energy values provided by the user. 1D array [epu(i),i=1..nepu)]
+! nepmax: maximum expected number of outgoing energies. Dimension of arrays ep,feep,fdev
+!
+! Output parameters:
+! ep: outgoing energies. 1D array: [ep(i), i=1...nep]
+! feep: outgoing spectrum f(e,e')=f(e,ep). 1D array: [feep(i),i=1...nep] nep
+! fdev: outgoing spectrum absolute deviation due to cosine integration. 1D array: [fdev(i),i=1...nep]
+! nep: actual number of values of outgoing energies at which f(e,ep) is provided
+!
 implicit real*8 (a-h, o-z)
 parameter (ksmax=20, tolx=1.0d-6)
 dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
 dimension epu(*),ep(*),feep(*),fdev(*)
 dimension xs(ksmax),ys(ksmax),dys(ksmax)
 allocatable ep0(:)
-np0=max(nep1-nd1,0)+max(nep2-nd2,0)+max(nepu,0)+2
+np0=max(nep1-nd1,0)+max(nep2-nd2,0)+max(nepu,0)+5
 allocate(ep0(np0))
 call initial_epgrid(e,awr,awi,awp,lct,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,nepu,epu,ep0,np0)
 if (nepmax.le.0) then
@@ -2624,7 +2682,7 @@ if (nepmax.le.0) then
     call feep_points_law1con(e,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
                              tol,nep,ep,feep,fdev)
   else
-    write(*,*)' Fatal error: increase the maximum number of final energy points nepmax=',nn
+    write(*,*)' Fatal error: increase the maximum number of outgoing energy points nepmax=',nn
     stop
   endif
 else
@@ -2692,6 +2750,58 @@ end
 !-------------------------------------------------------------------------------------------------------------------------------
 subroutine feep_points_law1con(e,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
                            tol,nepu,epu,fepu,fdevu)
+!
+! Description:
+!   The subroutine feep_points_law1con computes the spectrum of the emitted particle f(e,ep) given by mf6/law1
+!   at nepu outgoing energies provided by the user.
+!   Subroutine feep_law1con is called.
+!   The values of the spectrum are in the laboratory system
+!
+! Input parameters:
+! e: incident energy in the laboratory system e1<= e <= e2
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the required outgoing particle in MF6
+! za:  ZA number of the target (ZA=1000*Z+A)
+! zai: ZA number of the incident particle
+! zap: ZA number of the outgoing particle
+! lct: Reference system for the energy-angular distribution
+! lang: Angular representation flag:
+!        lang=1, Legendre coefficients
+!        lang=2, Kalbach-Mann systematics
+!        lang=11-15, tabulated angular distribution
+! lep: interpolation scheme for outgoing energies
+! lei: interpolation scheme between incident energies e1 and e2
+! e1:  incident energy of the lower panel
+! nd1: Number of dicrete energies given at e1
+! na1: number of angular parameters at e1
+!       lang=1, na1=Legendre expansion order
+!       lang=2, na1=1 r is given by the evaluator and a should be calculated
+!               na1=2 r and a are given by the evaluator
+!       lang=11-15, na1/2 pairs (u,p(u)) are tabulated
+!               na1=0, isotropic distribution for all representations
+! nep1: number of outgoing energies given at e1
+! ep1: outgoing energy values at e1. 1D-array [ep1(i),i=1...npe1]
+! b1:  outgoing energy-angle distribution at e1. 2D-array [b1(i,j),i=1...nep1,j=1...na1+1)]
+! e2:  incident energy of the upper panel
+! nd2: Number of dicrete energies given at e2
+! na2: number of angular parameters at e2
+!       lang=1, na2=Legendre expansion order
+!       lang=2, na2=1 r is given by the evaluator and a should be calculated
+!               na2=2 r and a are given by the evaluator
+!       lang=11-15, na2/2 [u,p(u)] pairs are given
+!               na2=0, isotropic distribution for all representations
+! nep2: number of outgoing energies given at e2
+! ep2: outgoing energy values at e2. 1D-array [ep2(i),i=1...npe2]
+! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(i,j),i=1...nep2,j=1...na2+1)]
+! tol: Relative tolerance for cosine integration
+! nepu: number of fixed outgoing energies provided by user
+! epu:  outgoing energy values provided by user. 1D array [epu(i),i=1..nepu)]
+!
+! Output parameters:
+! fepu: outgoing particle spectrum f(e,e')=f(e,ep). 1D array: [fepu(i),i=1...nep] nepu
+! fdevu: outgoing particle spectrum absolute deviation due to numerical integration. 1D array: [fdevu(i),i=1...nepu]
+!
 implicit real*8 (a-h, o-z)
 dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
 dimension epu(*),fepu(*),fdevu(*)
@@ -2704,31 +2814,74 @@ end
 !-------------------------------------------------------------------------------------------------------------------------------
 subroutine feep_law1con(e,ep,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
                        tol,fep,fdev)
+!
+! Description:
+!  The subroutine feep_law1con computes the spectrum of the emitted particle f(e,ep) given by mf6/law1 by
+!  calling subroutines get_griddata and feep_uint_law1con
+!  The value of the spectrum is returned in the laboratory system
+!
+! Input parameters:
+! e: incident energy in the laboratory system e1<= e <= e2
+! ep: outgoing energy value in the laboratory system ep >= 0.0
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the required outgoing particle in MF6
+! za:  ZA number of the target (ZA=1000*Z+A)
+! zai: ZA number of the incident particle
+! zap: ZA number of the outgoing particle
+! lct: Reference system for the energy-angular distribution
+! lang: Angular representation flag:
+!        lang=1, Legendre coefficients
+!        lang=2, Kalbach-Mann systematics
+!        lang=11-15, tabulated angular distribution
+! lep: interpolation scheme for outgoing energies
+! lei: interpolation scheme between incident energies e1 and e2
+! e1:  incident energy of the lower panel
+! nd1: Number of dicrete energies given at e1
+! na1: number of angular parameters at e1
+!       lang=1, na1=Legendre expansion order
+!       lang=2, na1=1 r is given by the evaluator and a should be calculated
+!               na1=2 r and a are given by the evaluator
+!       lang=11-15, na1/2 pairs (u,p(u)) are tabulated
+!               na1=0, isotropic distribution for all representations
+! nep1: number of outgoing energies given at e1
+! ep1: outgoing energy values at e1. 1D-array [ep1(i),i=1...npe1]
+! b1:  outgoing energy-angle distribution at e1. 2D-array [b1(i,j),i=1...nep1,j=1...na1+1)]
+! e2:  incident energy of the upper panel
+! nd2: Number of dicrete energies given at e2
+! na2: number of angular parameters at e2
+!       lang=1, na2=Legendre expansion order
+!       lang=2, na2=1 r is given by the evaluator and a should be calculated
+!               na2=2 r and a are given by the evaluator
+!       lang=11-15, na2/2 [u,p(u)] pairs are given
+!               na2=0, isotropic distribution for all representations
+! nep2: number of outgoing energies given at e2
+! ep2: outgoing energy values at e2. 1D-array [ep2(i),i=1...npe2]
+! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(i,j),i=1...nep2,j=1...na2+1)]
+! tol: Relative tolerance for integration and linearization
+!
+! Output parameters:
+! fep: outgoing particle spectrum f(e,e')=f(e,ep).
+! fdev: outgoing particle spectrum absolute deviation due to numerical integration
+!
 implicit real*8 (a-h, o-z)
 parameter (hz=0.25d0)
 dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
+call get_griddata(e,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,ep1min,ep1range,ep2min,ep2range,epmin,eprange,epmax)
 awip=awi*awp
 umax=1.0d0
 if ((lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)).and.(awip*e.gt.0.0d0)) then
   c0=sqrt(awip)/(awi+awr)
   if (ep.gt.0.0d0) then
-    c=c0*sqrt(e1/ep)
-    umin1=0.5d0*(1.0d0+c*c-ep1(nep1)/ep)/c
-    write(*,*)' umin1 e1 ep c ',umin1,e1,ep,c,c0
-    c=c0*sqrt(e2/ep)
-    umin2=0.5d0*(1.0d0+c*c-ep2(nep2)/ep)/c
-    write(*,*)' umin2 e2 ep c ',umin2,e2,ep,c,c0
-    umin=umin1+(umin2-umin1)*(e-e1)/(e2-e1)
-    write(*,*)' umin e ep ',umin,e,ep
-    if (umin.lt.-1.0d0) umin=-1.0d0
-    if (umin.gt.1.0d0)  umin=1.0d0
+    umin=(ep+c0*c0*e-epmax)/(2.0d0*c0*sqrt(ep*e))
+    umin=max(umin,-1.0d0)
+    umin=min(umin,1.0d0)
   else
     umin=1.0d0
   endif
 else
   umin=-1.0d0
 endif
-write(*,*)' umin umax ',umin,umax
 if (umax.gt.umin) then
   zmin=acos(umin)
   nu=int(zmin/hz)
@@ -2763,6 +2916,59 @@ end
 !-------------------------------------------------------------------------------------------------------------------------------
 subroutine feep_uint_law1con(e,ep,u1,u2,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
                             tol,fep,err)
+!
+! Description:
+!  The subroutine feep_uint_law1con computes the spectrum of the emitted particle f(e,ep) given by mf6/law1
+!  in the cosine interval (u1,u2).
+!  The value of the spectrum is in the laboratory system
+!  Integration is performed using the Romberg-Richarson numerical method
+!
+! Input parameters:
+! e: incident energy in the laboratory system e1<= e <= e2
+! ep: outgoing energy value in the laboratory system ep >= 0.0
+! u1: lower cosine boundary in the laboratory system
+! u2: upper cosine boundary in the laboratory system
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the required outgoing particle in MF6
+! za:  ZA number of the target (ZA=1000*Z+A)
+! zai: ZA number of the incident particle
+! zap: ZA number of the outgoing particle
+! lct: Reference system for the energy-angular distribution
+! lang: Angular representation flag:
+!        lang=1, Legendre coefficients
+!        lang=2, Kalbach-Mann systematics
+!        lang=11-15, tabulated angular distribution
+! lep: interpolation scheme for outgoing energies
+! lei: interpolation scheme between incident energies e1 and e2
+! e1:  incident energy of the lower panel
+! nd1: Number of dicrete energies given at e1
+! na1: number of angular parameters at e1
+!       lang=1, na1=Legendre expansion order
+!       lang=2, na1=1 r is given by the evaluator and a should be calculated
+!               na1=2 r and a are given by the evaluator
+!       lang=11-15, na1/2 pairs (u,p(u)) are tabulated
+!               na1=0, isotropic distribution for all representations
+! nep1: number of outgoing energies given at e1
+! ep1: outgoing energy values at e1. 1D-array [ep1(i),i=1...npe1]
+! b1:  outgoing energy-angle distribution at e1. 2D-array [b1(i,j),i=1...nep1,j=1...na1+1)]
+! e2:  incident energy of the upper panel
+! nd2: Number of dicrete energies given at e2
+! na2: number of angular parameters at e2
+!       lang=1, na2=Legendre expansion order
+!       lang=2, na2=1 r is given by the evaluator and a should be calculated
+!               na2=2 r and a are given by the evaluator
+!       lang=11-15, na2/2 [u,p(u)] pairs are given
+!               na2=0, isotropic distribution for all representations
+! nep2: number of outgoing energies given at e2
+! ep2: outgoing energy values at e2. 1D-array [ep2(i),i=1...npe2]
+! b2:  Outgoing energy-angle distribution at e2. 2D-array [b2(i,j),i=1...nep2,j=1...na2+1)]
+! tol: Relative tolerance for integration and linearization
+!
+! Output parameters:
+! fep: the integrated outgoing spectrum f(e,e')=f(e,ep) between the cosines u1 and u2.
+! err: outgoing spectrum absolute deviation due to numerical integration in the interval (u1,u2)
+!
 implicit real*8 (a-h, o-z)
 parameter (nmax=12)
 dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
@@ -2793,6 +2999,22 @@ return
 end
 !-------------------------------------------------------------------------------------------------------------------------------
 subroutine romberg_init(i,jmax,u1,y1,u2,y2,h,r0)
+!
+! Description:
+!  Initializes Romberg-Richarson method
+!
+! Input parameters:
+!  u1: value of the lower boundary of the independent variable
+!  y1: value of the function at u1
+!  u2: value of the upper boundary of the independent variable
+!  y2: value of the function at u2
+!
+! Output parameters:
+! i: Romberg-Richarson main index (layer index)
+! jmax: number of points to added at next layer i
+! h: half interval
+! r0(1): integral of the function y between (u1,u2) using trapezoidal rule
+!
 implicit real*8 (a-h, o-z)
 dimension r0(*)
 i=1
@@ -2801,8 +3023,21 @@ h=0.5d0*(u2-u1)
 r0(1)=h*(y1+y2)
 return
 end
-!
+!-------------------------------------------------------------------------------------------------------------------------------
 subroutine richardson(i,jmax,h,sum,r0,r1,nmax,tol,n)
+!
+! Description:
+!  Computes Richarson extrapolation
+!
+! Input/Output parameters:
+! i: Romberg-Richarson main index (layer index)
+! jmax: number of points to added at next layer i
+! h: integration interval
+! r0 and r1: Arrays to compute the Richarson extrapolation
+! nmax: maximum number of extrapolation layers
+! tol: relative tolerance
+! n: current index of the computed integral r1(n)=integral
+!
 implicit real*8 (a-h, o-z)
 dimension r0(*),r1(*)
 r1(1)=0.5d0*r0(1)+h*sum
@@ -2826,6 +3061,36 @@ return
 end
 ! ------------------------------------------------------------------------------------------------------------------------------
 subroutine get_griddata(e,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,ep1min,ep1range,ep2min,ep2range,epmin,eprange,epmax)
+!
+! Description:
+!  Extract outgoing energy range for mf6/law1 from panels e1 and e2 and compute values at e
+!
+! Input parameters:
+! e: incident energy in the laboratory system e1<= e <= e2
+! e1:  incident energy of the lower panel
+! nd1: Number of dicrete energies given at e1
+! na1: number of angular parameters at e1
+! ep1: outgoing energy values at e1. 1D-array [ep1(i),i=1...npe1]
+! e2:  incident energy of the upper panel
+! nd2: Number of dicrete energies given at e2
+! na2: number of angular parameters at e2
+!       lang=1, na2=Legendre expansion order
+!       lang=2, na2=1 r is given by the evaluator and a should be calculated
+!               na2=2 r and a are given by the evaluator
+!       lang=11-15, na2/2 [u,p(u)] pairs are given
+!               na2=0, isotropic distribution for all representations
+! nep2: number of outgoing energies given at e2
+! ep1: outgoing energy values at e2. 1D-array [ep2(i),i=1...npe2]
+!
+! Output parameters:
+! ep1min: minimum value of the outgoing energy at e1
+! ep1range: range of the outgoing energy values at e1
+! ep2min: minimum value of the outgoing energy at e2
+! ep2range: range of the outgoing energy values at e2
+! epmin: Computed minumun value of the outgoing energy at e
+! eprange: Computed outgoing energy range at e
+! epmax: Computed maximum outgoing energy value at e
+!
 implicit real*8 (a-h, o-z)
 dimension ep1(*),ep2(*)
 n1=nd1+1
@@ -2854,52 +3119,96 @@ return
 end
 !-------------------------------------------------------------------------------------------------------------------------------
 subroutine initial_epgrid(e,awr,awi,awp,lct,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,nepu,epu,ep0,np0)
+!
+! Description:
+!  Prepare initial outgoing energy grid for integration of mf6/law1
+!
+! Input parameters:
+! e: incident energy in the laboratory system e1<= e <= e2
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the required outgoing particle in MF6
+! za:  ZA number of the target (ZA=1000*Z+A)
+! zai: ZA number of the incident particle
+! zap: ZA number of the outgoing particle
+! lct: Reference system for the energy-angular distribution
+! e1:  incident energy of the lower panel
+! nd1: Number of dicrete energies given at e1
+! na1: number of angular parameters at e1
+!       lang=1, na1=Legendre expansion order
+!       lang=2, na1=1 r is given by the evaluator and a should be calculated
+!               na1=2 r and a are given by the evaluator
+!       lang=11-15, na1/2 pairs (u,p(u)) are tabulated
+!               na1=0, isotropic distribution for all representations
+! nep1: number of outgoing energies given at e1
+! ep1: outgoing energy values at e1. 1D-array [ep1(i),i=1...npe1]
+! e2:  incident energy of the upper panel
+! nd2: Number of dicrete energies given at e2
+! na2: number of angular parameters at e2
+! nep2: number of outgoing energies given at e2
+! ep2: outgoing energy values at e2. 1D-array [ep2(i),i=1...npe2]
+! nepu: number of fixed outgoing energies provided by user
+! epu:  outgoing energy values provided by the user. 1D array [epu(i),i=1..nepu)]
+!
+! Output parameters
+! ep0: outgoing energy values in the initial grid [ep0(i),i=1,np0]
+! np0: integer variable.
+!      At enter, the dimension of the ep0 array.
+!      Upon return, the actual number of values in the initial outgoing energy grid
+!
 implicit real*8 (a-h, o-z)
 parameter (tol0=1.0d-6)
 dimension ep1(*),ep2(*),epu(*),ep0(*)
 n1=nd1+1
 n2=nd2+1
-elabmin=0.0d0
-elabmax=0.0d0
-k=0
+call get_griddata(e,e1,nd1,nep1,ep1,e2,nd2,nep2,ep2,ep1min,ep1range,ep2min,ep2range,epmin,eprange,epmax)
+k=1
+ep0(k)=0.0d0
 if (lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)) then
+  c0=sqrt(awi*awp)/(awr+awi)
+  c=c0*c0*e
   k=k+1
-  ep0(k)=elabmin
+  ep0(k)=c
+  el=sqrt(epmax)+c0*sqrt(e)
+  k=k+1
+  ep0(k)=el*el
   if (nep1.gt.n1.and.e.ne.e2) then
-    c=sqrt(awi*awp*e1)/(awi+awr)
-    cc=c*c
     do i=n1,nep1
+      ep=epmin+(ep1(i)-ep1min)*eprange/ep1range
       k=k+1
-      ep0(k)=ep1(i)+cc
+      ep0(k)=ep+c
     enddo
-    er=sqrt(ep1(nep1))+c
-    elabmax=er*er
+    el1=sqrt(ep1min+ep1range)+c0*sqrt(e1)
+    k=k+1
+    ep0(k)=el1*el1
   endif
   if (nep2.gt.n2.and.e.ne.e1) then
-    c=sqrt(awi*awp*e2)/(awi+awr)
-    cc=c*c
     do i=n2,nep2
+      ep=epmin+(ep2(i)-ep2min)*eprange/ep2range
       k=k+1
-      ep0(k)=ep2(i)+cc
+      ep0(k)=ep+c
     enddo
-    er=sqrt(ep2(nep2))+c
-    elabmax=max(elabmax,er*er)
+    el2=sqrt(ep2min+ep2range)+c0*sqrt(e2)
+    k=k+1
+    ep0(k)=el2*el2
   endif
-  k=k+1
-  ep0(k)=elabmax
 else
   if (nep1.gt.n1.and.e.ne.e2) then
     do i=n1,nep1
       k=k+1
-      ep0(k)=ep1(i)
+      ep0(k)=epmin+(ep1(i)-ep1min)*eprange/ep1range
     enddo
+    k=k+1
+    ep0(k)=ep1(nep1)
   endif
   if (nep2.gt.n2.and.e.ne.e1) then
     do i=n2,nep2
       k=k+1
-      ep0(k)=ep2(i)
+      ep0(k)=epmin+(ep2(i)-ep2min)*eprange/ep2range
     enddo
   endif
+  k=k+1
+  ep0(k)=ep2(nep2)
 endif
 do i=1,nepu
   k=k+1
@@ -2936,8 +3245,7 @@ if (n.gt.1) then
     if (i.gt.1) then
       if (irem.gt.0.and.abs(x(i)-x(i-1)).le.abs(tol*x(i))) then
         m=m-1
-        if (i.ge.m) then
-           if (irem.gt.0.and.abs(x(m)-x(m-1)).le.abs(tol*x(m))) m=m-1
+        if (i.gt.m) then
            n=m
            return
         endif
@@ -2953,4 +3261,267 @@ if (n.gt.1) then
 endif
 return
 end
-! ------------------------------------------------------------------------------------------------------------------------------
+!-------------------------------------------------------------------------------------------------------------------------------
+! Procedures for integration of MF6/LAW=6 (ddxs integration)
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine feep_full_law6(e,awr,awi,awp,q,apsx,npsx,nepu,epu,tol,nepmax,ep,feep,fdev,nep)
+!
+! Description:
+!   The subroutine feep_full_law6 computes the spectrum of the emitted particle f(e,ep) given by mf6/law6,
+!   ensuring that the values are linearly interpolable within a tolerance of tol.
+!   Subroutine feep_law6 is called.
+!   The values of the spectrum are in the laboratory system
+!   The user can specify a set of outgoing energy values of interest.
+!   If nepmax<0 the linearization is not applied and the spectrum is calculated at the np0 points of
+!   an internally computed initial grid, if abs(nepmax) >= np0
+!
+! Input parameters:
+! e: incident energy in the LAB system
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value from MF3
+! apsx: total mass in neutron units of the N particles treated by LAW6
+! npsx: number of particles distributed according to LAW6 (N)
+! nepu: number of fixed outgoing energies provided by user
+! epu:  outgoing energy values provided by the user. 1D array [epu(i),i=1..nepu)]
+! tol: tol for linearization
+! nepmax: maximum expected number of outgoing energies. Dimension of arrays ep,feep,fdev
+!
+! Output parameters:
+! ep: outgoing energies. 1D array: [ep(i), i=1...nep]
+! feep: outgoing particle spectrum f(e,e')=f(e,ep). 1D array: [feep(i),i=1...nep] nep
+! fdev: outgoing particle spectrum absolute deviation. 1D array: [fdev(i),i=1...nep]
+! nep: actual number of values of outgoing energies at which f(e,ep) is provided
+!
+implicit real*8 (a-h, o-z)
+parameter (ksmax=20, tolx=1.0d-6, nep0=10)
+dimension epu(*),ep(*),feep(*),fdev(*)
+dimension xs(ksmax),ys(ksmax),dys(ksmax)
+allocatable ep0(:)
+np0=nep0+max(nepu,0)
+allocate(ep0(np0))
+! initial grid computation
+k=1
+ep0(k)=0.0d0
+awc=awi+awr
+es=awi*awp*e/(awc*awc)
+k=k+1
+ep0(k)=es
+eimax=(apsx-awp)/apsx*(awr/awc*e+q)
+el=sqrt(eimax)+sqrt(es)
+elmax=el*el
+nn=nep0-k
+h=(elmax-es)/dble(nn)
+do i=1,nn-1
+  k=k+1
+  ep0(k)=ep0(k-1)+h
+enddo
+k=k+1
+ep0(k)=elmax
+do i=1,nepu
+  k=k+1
+  ep0(k)=epu(i)
+enddo
+irem=1
+call orderx(ep0,k,tolx,irem)
+np0=k
+if (nepmax.le.0) then
+  nn=abs(nepmax)
+  if (nn.ge.np0) then
+    nep=np0
+    do i=1,nep
+      ep(i)=ep0(i)
+    enddo
+    call feep_points_law6(e,awr,awi,awp,q,apsx,npsx,nep,ep,feep,fdev)
+  else
+    write(*,*)' Fatal error: increase the maximum number of outgoing energy points nepmax=',nn
+    stop
+  endif
+else
+  x1=ep0(1)
+  call feep_law6(e,x1,awr,awi,awp,q,apsx,npsx,y1,dy1)
+  ep(1)=x1
+  feep(1)=y1
+  fdev(1)=dy1
+  j=1
+  do i=2,np0
+    x2=ep0(i)
+    call feep_law6(e,x2,awr,awi,awp,q,apsx,npsx,y2,dy2)
+    k=0
+    istop=0
+    do while (istop.eq.0)
+      yl=0.5d0*(y1+y2)
+      xm=0.5d0*(x1+x2)
+      hm=xm-x1
+      call feep_law6(e,xm,awr,awi,awp,q,apsx,npsx,ym,dym)
+      slope1=(ym-y1)/hm
+      slope2=(y2-ym)/hm
+      if ((abs(ym-yl).le.abs(tol*ym).and.slope1*slope2.gt.0.0d0).or.(y1.eq.ym.and.y2.eq.ym).or. &
+            abs(x2-x1).le.abs(tolx*x2).or.k.eq.ksmax) then
+        j=j+1
+        if (j.gt.nepmax) then
+          write(*,*)' Fatal error: increase the maximum number of outgoing energy points nepmax=',nepmax
+          stop
+        endif
+        ep(j)=x2
+        feep(j)=y2
+        fdev(j)=dy2
+        if (k.eq.0) then
+          istop=1
+        else
+          x1=x2
+          y1=y2
+          dy1=dy2
+          x2=xs(k)
+          y2=ys(k)
+          dy2=dys(k)
+          k=k-1
+        endif
+      else
+        k=k+1
+        xs(k)=x2
+        ys(k)=y2
+        dys(k)=dy2
+        x2=xm
+        y2=ym
+        dy2=dym
+      endif
+    enddo
+    x1=x2
+    y1=y2
+    dy1=dy2
+  enddo
+  nep=j
+endif
+deallocate(ep0)
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine feep_points_law6(e,awr,awi,awp,q,apsx,npsx,nepu,epu,fepu,fdevu)
+!
+! Description:
+!   The subroutine feep_points_law1con computes the
+!   spectrum of the emitted particle f(e,ep) given by mf6/law6
+!   at nepu outgoing energies provided by the user.
+!   The subroutine feep_law6 is called.
+!   The values of the spectrum are given in the laboratory system
+!
+! Input parameters:
+! e: incident energy in the LAB system
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value from MF3
+! apsx: total mass in neutron units of the N particles treated by LAW6
+! npsx: number of particles distributed according to LAW6 (N)
+! nepu: number of fixed outgoing energies provided by user
+! epu:  outgoing energy values provided by the user. 1D array [epu(i),i=1..nepu)]
+!
+! Output parameters:
+! fepu: outgoing particle spectrum f(e,e')=f(e,ep). 1D array: [fepu(i),i=1...nepu] nep
+! fdevu: outgoing particle spectrum absolute deviation. 1D array: [fdevu(i),i=1...nepu]
+!        (For analytical integration fdevu(i)=0.0)
+!
+implicit real*8 (a-h, o-z)
+dimension epu(*),fepu(*),fdevu(*)
+do i=1,nepu
+  call feep_law6(e,epu(i),awr,awi,awp,q,apsx,npsx,fepu(i),fdevu(i))
+enddo
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine feep_law6(e,ep,awr,awi,awp,q,apsx,npsx,feep,fdev)
+!
+! Description:
+! The subroutine feep_law6 computes the spectrum of the emitted particle f(e,ep)
+! given by mf6/law6 by calling the subroutine feep_uint_law6
+! The value of the spectrum is in the laboratory system
+!
+! Input parameters:
+! nepu: number of fixed outgoing energies provided by user
+! Input parameters:
+! e: incident energy in the LAB system
+! ep: outgoing particle energy in the LAB system
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value from MF3
+! apsx: total mass in neutron units of the N particles treated by LAW6
+! npsx: number of particles distributed according to LAW6 (N)
+!
+! Output parameters:
+! fep: outgoing particle spectrum f(e,e')=f(e,ep).
+! fdev: outgoing particle spectrum absolute deviation
+!
+implicit real*8 (a-h,o-z)
+parameter (small=1.0d-10)
+fep=0.0d0
+fdev=0.0d0
+awc=awi+awr
+eimax=(apsx-awp)/apsx*(awr/awc*e+q)
+es=awi*awp/(awc*awc)*e
+if (ep.gt.0.0d0.and.es.gt.0.0d0.and.eimax.gt.small) then
+  umin=0.5d0*(ep+es-eimax)/sqrt(es*ep)
+  umin=max(umin,-1.0d0)
+  umin=min(umin,1.0d0)+small
+  umax=1.0d0
+  call feep_uint_law6(e,ep,umin,umax,awr,awi,awp,q,apsx,npsx,feep,fdev)
+endif
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
+subroutine feep_uint_law6(e,ep,u1,u2,awr,awi,awp,q,apsx,npsx,feep,fdev)
+!
+! Description:
+! The subroutine feep_uint_law6 computes the spectrum of the emitted particle f(e,ep)
+! given by mf6/law6 in the cosine interval (u1,u2).
+! The value of the spectrum is in the laboratory system
+! Analytical integration is applied, therefore fdev=0.0
+!
+! Input parameters:
+! e: incident energy in the LAB system
+! ep: outgoing particle energy in the LAB system
+! u1: lower cosine boundary
+! u2: upper cosine boundary
+! awr: relative atomic mass of the target
+! awi: relative nuclear mass of the incident particle
+! awp: relative nuclear mass of the outgoing particle
+! q: reaction q value from MF3
+! apsx: total mass in neutron units of the N particles treated by LAW6
+! npsx: number of particles distributed according to LAW6 (N)
+!
+! Output parameters:
+! feep: the integrated outgoing spectrum f(e,e')=f(e,ep) in the cosine interval (u1,u2).
+! fdev: outgoing spectrum absolute deviation due to cosine integration (fdev = 0.0)
+!
+implicit real*8 (a-h,o-z)
+parameter(pi=3.141592653589793d0, small=1.0d-10)
+parameter(c3=4.0d0/pi, c4=105.0d0/32.0d0, c5=256.0d0/(14.0d0*pi))
+feep=0.0d0
+fdev=0.0d0
+if (u2.gt.u1) then
+  awc=awi+awr
+  eimax=(apsx-awp)/apsx*(awr/awc*e+q)
+  es=awi*awp/(awc*awc)*e
+  b=2.0d0*sqrt(ep*es)
+  if (eimax.gt.small.and.b.gt.0.0d0) then
+    a=eimax-ep-es
+    decm1=max(a+b*u1,small)
+    decm2=max(a+b*u2,decm1)
+    if (npsx.eq.3) then
+      cn=c3/(eimax*eimax)
+    elseif(npsx.eq.4) then
+      cn=c4/(eimax**3.5d0)
+    elseif(npsx.eq.5) then
+      cn=c5/(eimax**5.0d0)
+    else
+      cn=0.0d0
+    endif
+    rn1=1.5d0*dble(npsx)-3.0d0
+    feep=cn*sqrt(ep)*(decm2**rn1-decm1**rn1)/(rn1*b)
+  endif
+endif
+return
+end
+!-------------------------------------------------------------------------------------------------------------------------------
