@@ -175,6 +175,44 @@ def pad_outside_dist2d_values(func):
     return wrapfunc
 
 
+# TODO: This function is a nearly identical copy
+#       of pad_outside_dist2d_values. Should be done
+#       smarter in the future.
+def pad_outside_energydist_values(func):
+
+    def wrapfunc(
+        endf_dict, mt, subsec_num, energies_in, energies_out, *args, **kwargs
+    ):
+        eincs = energies_in
+        eouts = energies_out
+        subsec = endf_dict[6][mt]['subsection'][subsec_num]
+        ei_mesh = dict2array(subsec['E'], dtype=float)
+        is_inside_x = (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
+        is_inside_y = (eouts >= 1e-20)
+        eincs_inside = eincs[is_inside_x]
+        eouts_inside = eouts[is_inside_y]
+        # special casing regular case with all points within mesh for small speedup
+        if len(eincs_inside) == len(eincs) and len(eouts_inside) == len(eouts):
+            return func(
+                endf_dict, mt, subsec_num,
+                eincs, eouts, *args, **kwargs
+            )
+        # special treatment if some points outside mesh
+        res_dim = (len(eincs), len(eouts))
+        res_arr = np.full(res_dim, 0.0, dtype=float)
+        if len(eincs_inside) == 0 or len(eouts_inside) == 0:
+            return res_arr
+        arr_inside = func(
+            endf_dict, mt, subsec_num,
+            eincs_inside, eouts_inside,
+            *args, **kwargs
+        )
+        res_arr[np.ix_(is_inside_x, is_inside_y)] =  arr_inside
+        return res_arr
+
+    return wrapfunc
+
+
 def pad_outside_angdist_values(func):
 
     def wrapfunc(
