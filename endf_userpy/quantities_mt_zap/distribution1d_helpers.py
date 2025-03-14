@@ -108,8 +108,8 @@ def _prepare_angdist_to_energydist_conversion(
     return angle_cosines_out, jacvals
 
 
-def convert_mf4_angdist_to_energydist(
-    endf_dict, mt, zap, energies_in, energies_out, to_lab
+def convert_angdist_to_energydist(
+    compute_angdist_func, endf_dict, mt, zap, energies_in, energies_out, to_lab
 ):
     angle_cosines_out, jacvals = (
         _prepare_angdist_to_energydist_conversion(
@@ -118,27 +118,9 @@ def convert_mf4_angdist_to_energydist(
     )
     feasible = (~np.isnan(angle_cosines_out)) & (np.abs(angle_cosines_out) <= 1.0)
     angle_cosines_out[~feasible] = 0.0  # to avoid warnings
-    angdist_values = mf4_interp.compute_angdist_values(
-        endf_dict, mt, energies_in, angle_cosines_out, to_lab
+    angdist_values = compute_angdist_func(
+        endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
     )
     energydist = angdist_values * np.abs(jacvals) 
-    energydist[~feasible] = 0.0
-    return energydist
-
-
-def convert_mf6_angdist_to_energydist(
-    endf_dict, mt, zap, energies_in, energies_out, to_lab
-):
-    angle_cosines_out, jacvals = (
-        _prepare_angdist_to_energydist_conversion(
-            endf_dict, mt, zap, energies_in, energies_out, to_lab
-        )
-    )
-    feasible = (~np.isnan(angle_cosines_out)) & (np.abs(angle_cosines_out) <= 1.0)
-    angle_cosines_out[~feasible] = 0.0  # to avoid warnings
-    angdist_values = mf6_interp.compute_angdist_values(
-        endf_dict, mt, zap, energies_in, angle_cosines_out
-    )
-    energydist = angdist_values * np.abs(jacvals)
     energydist[~feasible] = 0.0
     return energydist

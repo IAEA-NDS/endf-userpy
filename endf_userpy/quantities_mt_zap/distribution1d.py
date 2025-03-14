@@ -15,8 +15,7 @@ from ..primitives.properties import (
 from .distribution1d_helpers import (
     integrate_mf6_dist2d_over_eout,
     integrate_mf6_dist2d_over_mu,
-    convert_mf4_angdist_to_energydist,
-    convert_mf6_angdist_to_energydist,
+    convert_angdist_to_energydist,
 )
 
 
@@ -75,7 +74,12 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
 
     elif has_mf4_mt(endf_dict, mt):
         print('--> found discrete angdist in MF4')  # debug
-        return convert_mf4_angdist_to_energydist(
+        return convert_angdist_to_energydist(
+            lambda endf_dict, mt, _, energies_in, energies_out, to_lab: (
+                mf4_interp.compute_angdist_values(
+                    endf_dict, mt, energies_in, energies_out, to_lab
+                )
+            ),
             endf_dict, mt, zap, energies_in, energies_out, to_lab
         )
 
@@ -92,7 +96,8 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
         if mf6_help.has_angdist_part(endf_dict, mt, zap):
             print('--> found discrete angdist in MF6')  # debug
             found_energydist = True
-            energydist += convert_mf6_angdist_to_energydist(
+            energydist += convert_angdist_to_energydist(
+                mf6_interp.compute_angdist_values,
                 endf_dict, mt, zap, energies_in, energies_out, to_lab
             )
         if found_energydist:
