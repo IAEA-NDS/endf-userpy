@@ -2,6 +2,8 @@ import numpy as np
 from scipy.integrate import quad
 from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
+from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
+from ..mfsec_interpretation import mf6_interpretation_integrals as mf6_integral
 from ..primitives import conversion_relativistic as conv_relat 
 from ..primitives.properties import (
     get_QM,
@@ -40,7 +42,7 @@ def integrate_mf6_dist2d_over_eout(
     return angdist
 
 
-def integrate_mf6_dist2d_over_mu(
+def _integrate_mf6_dist2d_over_mu_default(
     endf_dict, mt, zap, energies_in, energies_out, to_lab=True
 ):
         energydist = np.zeros((len(energies_in), len(energies_out)), dtype=float)
@@ -57,6 +59,24 @@ def integrate_mf6_dist2d_over_mu(
                 )
                 energydist[i, j] = quad(dist2d_func, -1.0, 1.0, epsrel=1e-4)[0]
         return energydist
+
+
+def integrate_mf6_dist2d_over_mu(
+    endf_dict, mt, zap, energies_in, energies_out, to_lab=True
+):
+    mtsec = endf_dict[6][mt]
+    subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
+    if len(subsec_nums) == 1:
+        law = mtsec['subsection'][subsec_nums[0]]['LAW']
+        if law == 1:
+            print('(using Fortran routine')  # debug
+            return mf6_integral.get_energydist_from_subsec_law1(
+                endf_dict, mt, subsec_nums[0], energies_in, energies_out, to_lab
+            )
+    # general-purpose integration routine
+    return _integrate_mf6_dist2d_over_mu_default(
+        endf_dict, mt, zap, energies_in, energies_out, to_lab
+    )
 
 
 def _prepare_angdist_to_energydist_conversion(
