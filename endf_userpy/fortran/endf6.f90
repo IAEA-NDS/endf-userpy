@@ -2604,7 +2604,7 @@ end
 ! Procedures for integration of MF6/LAW=1 (ddxs integration)
 !-------------------------------------------------------------------------------------------------------------------------------
 subroutine feep_full_law1con(e,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na1,nep1,ep1,b1,e2,nd2,na2,nep2,ep2,b2, &
-                             tol,nepu,epu,nepmax,ep,feep,fdev,nep)
+                             tol,nepu,epu,nepmax,ep,feep,fdev,nep_arr)
 !
 ! Description:
 !   The subroutine feep_full_law1con computes the spectrum of the emitted particle f(e,ep) given by mf6/law1,
@@ -2661,13 +2661,14 @@ subroutine feep_full_law1con(e,awr,awi,awp,za,zai,zap,lct,lang,lep,lei,e1,nd1,na
 ! ep: outgoing energies. 1D array: [ep(i), i=1...nep]
 ! feep: outgoing spectrum f(e,e')=f(e,ep). 1D array: [feep(i),i=1...nep] nep
 ! fdev: outgoing spectrum absolute deviation due to cosine integration. 1D array: [fdev(i),i=1...nep]
-! nep: actual number of values of outgoing energies at which f(e,ep) is provided
+! nep_arr: actual number of values of outgoing energies at which f(e,ep) is provided [nep_arr(1)]
 !
 implicit real*8 (a-h, o-z)
 parameter (ksmax=20, tolx=1.0d-6)
 dimension ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
 dimension epu(*),ep(*),feep(*),fdev(*)
 dimension xs(ksmax),ys(ksmax),dys(ksmax)
+integer(8), dimension(1) :: nep_arr
 allocatable ep0(:)
 np0=max(nep1-nd1,0)+max(nep2-nd2,0)+max(nepu,0)+5
 allocate(ep0(np0))
@@ -2745,6 +2746,7 @@ else
   nep=j
 endif
 deallocate(ep0)
+nep_arr(1)=nep
 return
 end
 !-------------------------------------------------------------------------------------------------------------------------------
