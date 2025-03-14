@@ -66,7 +66,7 @@ def get_energydist_from_subsec_law1(
     tol=1e-3
     epu = np.array(energies_out, dtype=np.float64, order='F', copy=True)
     nepu = len(epu)
-    nepmax = int(1e5)
+    nepmax = int(max(1e5, nepu + 3e4))
 
     for i in range(result_arr.shape[0]):
         curidx = idcs[i]
