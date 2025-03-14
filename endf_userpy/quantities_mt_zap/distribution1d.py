@@ -3,6 +3,7 @@ from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf5_interpretation as mf5_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
+from ..mfsec_interpretation import mf6_interpretation_integrals as mf6_integral
 from ..mfsec_interpretation import mf15_interpretation as mf15_interp
 from ..primitives.properties import (
     is_zap_consistent,
@@ -80,13 +81,22 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
 
     elif has_mf6_mt(endf_dict, mt):
         found_energydist = False
+        mtsec = endf_dict[6][mt]
         energydist = 0.0  # will be broadcasted to correct 2d shape
         if mf6_help.has_cont_part(endf_dict, mt, zap):
             print('--> integrate MF6')  # debug
             found_energydist = True
-            energydist += integrate_mf6_dist2d_over_mu(
-                endf_dict, mt, zap, energies_in, energies_out, to_lab
-            )
+            subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
+            if (len(subsec_nums) == 1 and
+                    mtsec['subsection'][subsec_nums[0]]['LAW'] == 1):
+                print('(using Fortran routine')  # debug
+                energydist += mf6_integral.get_energydist_from_subsec_law1(
+                    endf_dict, mt, subsec_nums[0], energies_in, energies_out, to_lab
+                )
+            else:
+                energydist += integrate_mf6_dist2d_over_mu(
+                    endf_dict, mt, zap, energies_in, energies_out, to_lab
+                )
         if mf6_help.has_angdist_part(endf_dict, mt, zap):
             print('--> found discrete angdist in MF6')  # debug
             found_energydist = True
