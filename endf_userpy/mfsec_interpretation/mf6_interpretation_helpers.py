@@ -1,3 +1,4 @@
+import inspect
 import numpy as np
 from ..primitives.properties import (
     get_ZAP,
@@ -139,105 +140,75 @@ def has_angdist_part(endf_dict, mt, zap):
     return False
 
 
+def pad_outside_values(argnames, selectors):
+    """Decorator factory to zero-pad results for invalid inputs."""
+    def decorator(func):
+        def get_arrays(args):
+            all_argnames = list(inspect.signature(func).parameters.keys())
+            return [
+                args[all_argnames.index(p)] for p in argnames
+            ]
+
+        def replace_arrays(args, new_arrays):
+            all_argnames = list(inspect.signature(func).parameters.keys())
+            new_args = list(args)
+            for i, an in enumerate(argnames):
+                idx = all_argnames.index(an)
+                new_args[idx] = new_arrays[i]
+            return new_args
+
+        def wrapfunc(*args, **kwargs):
+            arr_list = get_arrays(args)
+            inside_list = [
+                s(a, *args, **kwargs) for s, a in zip(selectors, arr_list)
+            ]
+            if all(np.all(v) for v in inside_list):
+                return func(*args, **kwargs)
+            filtered_arrays = [
+                a[f] for a, f in zip(arr_list, inside_list)
+            ]
+            new_args = replace_arrays(args, filtered_arrays)
+            res_dim = [len(a) for a in arr_list]
+            res_arr = np.zeros(res_dim, dtype=np.float64)
+            res_arr[np.ix_(*inside_list)] = func(*new_args, **kwargs)
+            return res_arr
+        return wrapfunc
+    return decorator
+
+
+def _no_filter(arr, *args, **kwargs):
+    return np.ones_like(arr, dtype=bool)
+
+
+def _filter_energies_in(
+    energies_in, endf_dict, mt, subsec_num,  *args, **kwargs
+):
+    subsec = endf_dict[6][mt]['subsection'][subsec_num]
+    ei_mesh = dict2array(subsec['E'], dtype=float)
+    eincs = energies_in
+    return (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
+
+
+def _filter_energies_out(energies_out, *args, **kwargs):
+    return (energies_out >= 1e-20)
+
+
 def pad_outside_dist2d_values(func):
-
-    def wrapfunc(
-        endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, *args, **kwargs
-    ):
-        eincs = energies_in
-        eouts = energies_out
-        subsec = endf_dict[6][mt]['subsection'][subsec_num]
-        ei_mesh = dict2array(subsec['E'], dtype=float)
-        is_inside_x = (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
-        is_inside_y = (eouts >= 1e-20)
-        eincs_inside = eincs[is_inside_x]
-        eouts_inside = eouts[is_inside_y]
-        # special casing regular case with all points within mesh for small speedup
-        if len(eincs_inside) == len(eincs) and len(eouts_inside) == len(eouts):
-            return func(
-                endf_dict, mt, subsec_num,
-                eincs, eouts, angle_cosines_out,
-                *args, **kwargs
-            )
-        # special treatment if some points outside mesh
-        res_dim = (len(eincs), len(eouts), len(angle_cosines_out))
-        res_arr = np.full(res_dim, 0.0, dtype=float)
-        if len(eincs_inside) == 0 or len(eouts_inside) == 0:
-            return res_arr
-        arr_inside = func(
-            endf_dict, mt, subsec_num,
-            eincs_inside, eouts_inside, angle_cosines_out,
-            *args, **kwargs
-        )
-        res_arr[np.ix_(is_inside_x, is_inside_y, np.array([True]))] =  arr_inside
-        return res_arr
-
-    return wrapfunc
+    return pad_outside_values(
+        ['energies_in', 'energies_out', 'angle_cosines_out'],
+        [_filter_energies_in, _filter_energies_out, _no_filter]
+    )(func)
 
 
-# TODO: This function is a nearly identical copy
-#       of pad_outside_dist2d_values. Should be done
-#       smarter in the future.
 def pad_outside_energydist_values(func):
-
-    def wrapfunc(
-        endf_dict, mt, subsec_num, energies_in, energies_out, *args, **kwargs
-    ):
-        eincs = energies_in
-        eouts = energies_out
-        subsec = endf_dict[6][mt]['subsection'][subsec_num]
-        ei_mesh = dict2array(subsec['E'], dtype=float)
-        is_inside_x = (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
-        is_inside_y = (eouts >= 1e-20)
-        eincs_inside = eincs[is_inside_x]
-        eouts_inside = eouts[is_inside_y]
-        # special casing regular case with all points within mesh for small speedup
-        if len(eincs_inside) == len(eincs) and len(eouts_inside) == len(eouts):
-            return func(
-                endf_dict, mt, subsec_num,
-                eincs, eouts, *args, **kwargs
-            )
-        # special treatment if some points outside mesh
-        res_dim = (len(eincs), len(eouts))
-        res_arr = np.full(res_dim, 0.0, dtype=float)
-        if len(eincs_inside) == 0 or len(eouts_inside) == 0:
-            return res_arr
-        arr_inside = func(
-            endf_dict, mt, subsec_num,
-            eincs_inside, eouts_inside,
-            *args, **kwargs
-        )
-        res_arr[np.ix_(is_inside_x, is_inside_y)] =  arr_inside
-        return res_arr
-
-    return wrapfunc
+    return pad_outside_values(
+        ['energies_in', 'energies_out'],
+        [_filter_energies_in, _filter_energies_out]
+    )(func)
 
 
 def pad_outside_angdist_values(func):
-
-    def wrapfunc(
-        endf_dict, mt, subsec_num, energies_in, angle_cosines_out, *args, **kwargs
-    ):
-        eincs = energies_in
-        mus_out = angle_cosines_out
-        subsec = endf_dict[6][mt]['subsection'][subsec_num]
-        ei_mesh = dict2array(subsec['E'], dtype=float)
-        is_inside = (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
-        eincs_inside = eincs[is_inside]
-        # special casing regular case with all points within mesh for small speedup
-        if len(eincs_inside) == len(eincs):
-            return func(
-                endf_dict, mt, subsec_num, eincs, mus_out, *args, **kwargs
-            )
-        # special treatment if some points outside mesh
-        res_dim = (len(eincs), len(mus_out))
-        res_arr = np.full(res_dim, 0.0, dtype=float)
-        if len(eincs_inside) == 0:
-            return res_arr
-        arr_inside = func(
-            endf_dict, mt, subsec_num, eincs_inside, mus_out, *args, **kwargs
-        )
-        res_arr[is_inside, :] =  arr_inside
-        return res_arr
-
-    return wrapfunc
+    return pad_outside_values(
+        ['energies_in', 'angle_cosines_out'],
+        [_filter_energies_in, _no_filter]
+    )(func)

@@ -3,7 +3,6 @@ from ..fortran.endf6 import (
     feep_full_law1con,
 )
 from .mf6_interpretation_helpers import (
-    pad_outside_dist2d_values,
     pad_outside_energydist_values,
 )
 from ..primitives.helpers import (
