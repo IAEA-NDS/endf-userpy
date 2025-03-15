@@ -18,6 +18,15 @@ from .quantities_mt_zap.selectors import (
 # TODO: check and complete
 
 
+def get_available_reactions(endf_dict):
+    mts = get_reaction_mt_numbers(endf_dict)
+    reacs = [
+        prop.get_reaction_string_for_mt(endf_dict, mt)
+        for mt in mts
+    ]
+    return reacs
+
+
 def get_reaction_xs(endf_dict, reaction, energies_in):
     proj = prop.get_projectile(endf_dict)
     mt = reac.translate_reaction_string_to_mt(reaction)
