@@ -3,7 +3,6 @@ from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf5_interpretation as mf5_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
-from ..mfsec_interpretation import mf6_interpretation_integrals as mf6_integral
 from ..mfsec_interpretation import mf15_interpretation as mf15_interp
 from ..primitives.properties import (
     is_zap_consistent,
