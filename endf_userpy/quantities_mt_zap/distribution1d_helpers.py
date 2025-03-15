@@ -18,6 +18,9 @@ from ..primitives.physical_constants import (
 from .distribution2d import compute_dist2d_values
 
 
+USE_FORTRAN_INTEGRATION = True
+
+
 def integrate_mf6_dist2d_over_eout(
     endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
 ):
@@ -68,7 +71,7 @@ def integrate_mf6_dist2d_over_mu(
     subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
     if len(subsec_nums) == 1:
         law = mtsec['subsection'][subsec_nums[0]]['LAW']
-        if law == 1:
+        if law == 1 and USE_FORTRAN_INTEGRATION:
             print('(using Fortran routine')  # debug
             return mf6_integral.get_energydist_from_subsec_law1(
                 endf_dict, mt, subsec_nums[0], energies_in, energies_out, to_lab
