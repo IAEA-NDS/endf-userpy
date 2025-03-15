@@ -57,7 +57,7 @@ def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, t
 
 def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
     if not is_zap_consistent(endf_dict, mt, zap):
-        raise ValueError(f'MT={mt} and ZAP={mt} are not consistent')
+        raise ValueError(f'MT={mt} and ZAP={zap} are not consistent')
 
     print(f'MT: {mt}')  # debug
 
