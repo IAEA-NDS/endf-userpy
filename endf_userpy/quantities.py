@@ -5,7 +5,6 @@ from .primitives import reactions as reac
 from .quantities_mt_zap.quantities import (
     compute_yields,
     compute_xs,
-    compute_xs_mt5_contrib,
     compute_dexs,
     compute_daxs,
     get_reaction_mt_numbers,
@@ -31,11 +30,8 @@ def get_available_reactions(endf_dict):
 
 
 def get_reaction_xs(endf_dict, reaction, energies_in):
-    proj = prop.get_projectile(endf_dict)
     mt = reac.translate_reaction_string_to_mt(reaction)
-    xs = compute_xs(endf_dict, mt, energies_in)
-    xs_mt5 = compute_xs_mt5_contrib(endf_dict, mt, energies_in)
-    return xs + xs_mt5
+    return compute_xs(endf_dict, mt, energies_in)
 
 
 def get_particle_production_xs(endf_dict, particle, energies_in):

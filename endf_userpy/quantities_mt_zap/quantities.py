@@ -8,6 +8,7 @@ from ..primitives.properties import (
     has_mf6_mt,
 )
 from ..mfsec_interpretation import mf1_interpretation as mf1_interp
+from ..mfsec_interpretation import mf3_interpretation as mf3_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from .distribution1d import (
     compute_angdist_values,
@@ -18,7 +19,6 @@ from .distribution2d import compute_dist2d_values
 
 # functions borrowed as is
 from ..mfsec_interpretation.mf3_interpretation import (
-    compute_cross_section as compute_xs,
     get_incident_energy_range,
     get_incident_energies,
     get_reaction_mts as get_reaction_mt_numbers,
@@ -68,15 +68,21 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in):
     yield_mt5 = compute_yields(
         endf_dict, 5, za_residual, energies_in, include_discrete=True
     )
-    xs_mt5 = compute_xs(endf_dict, 5, energies_in)
+    xs_mt5 = mf3_interp.compute_cross_section(endf_dict, 5, energies_in)
     return xs_mt5 * yield_mt5
+
+
+def compute_xs(endf_dict, mt, energies_in):
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+    xs_mt5 = compute_xs_mt5_contrib(endf_dict, mt, energies_in)
+    return xs + xs_mt5
 
 
 def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
-    xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1)
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
     angdist = compute_angdist_values(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
     )
@@ -87,7 +93,7 @@ def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
-    xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1)
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab
     )
@@ -98,7 +104,7 @@ def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_ou
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False
     ).reshape(-1, 1, 1)
-    xs = compute_xs(endf_dict, mt, energies_in).reshape(-1, 1, 1)
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
     )
