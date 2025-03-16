@@ -10,8 +10,10 @@ from .quantities_mt_zap.quantities import (
     get_reaction_mt_numbers,
     compute_cumulative_quantity,
 )
+from .quantities_mt_zap import distribution1d as dist1d
 from .quantities_mt_zap.selectors import (
-    contains_zap_with_select_heuristic,
+    contains_zap,
+    satisfies_select_heuristic,
 )
 
 
@@ -74,7 +76,8 @@ def get_particle_production_xs(endf_dict, particle, energies_in):
             ) * compute_xs(endf_dict, mt, energies_in)
         ),
         lambda endf_dict, mt, zap, energies_in: (
-            contains_zap_with_select_heuristic(endf_dict, mt, zap)
+            contains_zap(endf_dict, mt, zap) and
+            satisfies_select_heuristic(endf_dict, mt)
         ),
         endf_dict, zap, energies_in
     )
@@ -87,7 +90,8 @@ def get_particle_production_dxs_dE(endf_dict, particle, energies_in, energies_ou
             compute_dexs(endf_dict, mt, zap, energies_in, energies_out)
         ),
         lambda endf_dict, mt, zap, energies_in, energies_out: (
-            contains_zap_with_select_heuristic(endf_dict, mt, zap)
+            contains_zap(endf_dict, mt, zap) and
+            satisfies_select_heuristic(endf_dict, mt)
         ),
         endf_dict, zap, energies_in, energies_out
     )
@@ -100,7 +104,8 @@ def get_particle_production_dxs_dmu(endf_dict, particle, energies_in, angle_cosi
             compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True)
         ),
         lambda endf_dict, mt, zap, energies_in, energies_out: (
-            contains_zap_with_select_heuristic(endf_dict, mt, zap)
+            contains_zap(endf_dict, mt, zap) and
+            satisfies_select_heuristic(endf_dict, mt)
         ),
         endf_dict, zap, energies_in, angle_cosines_out
     )

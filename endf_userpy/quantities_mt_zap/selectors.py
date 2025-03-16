@@ -19,17 +19,23 @@ def contains_zap(endf_dict, mt, zap):
         return ret if ret is not None else False
 
 
-def contains_zap_with_select_heuristic(endf_dict, mt, zap):
-
-    if not contains_zap(endf_dict, mt, zap):
-        return False
-
+def satisfies_select_heuristic(endf_dict, mt, user_mt=None):
     if not reac.is_sum_mt(mt) and not reac.is_in_sum_mt(mt):
-        return True
+        if user_mt is None:
+            return True
+        return user_mt == mt
 
+    # a sum rule is involved
     sum_mt = mt if reac.is_sum_mt(mt) else reac.get_sum_mt_from_part_mt(mt)
     part_mts = reac.get_part_mts_from_sum_mt(sum_mt)
 
+    if user_mt is not None:
+        if user_mt in part_mts:
+            return user_mt == mt
+        elif user_mt != sum_mt:
+            return False
+
+    # the user_mt is not given or the user_mt is the sum_mt
     exist_mts = set(get_reaction_mt_numbers(endf_dict))
     exist_part_mts = exist_mts.intersection(part_mts)
 
