@@ -42,6 +42,14 @@ def check_mt_exists_in_mf6(endf_dict, mt):
         )
 
 
+def has_subsecs_for_mt_zap(endf_dict, mt, zap):
+    sec = endf_dict[6][mt]
+    for subsec in sec['subsection'].values():
+        if subsec['ZAP'] == zap:
+            return True
+    return False
+
+
 def find_subsec_nums(endf_dict, mt, zap):
     sec = endf_dict[6][mt]
     idcs = tuple()
