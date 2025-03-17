@@ -29,9 +29,9 @@ def get_available_reactions(endf_dict):
     return reacs
 
 
-def get_reaction_xs(endf_dict, reaction, energies_in):
+def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
     mt = reac.translate_reaction_string_to_mt(reaction)
-    return compute_xs(endf_dict, mt, energies_in, mt5_contrib=True)
+    return compute_xs(endf_dict, mt, energies_in, mt5_contrib)
 
 
 def get_particle_production_xs(endf_dict, particle, energies_in):
