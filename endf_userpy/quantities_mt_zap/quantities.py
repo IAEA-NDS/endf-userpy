@@ -3,13 +3,10 @@ from scipy.integrate import quad
 from ..primitives import properties
 from ..primitives import reactions as reaction
 from ..primitives.physical_constants import get_zap_for_particle
-from ..primitives.properties import (
-    is_zap_consistent,
-    has_mf6_mt,
-)
 from ..mfsec_interpretation import mf1_interpretation as mf1_interp
 from ..mfsec_interpretation import mf3_interpretation as mf3_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
+from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from .distribution1d import (
     compute_angdist_values,
     compute_energydist_values,
@@ -35,7 +32,7 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True):
             )
         # if MT=18 (n,f), we assume user wants to know prompt neutron yields
         yields = mf1_interp.compute_yields(endf_dict, 456, energies_in)
-    elif has_mf6_mt(endf_dict, mt):
+    elif properties.has_mf6_mt(endf_dict, mt):
         yields = mf6_interp.compute_yields(
             endf_dict, mt, zap, energies_in, include_discrete
         )
@@ -47,28 +44,30 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True):
 
 
 def compute_xs_mt5_contrib(endf_dict, mt, energies_in):
-    if not has_mf6_mt(endf_dict, 5):
-        return np.zeros_like(energies_in, dtype=float)
+    zero_xs_result = np.zeros_like(energies_in, dtype=float)
+    if not properties.has_mf6_mt(endf_dict, 5):
+        return zero_xs_result
     proj = properties.get_projectile(endf_dict)
     ejectiles = reaction.get_ejectiles(proj, mt)
     if ejectiles is None or len(ejectiles) > 1:
-        return np.zeros_like(energies_in, dtype=float)
+        return zero_xs_result
     ejectile = ejectiles[0][1]
     if ejectile not in ('n', 'p'):
-        return np.zeros_like(energies_in, dtype=float)
+        return zero_xs_result
 
     za_projectile = properties.get_ZAI(endf_dict)
     za_target = properties.get_ZA(endf_dict)
     za_ejectile = get_zap_for_particle(ejectile)
     m = reaction.get_multiplicity_for_zap(endf_dict, mt, za_ejectile)
     za_residual = za_target + za_projectile - m * za_ejectile
-    if not mf6_help.has_subsecs_for_mt_zap(endf_dict, mt, za_residual):
-        return np.zeros_like(energies_in, dtype=float)
 
+    mt5 = 5
+    if not mf6_help.has_subsecs_for_mt_zap(endf_dict, mt5, za_residual):
+        return zero_xs_result
     yield_mt5 = compute_yields(
-        endf_dict, 5, za_residual, energies_in, include_discrete=True
+        endf_dict, mt5, za_residual, energies_in, include_discrete=True
     )
-    xs_mt5 = mf3_interp.compute_cross_section(endf_dict, 5, energies_in)
+    xs_mt5 = mf3_interp.compute_cross_section(endf_dict, mt5, energies_in)
     return xs_mt5 * yield_mt5
 
 
