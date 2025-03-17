@@ -79,6 +79,14 @@ def compute_xs(endf_dict, mt, energies_in, mt5_contrib=False):
     return xs
 
 
+def compute_prodxs(endf_dict, mt, zap, energies_in):
+    yields = compute_yields(
+        endf_dict, mt, zap, energies_in, include_discrete=True
+    )
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+    return xs * yields
+
+
 def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
