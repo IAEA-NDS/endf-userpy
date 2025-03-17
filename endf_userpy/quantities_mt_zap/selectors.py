@@ -19,23 +19,41 @@ def contains_zap(endf_dict, mt, zap):
         return ret if ret is not None else False
 
 
-def satisfies_select_heuristic(endf_dict, mt, user_mt=None):
+def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
+    if user_mts is not None:
+        if not (hasattr(user_mts, '__iter__') or
+                hasattr(user_mts, '__contains__')):
+            user_mts = [user_mts]
+        user_mts = set(user_mts)
+
     if not reac.is_sum_mt(mt) and not reac.is_in_sum_mt(mt):
-        if user_mt is None:
-            return True
-        return user_mt == mt
+        # no sum rule involved so we select the mt number
+        # (and only if mt in user_mts, if provided)
+        if user_mts is not None:
+            return mt in user_mts
+        return True
 
     # a sum rule is involved
     sum_mt = mt if reac.is_sum_mt(mt) else reac.get_sum_mt_from_part_mt(mt)
     part_mts = reac.get_part_mts_from_sum_mt(sum_mt)
 
-    if user_mt is not None:
-        if user_mt in part_mts:
-            return user_mt == mt
-        elif user_mt != sum_mt:
+    if user_mts is not None:
+        if (sum_mt in user_mts and user_mts.intersection(part_mts)):
+            raise ValueError(
+                f'`user_mts` contains the sum_mt={sum_mt} but also '
+                ' MT numbers which contribute to the cross section '
+                ' associated with `sum_mt`. This is not allowed.'
+            )
+        if mt in part_mts and mt in user_mts:
+            return True
+        if mt == sum_mt and mt not in user_mts:
             return False
 
-    # the user_mt is not given or the user_mt is the sum_mt
+    # the user_mts is not given or
+    # mt == sum_mt and the mt is in user_mts.
+    # in either case, the following logic decides
+    # whether all partial mts should be selected but not the sum_mt
+    # or the sum_mt should be selected only and partial mts skipped.
     exist_mts = set(get_reaction_mt_numbers(endf_dict))
     exist_part_mts = exist_mts.intersection(part_mts)
 
