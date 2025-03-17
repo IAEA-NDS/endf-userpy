@@ -72,10 +72,12 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in):
     return xs_mt5 * yield_mt5
 
 
-def compute_xs(endf_dict, mt, energies_in):
+def compute_xs(endf_dict, mt, energies_in, mt5_contrib=False):
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
-    xs_mt5 = compute_xs_mt5_contrib(endf_dict, mt, energies_in)
-    return xs + xs_mt5
+    if mt5_contrib:
+        xs_mt5 = compute_xs_mt5_contrib(endf_dict, mt, energies_in)
+        xs += xs_mt5
+    return xs
 
 
 def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
