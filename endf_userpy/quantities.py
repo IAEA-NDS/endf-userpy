@@ -20,8 +20,14 @@ def get_available_reactions(endf_dict):
 
 
 def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
-    mt = reac.translate_reaction_string_to_mt(reaction)
-    return quant_mt_zap.compute_xs(endf_dict, mt, energies_in, mt5_contrib)
+    user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    return quant_mt_zap.compute_cumulative_quantity(
+        quant_mt_zap.compute_xs,
+        lambda endf_dict, mt, *_: (
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+        ),
+        endf_dict, energies_in, mt5_contrib
+    )
 
 
 def get_particle_production_xs(endf_dict, particle, energies_in):
