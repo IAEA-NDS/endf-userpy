@@ -27,11 +27,7 @@ def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
 def get_particle_production_xs(endf_dict, particle, energies_in):
     zap = physconst.get_zap_for_particle(particle)
     return quant_mt_zap.compute_cumulative_quantity(
-        lambda endf_dict, mt, zap, energies_in: (
-            quant_mt_zap.compute_yields(
-                endf_dict, mt, zap, energies_in, include_discrete=True
-            ) * quant_mt_zap.compute_xs(endf_dict, mt, energies_in)
-        ),
+        quant_mt_zap.compute_prodxs,
         lambda endf_dict, mt, zap, energies_in: (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.satisfies_select_heuristic(endf_dict, mt)
