@@ -44,8 +44,11 @@ def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
                 ' MT numbers which contribute to the cross section '
                 ' associated with `sum_mt`. This is not allowed.'
             )
-        if mt in part_mts and mt in user_mts:
-            return True
+        if mt in part_mts:
+            if mt in user_mts:
+                return True
+            if sum_mt not in user_mts:
+                return False
         if mt == sum_mt and mt not in user_mts:
             return False
 
