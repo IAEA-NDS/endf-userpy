@@ -47,21 +47,21 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in):
     zero_xs_result = np.zeros_like(energies_in, dtype=float)
     if not properties.has_mf6_mt(endf_dict, 5):
         return zero_xs_result
-    proj = properties.get_projectile(endf_dict)
-    ejectiles = reaction.get_ejectiles(proj, mt)
-    if ejectiles is None or len(ejectiles) > 1:
-        return zero_xs_result
-    ejectile = ejectiles[0][1]
-    if ejectile not in ('n', 'p'):
-        return zero_xs_result
 
+    proj = properties.get_projectile(endf_dict)
+    if not reaction.is_unique_path_to_residual(proj, mt):
+        return zero_xs_result
+    ejectile = reaction.get_unique_ejectile(proj, mt)
+
+    mt5 = 5
     za_projectile = properties.get_ZAI(endf_dict)
     za_target = properties.get_ZA(endf_dict)
     za_ejectile = get_zap_for_particle(ejectile)
-    m = reaction.get_multiplicity_for_zap(endf_dict, mt, za_ejectile)
+    m = reaction.get_multiplicity_for_zap(proj, mt, za_ejectile)
+    if m is None:
+        return zero_xs_result
     za_residual = za_target + za_projectile - m * za_ejectile
 
-    mt5 = 5
     if not mf6_help.has_subsecs_for_mt_zap(endf_dict, mt5, za_residual):
         return zero_xs_result
     yield_mt5 = compute_yields(
@@ -71,12 +71,8 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in):
     return xs_mt5 * yield_mt5
 
 
-def compute_xs(endf_dict, mt, energies_in, mt5_contrib=False):
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
-    if mt5_contrib:
-        xs_mt5 = compute_xs_mt5_contrib(endf_dict, mt, energies_in)
-        xs += xs_mt5
-    return xs
+def compute_xs(endf_dict, mt, energies_in):
+    return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
 
 
 def compute_prodxs(endf_dict, mt, zap, energies_in):
