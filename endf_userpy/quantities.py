@@ -61,8 +61,8 @@ def get_particle_production_xs(endf_dict, reaction, particle, energies_in):
     return quant_mt_zap.compute_cumulative_quantity(
         quant_mt_zap.compute_prodxs,
         lambda endf_dict, mt, zap, energies_in: (
-            selectors.contains_zap(endf_dict, mt, zap) and
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            and selectors.contains_zap(endf_dict, mt, zap)
         ),
         endf_dict, zap, energies_in
     )
