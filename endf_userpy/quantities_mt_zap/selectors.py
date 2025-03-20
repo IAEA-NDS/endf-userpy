@@ -50,39 +50,44 @@ def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
         return True
 
     # a sum rule is involved
-    sum_mt = mt if reac.is_sum_mt(mt) else reac.get_sum_mt_from_part_mt(mt)
-    part_mts = reac.get_part_mts_from_sum_mt(sum_mt)
+    print('debug #1')
 
     if user_mts is not None:
-        if (sum_mt in user_mts and user_mts.intersection(part_mts)):
-            raise ValueError(
-                f'`user_mts` contains the sum_mt={sum_mt} but also '
-                ' MT numbers which contribute to the cross section '
-                ' associated with `sum_mt`. This is not allowed.'
-            )
-        if mt in part_mts:
-            if mt in user_mts:
-                return True
-            if sum_mt not in user_mts:
-                return False
-        if mt == sum_mt and mt not in user_mts:
+        # the current mt has only a chance of being selected
+        # if any ancestor mt is listed in user_mts or the
+        # current mt is directly listed in user_mts
+        has_user_mt_ancestor = reac.any_ancestor_in_mts(mt, user_mts)
+        if not has_user_mt_ancestor and mt not in user_mts:
             return False
 
-    # the user_mts is not given or
-    # mt == sum_mt and the mt is in user_mts.
-    # in either case, the following logic decides
-    # whether all partial mts should be selected but not the sum_mt
-    # or the sum_mt should be selected only and partial mts skipped.
-    exist_mts = set(get_reaction_mt_numbers(endf_dict))
-    exist_part_mts = exist_mts.intersection(part_mts)
+    print('debug #2')
+    # check if detailed distribution info available
+    # for child mts (determined by sum rules) of current mt
+    child_mts_avail_mf4 = reac.exist_associated_child_mts(mt, endf_dict.get(4, {}))
+    child_mts_avail_mf5 = reac.exist_associated_child_mts(mt, endf_dict.get(5, {}))
+    child_mts_avail_mf6 = reac.exist_associated_child_mts(mt, endf_dict.get(6, {}))
 
-    exist_part_mts_in_mf4 = set(endf_dict.get(4, {})).intersection(part_mts)
-    exist_part_mts_in_mf5 = set(endf_dict.get(5, {})).intersection(part_mts)
-    exist_part_mts_in_mf6 = set(endf_dict.get(6, {})).intersection(part_mts)
+    if (child_mts_avail_mf4 or child_mts_avail_mf5 or child_mts_avail_mf6):
+        # even if current mt is in user_mts,
+        # summing of child mts is preferred
+        # if detailed distribution info available for them
+        return False
 
-    if (exist_part_mts_in_mf4 or exist_part_mts_in_mf5 or exist_part_mts_in_mf6):
-        # distribution info exists so only the partial mts is selected
-        return mt != sum_mt
+    print('debug #3')
+    # we arrive here only if summing of child mts not preferred
+    # so if current mt in user_mts, we select it
+    if user_mts is not None and mt in user_mts:
+        return True
 
-    # distribution info does not exist so only the cumulative mt is selected
-    return mt == sum_mt 
+    print('debug #4')
+    # if detailed distribution info is available for current mt
+    # or there is no known parent mt, we select it
+    mt_in_mf4 = mt in endf_dict.get(4, {})
+    mt_in_mf5 = mt in endf_dict.get(5, {})
+    mt_in_mf6 = mt in endf_dict.get(6, {})
+    has_ancestor = reac.any_ancestor_in_mts(mt, endf_dict.get(3, {}))
+    if mt_in_mf4 or mt_in_mf5 or mt_in_mf6 or not has_ancestor:
+        return True
+
+    print('debug #5')
+    return False
