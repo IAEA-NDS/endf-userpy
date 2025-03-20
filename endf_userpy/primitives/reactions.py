@@ -200,6 +200,13 @@ def get_ejectiles(proj, mt):
     return tuple(result)
 
 
+def get_unique_ejectile(proj, mt):
+    ejectiles = get_ejectiles(proj, mt)
+    if ejectiles is None or len(ejectiles) != 1:
+        raise ValueError('Not possible to identiy the unique ejectile')
+    return ejectiles[0][1]
+
+
 def get_multiplicity_for_ejectile(proj, mt, ejectile):
     ejectiles = get_ejectiles(proj, mt)
     if ejectiles is None:
