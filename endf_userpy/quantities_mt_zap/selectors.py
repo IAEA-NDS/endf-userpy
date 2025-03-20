@@ -30,7 +30,7 @@ def contains_zap(endf_dict, mt, zap):
     part_mts = reac.get_part_mts_from_sum_mt(mt)
     loop_mts = set(avail_mts).intersection(part_mts)
     for part_mt in loop_mts:
-        if contains_zap(projectile, part_mt, zap):
+        if contains_zap(endf_dict, part_mt, zap):
             return True
     return False
 
