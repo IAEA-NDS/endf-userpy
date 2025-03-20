@@ -293,3 +293,37 @@ def get_sum_mt_from_part_mt(mt):
 
 def get_part_mts_from_sum_mt(mt):
     return SUM_RULES[mt]
+
+
+def exist_associated_child_mts(mt, avail_mts):
+    if not is_sum_mt(mt):
+        return False
+    part_mts = get_part_mts_from_sum_mt(mt)
+    for part_mt in part_mts:
+        if part_mt in avail_mts:
+            return True
+        if exist_associated_child_mts(part_mt, avail_mts):
+            return True
+    return False
+
+
+def is_unique_path_to_residual(proj, mt):
+    ejectiles = get_ejectiles(proj, mt)
+    # exactly one particle must be in exit channel
+    if ejectiles is None or len(ejectiles) > 1:
+        return False
+    mult, ejectile = ejectiles[0]
+    # this particle must be either a neutron, proton, gamma
+    if ejectile not in ('g', 'n', 'p'):
+        return False
+    # for neutrons, there is not an MT number
+    # corresponding to n,el + n,inl so whenever
+    # only one neutron in exit channel, it is only a
+    # partial component and therefore not the unique path
+    if ejectile == 'n' and mult == 1:
+        return False
+    # in all other cases, whenever it is discrete level
+    # scattering, it can't be the unique path
+    if is_discrete_level_scattering(mt):
+        return False
+    return True
