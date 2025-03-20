@@ -1,6 +1,10 @@
 import types
 from collections.abc import Sequence
-from .physical_constants import get_particle_for_zap
+from .physical_constants import (
+    get_particle_for_zap,
+    get_zap_for_particle,
+)
+
 
 
 def _rng(start, stop):
@@ -239,16 +243,22 @@ def get_raw_reaction_string_for_mt(mt):
 def translate_reaction_string_to_mt(reacstr):
     reacstr = reacstr.lstrip('(').rstrip(')').replace(' ','')
     proj, ejectiles = reacstr.split(',')
-    mt = INV_REACTION_DICT.get(('z', ejectiles), None)
-    if mt is not None:
-        return mt
-    mt = INV_REACTION_DICT.get(('y', ejectiles), None)
-    if mt is not None:
-        return mt
-    if proj == 'n':
-        mt = INV_REACTION_DICT.get(('n', ejectiles), None)
+    for _ in range(2):
+        mt = INV_REACTION_DICT.get(('z', ejectiles), None)
         if mt is not None:
             return mt
+        mt = INV_REACTION_DICT.get(('y', ejectiles), None)
+        if mt is not None:
+            proj_zap = get_zap_for_particle(proj)
+            if not contains_zap(proj, mt, proj_zap):
+                return mt
+        if proj == 'n':
+            mt = INV_REACTION_DICT.get(('n', ejectiles), None)
+            if mt is not None:
+                return mt
+        # try again but replace occurrences of z
+        # in ejectile string by projectile
+        ejectiles = ejectiles.replace(proj, 'z')
     raise ValueError('invalid reaction string')
 
 
