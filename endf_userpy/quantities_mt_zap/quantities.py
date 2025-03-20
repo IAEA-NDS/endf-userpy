@@ -122,9 +122,11 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, **kwargs):
     cum_res = None
     for mt in mt_list:
 
+        print(f'consider MT: {mt}')  # debug
         if select is not None:
             if not select(endf_dict, mt, *args, **kwargs):
                 continue
+        print(f'selecting MT: {mt}')  # debug
 
         cur_res = func(endf_dict, mt, *args, **kwargs)
         if is_first:
