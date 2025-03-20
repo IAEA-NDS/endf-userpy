@@ -278,6 +278,15 @@ def is_in_sum_mt(mt):
     return mt in SUM_RULE_MAP
 
 
+def any_ancestor_in_mts(mt, mts):
+    if not is_in_sum_mt(mt):
+        return False
+    cur_parent = get_sum_mt_from_part_mt(mt)
+    if cur_parent in mts:
+        return True
+    return any_ancestor_in_mts(cur_parent, mts)
+
+
 def get_sum_mt_from_part_mt(mt):
     return SUM_RULE_MAP[mt]
 
