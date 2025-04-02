@@ -9,8 +9,10 @@ from ..primitives.helpers import (
     dict2array,
     convert_interp_repr,
 )
+from .mf4_interpretation_helpers import pad_outside_angdist_values
 
 
+@pad_outside_angdist_values
 def get_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines, to_lab):
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
@@ -51,6 +53,7 @@ def get_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines, to_lab):
     return result_arr
 
 
+@pad_outside_angdist_values
 def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines, to_lab):
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
@@ -113,6 +116,7 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines, to_lab):
     return result_arr
 
 
+@pad_outside_angdist_values
 def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines, to_lab):
     num_energies = len(energies)
     num_angle_cosines = len(angle_cosines)
@@ -173,6 +177,7 @@ def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines, to_lab):
     return result_arr
 
 
+@pad_outside_angdist_values
 def get_angdist_from_mixed(endf_dict, mt, energies, angle_cosines, to_lab):
     mu = angle_cosines
     mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
