@@ -16,8 +16,8 @@ def contains_zap(endf_dict, mt, zap):
 
     projectile = prop.get_projectile(endf_dict)
     ret = reac.contains_zap(projectile, mt, zap)
-    if ret is True:
-        return True
+    if ret is True or ret is False:
+        return ret
     if ret is None and not reac.is_sum_mt(mt):
         raise ValueError(
             "Unable to determine whether reaction associated with "
