@@ -1,3 +1,4 @@
+import inspect
 import numpy as np
 
 
@@ -162,3 +163,43 @@ def erf(x):
     t = 1.0/(1.0 + p*x)
     y = 1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*np.exp(-x*x)
     return sign*y # erf(-x) = -erf(x)
+
+
+def pad_outside_values(argnames, selectors):
+    """Decorator factory to zero-pad results for invalid inputs."""
+    def decorator(func):
+        def get_arrays(args):
+            all_argnames = list(inspect.signature(func).parameters.keys())
+            return [
+                args[all_argnames.index(p)] for p in argnames
+            ]
+
+        def replace_arrays(args, new_arrays):
+            all_argnames = list(inspect.signature(func).parameters.keys())
+            new_args = list(args)
+            for i, an in enumerate(argnames):
+                idx = all_argnames.index(an)
+                new_args[idx] = new_arrays[i]
+            return new_args
+
+        def wrapfunc(*args, **kwargs):
+            arr_list = get_arrays(args)
+            inside_list = [
+                s(a, *args, **kwargs) for s, a in zip(selectors, arr_list)
+            ]
+            if all(np.all(v) for v in inside_list):
+                return func(*args, **kwargs)
+            filtered_arrays = [
+                a[f] for a, f in zip(arr_list, inside_list)
+            ]
+            new_args = replace_arrays(args, filtered_arrays)
+            res_dim = [len(a) for a in arr_list]
+            res_arr = np.zeros(res_dim, dtype=np.float64)
+            res_arr[np.ix_(*inside_list)] = func(*new_args, **kwargs)
+            return res_arr
+        return wrapfunc
+    return decorator
+
+
+def no_filter(arr, *args, **kwargs):
+    return np.ones_like(arr, dtype=bool)

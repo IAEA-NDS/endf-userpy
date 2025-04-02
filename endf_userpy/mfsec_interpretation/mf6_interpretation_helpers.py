@@ -1,10 +1,13 @@
-import inspect
 import numpy as np
 from ..primitives.properties import (
     get_ZAP,
     is_zap_consistent,
 )
-from ..primitives.helpers import dict2array
+from ..primitives.helpers import (
+    dict2array,
+    pad_outside_values,
+    no_filter,
+)
 
 
 def is_dist2d_law(law):
@@ -148,46 +151,6 @@ def has_angdist_part(endf_dict, mt, zap):
     return False
 
 
-def pad_outside_values(argnames, selectors):
-    """Decorator factory to zero-pad results for invalid inputs."""
-    def decorator(func):
-        def get_arrays(args):
-            all_argnames = list(inspect.signature(func).parameters.keys())
-            return [
-                args[all_argnames.index(p)] for p in argnames
-            ]
-
-        def replace_arrays(args, new_arrays):
-            all_argnames = list(inspect.signature(func).parameters.keys())
-            new_args = list(args)
-            for i, an in enumerate(argnames):
-                idx = all_argnames.index(an)
-                new_args[idx] = new_arrays[i]
-            return new_args
-
-        def wrapfunc(*args, **kwargs):
-            arr_list = get_arrays(args)
-            inside_list = [
-                s(a, *args, **kwargs) for s, a in zip(selectors, arr_list)
-            ]
-            if all(np.all(v) for v in inside_list):
-                return func(*args, **kwargs)
-            filtered_arrays = [
-                a[f] for a, f in zip(arr_list, inside_list)
-            ]
-            new_args = replace_arrays(args, filtered_arrays)
-            res_dim = [len(a) for a in arr_list]
-            res_arr = np.zeros(res_dim, dtype=np.float64)
-            res_arr[np.ix_(*inside_list)] = func(*new_args, **kwargs)
-            return res_arr
-        return wrapfunc
-    return decorator
-
-
-def _no_filter(arr, *args, **kwargs):
-    return np.ones_like(arr, dtype=bool)
-
-
 def _filter_energies_in(
     energies_in, endf_dict, mt, subsec_num,  *args, **kwargs
 ):
@@ -204,7 +167,7 @@ def _filter_energies_out(energies_out, *args, **kwargs):
 def pad_outside_dist2d_values(func):
     return pad_outside_values(
         ['energies_in', 'energies_out', 'angle_cosines_out'],
-        [_filter_energies_in, _filter_energies_out, _no_filter]
+        [_filter_energies_in, _filter_energies_out, no_filter]
     )(func)
 
 
@@ -218,5 +181,5 @@ def pad_outside_energydist_values(func):
 def pad_outside_angdist_values(func):
     return pad_outside_values(
         ['energies_in', 'angle_cosines_out'],
-        [_filter_energies_in, _no_filter]
+        [_filter_energies_in, no_filter]
     )(func)
