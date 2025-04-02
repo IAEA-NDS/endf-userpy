@@ -35,7 +35,7 @@ def integrate_mf6_dist2d_over_eout(
                 angdist[i, j] = 0.0
                 continue
             cur_ens_inc = ens_inc[i:i+1]
-            cur_mus_out = mus_out[j:j+1],
+            cur_mus_out = mus_out[j:j+1]
             dist2d_func = lambda x: compute_dist2d_values(
                 endf_dict, mt, zap,
                 cur_ens_inc, np.array([x], dtype=float), cur_mus_out,
