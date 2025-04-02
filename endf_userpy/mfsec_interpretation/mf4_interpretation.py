@@ -20,6 +20,7 @@ from ..primitives.properties import (
     get_AWR, get_AWI, get_AWP,
     get_QM, get_QI, get_LR,
 )
+from .mf4_interpretation_helpers import pad_outside_angdist_values
 
 
 def get_incident_energies(endf_dict, mt):
@@ -51,7 +52,8 @@ def _convert_legendre_to_numpy_array(coeffs_dict):
     return coeffs_arr
 
 
-def compute_angdist_from_isotropic(mf4sec, energies, angle_cosines):
+def compute_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines):
+    mf4sec = endf_dict[4][mt]
     mu = angle_cosines
     mu = mu.reshape(1,-1) if mu.ndim == 1 else mu
     m = len(energies)
@@ -59,7 +61,8 @@ def compute_angdist_from_isotropic(mf4sec, energies, angle_cosines):
     return np.full((m, n), 0.5, dtype=float)
 
 
-def compute_angdist_from_legrepr(mf4sec, energies, angle_cosines):
+def compute_angdist_from_legrepr(endf_dict, mt, energies, angle_cosines):
+    mf4sec = endf_dict[4][mt]
     mu = angle_cosines
     # get the energy mesh and bookkeeping information
     incident_energies = dict2array(mf4sec['E'])
@@ -74,7 +77,8 @@ def compute_angdist_from_legrepr(mf4sec, energies, angle_cosines):
     return f
 
 
-def compute_angdist_from_tabulated(mf4sec, energies, angle_cosines):
+def compute_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines):
+    mf4sec = endf_dict[4][mt]
     en_mesh = dict2array(mf4sec['E'], dtype=float)
     nbt_arr = np.array(mf4sec['energy_table']['NBT'], dtype=int)
     int_arr = np.array(mf4sec['energy_table']['INT'], dtype=int)
@@ -85,7 +89,8 @@ def compute_angdist_from_tabulated(mf4sec, energies, angle_cosines):
     )
 
 
-def compute_angdist_from_mixed(mf4sec, energies, angle_cosines):
+def compute_angdist_from_mixed(endf_dict, mt, energies, angle_cosines):
+    mf4sec = endf_dict[4][mt]
     en_mesh = dict2array(mf4sec['E'], dtype=float)
     # prepare Legendre interpolation info for low energies
     num_ens1 = mf4sec['NE1']
@@ -133,6 +138,7 @@ def _compute_r2(endf_dict, mt, energies):
     return compute_r2(energies, awi, awr, awp, q)
 
 
+@pad_outside_angdist_values
 def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
     mf4sec = endf_dict[4][mt]
     ltt = mf4sec['LTT']
@@ -149,13 +155,13 @@ def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
         raise ValueError(f'Unknown reference system (LCT={lct}).')
     # perform the appropriate interpolation
     if ltt == 0 and li == 1:
-        f_eff = compute_angdist_from_isotropic(mf4sec, energies, mu_eff)
+        f_eff = compute_angdist_from_isotropic(endf_dict, mt, energies, mu_eff)
     elif ltt == 1 and li == 0:
-        f_eff = compute_angdist_from_legrepr(mf4sec, energies, mu_eff)
+        f_eff = compute_angdist_from_legrepr(endf_dict, mt, energies, mu_eff)
     elif ltt == 2 and li == 0:
-        f_eff = compute_angdist_from_tabulated(mf4sec, energies, mu_eff)
+        f_eff = compute_angdist_from_tabulated(endf_dict, mt, energies, mu_eff)
     elif ltt == 3 and li == 0:
-        f_eff = compute_angdist_from_mixed(mf4sec, energies, mu_eff)
+        f_eff = compute_angdist_from_mixed(endf_dict, mt, energies, mu_eff)
     else:
         raise ValueError(
             'Unknown angular distribution representation '
