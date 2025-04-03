@@ -23,6 +23,21 @@ def get_available_reactions(endf_dict):
     return reacs
 
 
+def get_incident_energies(endf_dict, reaction):
+    user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
+    select_mts = [
+        mt for mt in mts
+        if selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+    ]
+    module_logger.debug('selected ' + ','.join(str(mt) for mt in select_mts))
+    energy_meshes = [
+        quant_mt_zap.get_incident_energies(endf_dict, mt)
+        for mt in select_mts
+    ]
+    return np.unique(np.concatenate(energy_meshes))
+
+
 def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
