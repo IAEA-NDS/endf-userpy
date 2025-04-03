@@ -114,6 +114,7 @@ def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab
     )
+    module_logger.debug(f'average yield is {np.mean(yields)} for MT={mt} and ZAP={zap}')
     return energydist * yields * xs
 
 
