@@ -13,6 +13,11 @@ from .distribution1d import (
 )
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from .distribution2d import compute_dist2d_values
+import logging
+
+
+module_logger = logging.getLogger(__name__)
+
 
 # functions borrowed as is
 from ..mfsec_interpretation.mf3_interpretation import (
@@ -122,12 +127,11 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, **kwargs):
     cum_res = None
     for mt in mt_list:
 
-        print(f'consider MT: {mt}')  # debug
+        module_logger.debug(f'consider MT={mt} for inclusion in cumulative quantity')
         if select is not None:
             if not select(endf_dict, mt, *args, **kwargs):
                 continue
-        print(f'selecting MT: {mt}')  # debug
-
+        module_logger.debug(f'select MT={mt} for inclusion in cumulative quantity')
         cur_res = func(endf_dict, mt, *args, **kwargs)
         if is_first:
             cum_res = cur_res

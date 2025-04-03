@@ -16,9 +16,13 @@ from ..primitives.physical_constants import (
     get_particle_mass_for_zap,
 )
 from .distribution2d import compute_dist2d_values
+import logging
 
 
 USE_FORTRAN_INTEGRATION = True
+
+
+module_logger = logging.getLogger(__name__)
 
 
 def integrate_mf6_dist2d_over_eout(
@@ -72,7 +76,7 @@ def integrate_mf6_dist2d_over_mu(
     if len(subsec_nums) == 1:
         law = mtsec['subsection'][subsec_nums[0]]['LAW']
         if law == 1 and USE_FORTRAN_INTEGRATION:
-            print('(using Fortran routine')  # debug
+            module_logger.debug(f'use Fortran integration routine for MT={mt}')
             return mf6_integral.get_energydist_from_subsec_law1(
                 endf_dict, mt, subsec_nums[0], energies_in, energies_out, to_lab
             )
@@ -114,6 +118,7 @@ def _prepare_angdist_to_energydist_conversion(
 def convert_angdist_to_energydist(
     compute_angdist_func, endf_dict, mt, zap, energies_in, energies_out, to_lab
 ):
+    module_logger.debug(f'convert angular distribution for MT={mt} to energy distribution')
     angle_cosines_out, jacvals = (
         _prepare_angdist_to_energydist_conversion(
             endf_dict, mt, zap, energies_in, energies_out, to_lab
