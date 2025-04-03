@@ -28,6 +28,7 @@ from ..mfsec_interpretation.mf3_interpretation import (
 
 
 def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True):
+    module_logger.debug(f'compute yields for MT={mt} and ZAP={zap}')
     if mt == 18:
         neutron_zap = get_zap_for_particle('n')
         if zap != neutron_zap:
@@ -36,14 +37,19 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True):
                 f'zap={neutron_zap} but obtained zap={zap}'
             )
         # if MT=18 (n,f), we assume user wants to know prompt neutron yields
+        module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF1/MT456')
         yields = mf1_interp.compute_yields(endf_dict, 456, energies_in)
     elif properties.has_mf6_mt(endf_dict, mt):
+        module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF6/MT{mt}')
         yields = mf6_interp.compute_yields(
             endf_dict, mt, zap, energies_in, include_discrete
         )
     else:
         proj = properties.get_projectile(endf_dict)
         mult = reaction.get_multiplicity_for_zap(proj, mt, zap)
+        module_logger.debug(
+            f'--> getting yields for MT={mt} and ZAP={zap} from reaction string (yield={mult})'
+        )
         yields = np.full(len(energies_in), mult, dtype=float)
     return yields
 
@@ -100,6 +106,7 @@ def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
 
 
 def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
+    module_logger.debug(f'compute dexs for MT={mt} and ZAP={zap}')
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
