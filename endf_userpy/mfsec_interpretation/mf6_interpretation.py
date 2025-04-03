@@ -1,4 +1,5 @@
 import numpy as np
+from ..primitives import properties as prop
 from ..primitives.properties import get_ZAP
 from .mf6_interpretation_helpers import (
     check_mf6_exists,
@@ -29,14 +30,16 @@ def get_incident_energies(endf_dict, mt, zap):
     return np.unique(energies)
 
 
-def get_emission_energies(endf_dict, mt, zap):
+def get_emission_energies(endf_dict, mt, zap, nofail=False):
+    if nofail and not prop.has_mf6_mt(endf_dict, mt):
+        return np.array([], dtype=float)
     check_mf6_exists(endf_dict)
     check_mt_exists_in_mf6(endf_dict, mt)
     subsec_nums = find_subsec_nums(endf_dict, mt, zap)
     energies = []
     for subsec_num in subsec_nums:
         cur_energies = get_emission_energies_from_subsec(
-            endf_dict, mt, subsec_num
+            endf_dict, mt, subsec_num, nofail
         )
         energies.extend(cur_energies)
     return np.unique(energies)
