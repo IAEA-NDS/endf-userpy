@@ -7,6 +7,8 @@ from .mf6_interpretation_helpers import (
     contains_subsec_dist2d,
 )
 from .mf6_interpretation_subsecs import (
+    get_incident_energies_from_subsec,
+    get_emission_energies_from_subsec,
     compute_dist2d_from_subsec,
     compute_angdist_from_subsec,
     compute_yields_from_subsec,
@@ -21,6 +23,19 @@ def get_incident_energies(endf_dict, mt, zap):
     energies = []
     for subsec_num in subsec_nums:
         cur_energies = get_incident_energies_from_subsec(
+            endf_dict, mt, subsec_num
+        )
+        energies.extend(cur_energies)
+    return np.unique(energies)
+
+
+def get_emission_energies(endf_dict, mt, zap):
+    check_mf6_exists(endf_dict)
+    check_mt_exists_in_mf6(endf_dict, mt)
+    subsec_nums = find_subsec_nums(endf_dict, mt, zap)
+    energies = []
+    for subsec_num in subsec_nums:
+        cur_energies = get_emission_energies_from_subsec(
             endf_dict, mt, subsec_num
         )
         energies.extend(cur_energies)

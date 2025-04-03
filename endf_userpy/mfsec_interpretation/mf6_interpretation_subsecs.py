@@ -304,6 +304,19 @@ def get_incident_energies_from_subsec(endf_dict, mt, subsec_num):
     return np.array(yield_tab['Eint'], copy=True)
 
 
+def get_emission_energies_from_subsec(endf_dict, mt, subsec_num):
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    law = subsec['LAW']
+    if law == 1:
+        energies = [v for u in subsec['Ep'].values() for v in u.values()]
+    elif law == 7:
+        energies = [v['Ep'] for u in subsec['table'].values() for v in u.values()]
+    else:
+        raise NotImplementedError(f'Unable to obtain emission energies for LAW={law}')
+    return np.unique(energies)
+
+
 def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]

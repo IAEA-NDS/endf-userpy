@@ -6,6 +6,8 @@ from .quantities_mt_zap import quantities as quant_mt_zap
 from .quantities_mt_zap import distribution1d as dist1d
 from .quantities_mt_zap import selectors
 import logging
+# TODO: Remove direct use of mf6_interpretation module in this module
+from .mfsec_interpretation import mf6_interpretation as mf6interp
 
 
 module_logger = logging.getLogger(__name__)
@@ -33,6 +35,22 @@ def get_incident_energies(endf_dict, reaction):
     module_logger.debug('selected ' + ','.join(str(mt) for mt in select_mts))
     energy_meshes = [
         quant_mt_zap.get_incident_energies(endf_dict, mt)
+        for mt in select_mts
+    ]
+    return np.unique(np.concatenate(energy_meshes))
+
+
+def get_emission_energies(endf_dict, reaction, particle):
+    user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    zap = physconst.get_zap_for_particle(particle)
+    mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
+    select_mts = [
+        mt for mt in mts
+        if selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+    ]
+    module_logger.debug('selected ' + ','.join(str(mt) for mt in select_mts))
+    energy_meshes = [
+        mf6interp.get_emission_energies(endf_dict, mt, zap)
         for mt in select_mts
     ]
     return np.unique(np.concatenate(energy_meshes))
