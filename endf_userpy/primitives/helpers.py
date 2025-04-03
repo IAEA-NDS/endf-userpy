@@ -1,5 +1,6 @@
 import inspect
 import numpy as np
+from typing import Optional, List, Callable, Union
 
 
 def deg2rad(values):
@@ -165,7 +166,7 @@ def erf(x):
     return sign*y # erf(-x) = -erf(x)
 
 
-def pad_outside_values(argnames, selectors):
+def pad_outside_values(argnames: List[str], selectors: Union[List[Callable], Callable]):
     """Decorator factory to zero-pad results for invalid inputs."""
     def decorator(func):
         def get_arrays(args):
@@ -193,13 +194,15 @@ def pad_outside_values(argnames, selectors):
                 a[f] for a, f in zip(arr_list, inside_list)
             ]
             new_args = replace_arrays(args, filtered_arrays)
-            res_dim = [len(a) for a in arr_list]
+            res_dim = [a.shape[-1] for a in inside_list]
             res_arr = np.zeros(res_dim, dtype=np.float64)
-            res_arr[np.ix_(*inside_list)] = func(*new_args, **kwargs)
+            squeezed_inside_list = [a if a.ndim == 1 else np.squeeze(a) for a in inside_list]
+            res_arr[np.ix_(*squeezed_inside_list)] = func(*new_args, **kwargs)
             return res_arr
         return wrapfunc
     return decorator
 
 
 def no_filter(arr, *args, **kwargs):
-    return np.ones_like(arr, dtype=bool)
+    dims = [1]*(len(arr.shape)-1) + [arr.shape[-1]]
+    return np.ones(dims, dtype=bool)
