@@ -90,7 +90,7 @@ def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
     # we arrive here only if summing of child mts not preferred
     # so if current mt in user_mts, we select it
     if user_mts is not None and mt in user_mts:
-        module_logger.debug('selecting MT={mt} because included in user_mts')
+        module_logger.debug(f'selecting MT={mt} because included in user_mts')
         return True
 
     # if detailed distribution info is available for current mt
