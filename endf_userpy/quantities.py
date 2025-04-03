@@ -5,6 +5,10 @@ from .primitives import reactions as reac
 from .quantities_mt_zap import quantities as quant_mt_zap
 from .quantities_mt_zap import distribution1d as dist1d
 from .quantities_mt_zap import selectors
+import logging
+
+
+module_logger = logging.getLogger(__name__)
 
 
 # TODO: check and complete
@@ -27,13 +31,13 @@ def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
     xs = np.zeros_like(energies_in, dtype=float)
     proj = prop.get_projectile(endf_dict)
     for mt in sorted(iter_mts):
-        print(f'considering MT: {mt}')
+        module_logger.debug(f'consider MT={mt} for reaction xs')
         should_select = selectors.satisfies_select_heuristic(
             endf_dict, mt, user_mts
         )
         mt_available = mt in avail_mts
         if should_select and mt_available:
-            print(f'selecting MT: {mt}')
+            module_logger.debug(f'select MT={mt} for reaction xs')
             cur_xs = quant_mt_zap.compute_xs(endf_dict, mt, energies_in)
             xs += cur_xs
 
@@ -51,7 +55,7 @@ def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
             )
             xs[eincs_sel] += mt5_xs
             if np.any(mt5_xs != 0.0):
-                print('including MT5 component')
+                module_logger.debug('include MF6/MT5 component for MT={mt}')
     return xs
 
 
@@ -68,29 +72,46 @@ def get_particle_production_xs(endf_dict, reaction, particle, energies_in):
     )
 
 
-def get_particle_production_dxs_dE(endf_dict, particle, energies_in, energies_out):
+def get_particle_production_dxs_dE(
+    endf_dict, reaction, particle, energies_in, energies_out
+):
+    user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
     return quant_mt_zap.compute_cumulative_quantity(
-        lambda endf_dict, mt, zap, energies_in, energies_out: (
-            quant_mt_zap.compute_dexs(endf_dict, mt, zap, energies_in, energies_out)
-        ),
+        quant_mt_zap.compute_dexs,
         lambda endf_dict, mt, zap, energies_in, energies_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt)
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         ),
         endf_dict, zap, energies_in, energies_out
     )
 
 
-def get_particle_production_dxs_dmu(endf_dict, particle, energies_in, angle_cosines_out):
+def get_particle_production_dxs_dmu(
+    endf_dict, reaction, particle, energies_in, angle_cosines_out
+):
+    user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
     return quant_mt_zap.compute_cumulative_quantity(
+        quant_mt_zap.compute_daxs,
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
-            quant_mt_zap.compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True)
-        ),
-        lambda endf_dict, mt, zap, energies_in, energies_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt)
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         ),
         endf_dict, zap, energies_in, angle_cosines_out
+    )
+
+
+def get_particle_production_ddxs(
+    endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out
+):
+    user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    zap = physconst.get_zap_for_particle(particle)
+    return quant_mt_zap.compute_cumulative_quantity(
+        quant_mt_zap.compute_ddxs,
+        lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
+            selectors.contains_zap(endf_dict, mt, zap) and
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+        ),
+        endf_dict, zap, energies_in, energies_out, angle_cosines_out
     )
