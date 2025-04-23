@@ -13,8 +13,8 @@ class build_ext(build_ext_orig):
     def run(self):
         # Compile the Fortran code
         if sys.platform != 'win32':
-            subprocess.check_call(['gfortran', '-c', 'endf_userpy/fortran/endf6.f90', '-o', 'endf_userpy/fortran/endf6.o'])
-            subprocess.check_call(['gfortran', '-c', 'endf_userpy/fortran/endf6-f2pywrappers.f', '-o', 'endf_userpy/fortran/endf6-f2pywrappers.o'])
+            subprocess.check_call(['gfortran', '-fPIC', '-c', 'endf_userpy/fortran/endf6.f90', '-o', 'endf_userpy/fortran/endf6.o'])
+            subprocess.check_call(['gfortran', '-fPIC', '-c', 'endf_userpy/fortran/endf6-f2pywrappers.f', '-o', 'endf_userpy/fortran/endf6-f2pywrappers.o'])
         else:
             subprocess.check_call(['ifx', '/c', 'endf_userpy/fortran/endf6.f90', '/Foendf_userpy/fortran/endf6.o'])
             subprocess.check_call(['ifx', '/c', 'endf_userpy/fortran/endf6-f2pywrappers.f', '/Foendf_userpy/fortran/endf6-f2pywrappers.o'])
