@@ -3,6 +3,10 @@ import numpy as np
 from typing import Optional, List, Callable, Union
 
 
+def unpack_za(za):
+    return int(za // 1000), int(za % 1000)
+
+
 def deg2rad(values):
     return np.pi / 180.0 * np.array(values, copy=None)
 
