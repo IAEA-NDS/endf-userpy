@@ -63,3 +63,8 @@ def get_particle_mass(particle):
 def get_particle_mass_for_zap(zap):
     part = get_particle_for_zap(zap)
     return get_particle_mass(part)
+
+
+def get_za_for_residual_nucleus(residual_nucleus):
+    charge, sym, mass = residual_nucleus.replace(' ','').split('-')
+    return int(charge)*1000.0 + int(mass)
