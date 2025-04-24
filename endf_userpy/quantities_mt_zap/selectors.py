@@ -39,6 +39,18 @@ def contains_zap(endf_dict, mt, zap):
     return False
 
 
+def contains_residual_za(endf_dict, mt, residual_za):
+    proj = prop.get_projectile(endf_dict)
+    za_projectile = prop.get_ZAI(endf_dict)
+    ejectiles = reac.get_ejectiles(proj, mt)
+    if ejectiles is None:
+        return False
+    real_za_residual = prop.get_ZA(endf_dict) + za_projectile
+    for mult, ejectile in ejectiles:
+        real_za_residual -= mult * physconst.get_zap_for_particle(ejectile)
+    return real_za_residual == residual_za
+
+
 def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
     if user_mts is not None:
         if not (hasattr(user_mts, '__iter__') or
