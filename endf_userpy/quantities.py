@@ -2,12 +2,14 @@ import numpy as np
 from .primitives import physical_constants as physconst
 from .primitives import properties as prop
 from .primitives import reactions as reac
+from .primitives.helpers import unpack_za
 from .quantities_mt_zap import quantities as quant_mt_zap
 from .quantities_mt_zap import distribution1d as dist1d
 from .quantities_mt_zap import selectors
 import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
 from .mfsec_interpretation import mf6_interpretation as mf6interp
+from .mfsec_interpretation import mf6_interpretation_helpers as mf6help
 
 
 module_logger = logging.getLogger(__name__)
@@ -90,6 +92,35 @@ def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
             xs[eincs_sel] += mt5_xs
             if np.any(mt5_xs != 0.0):
                 module_logger.debug('include MF6/MT5 component for MT={mt}')
+    return xs
+
+
+def get_residual_production_xs(endf_dict, residual_nucleus, energies_in, mt5_contrib=True):
+    za_residual = physconst.get_za_for_residual_nucleus(residual_nucleus)
+    xs = quant_mt_zap.compute_cumulative_quantity(
+        lambda endf_dict, mt: (
+            quant_mt_zap.compute_xs(endf_dict, mt, energies_in)
+        ),
+        lambda endf_dict, mt: (
+            selectors.contains_residual_za(endf_dict, mt, za_residual) and
+            selectors.satisfies_select_heuristic(endf_dict, mt)
+        ),
+        endf_dict
+    )
+    # add mt5 contribution if demanded
+    if not mt5_contrib:
+        module_logger.debug(f'inclusion of MF6/MT5 disabled by user')
+    elif (prop.has_mf6_mt(endf_dict, 5)
+            and mf6help.contains_zap(endf_dict, 5, za_residual)):
+        module_logger.debug(f'include MF6/MT5 component for residual ZA={za_residual}')
+        mt5_totxs = quant_mt_zap.compute_xs(endf_dict, 5, energies_in)
+        mt5_yield = quant_mt_zap.compute_yields(endf_dict, 5, za_residual, energies_in)
+        mt5_xs = mt5_totxs * mt5_yield
+        assert np.all(xs[mt5_xs != 0.0] == 0.0)
+        assert np.all(mt5_xs[xs != 0.0] == 0.0)
+        xs += mt5_xs
+    else:
+        module_logger.debug(f'no MF6/MT5 component available for residual ZA={za_residual}')
     return xs
 
 
