@@ -96,7 +96,10 @@ def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
 
 
 def get_residual_production_xs(endf_dict, residual_nucleus, energies_in, mt5_contrib=True):
-    za_residual = physconst.get_za_for_residual_nucleus(residual_nucleus)
+    module_logger.debug(f'ahahahahah')
+    za_residual, level = physconst.get_za_for_residual_nucleus(residual_nucleus)
+    if level is not None:
+        module_logger.debug(f'user requested isomeric state {level}')
     xs = quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt: (
             quant_mt_zap.compute_xs(endf_dict, mt, energies_in)
@@ -114,8 +117,12 @@ def get_residual_production_xs(endf_dict, residual_nucleus, energies_in, mt5_con
             and mf6help.contains_zap(endf_dict, 5, za_residual)):
         module_logger.debug(f'include MF6/MT5 component for residual ZA={za_residual}')
         mt5_totxs = quant_mt_zap.compute_xs(endf_dict, 5, energies_in)
-        mt5_yield = quant_mt_zap.compute_yields(endf_dict, 5, za_residual, energies_in)
+        mt5_yield = quant_mt_zap.compute_yields(
+            endf_dict, 5, za_residual, energies_in, level=level
+        )
+        module_logger.debug(f'mt5_yield: {mt5_yield}')
         mt5_xs = mt5_totxs * mt5_yield
+        module_logger.debug(f'mt5_xs: {mt5_xs}')
         assert np.all(xs[mt5_xs != 0.0] == 0.0)
         assert np.all(mt5_xs[xs != 0.0] == 0.0)
         xs += mt5_xs
