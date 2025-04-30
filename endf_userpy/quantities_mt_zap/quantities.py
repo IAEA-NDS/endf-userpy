@@ -27,8 +27,8 @@ from ..mfsec_interpretation.mf3_interpretation import (
 )
 
 
-def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True):
-    module_logger.debug(f'compute yields for MT={mt} and ZAP={zap}')
+def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level=None):
+    module_logger.debug(f'compute yields for MT={mt} and ZAP={zap} and level={level}')
     if mt == 18:
         neutron_zap = get_zap_for_particle('n')
         if zap != neutron_zap:
@@ -36,15 +36,24 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True):
                 f'For fission, only yield of emitted neutrons can be computed '
                 f'zap={neutron_zap} but obtained zap={zap}'
             )
+        if level is not None:
+            raise ValueError(
+                f'For fission, `level` argument must be `None`'
+            )
         # if MT=18 (n,f), we assume user wants to know prompt neutron yields
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF1/MT456')
         yields = mf1_interp.compute_yields(endf_dict, 456, energies_in)
     elif properties.has_mf6_mt(endf_dict, mt):
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF6/MT{mt}')
         yields = mf6_interp.compute_yields(
-            endf_dict, mt, zap, energies_in, include_discrete
+            endf_dict, mt, zap, energies_in, include_discrete, level
         )
     else:
+        if level is not None:
+            raise ValueError(
+                f'Yield directly derived from MT number (MT={mt}, '
+                '`level` argument must be `None`'
+            )
         proj = properties.get_projectile(endf_dict)
         mult = reaction.get_multiplicity_for_zap(proj, mt, zap)
         module_logger.debug(
