@@ -22,6 +22,10 @@ from .mf6_interpretation_helpers import (
     pad_outside_dist2d_values,
     pad_outside_angdist_values,
 )
+import logging
+
+
+module_logger = logging.getLogger(__name__)
 
 
 @pad_outside_dist2d_values
@@ -321,12 +325,14 @@ def get_emission_energies_from_subsec(endf_dict, mt, subsec_num, nofail=False):
 
 
 def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
+    module_logger.debug(f'compute yield from subsec with number {subsec_num}')
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
     yield_tab = subsec['yields']
     interp_yields = interp_tab1(
         energies_in, yield_tab, 'Eint', 'yi', outside_value=0.0
     )
+    module_logger.debug(interp_yields)
     return interp_yields
 
 
