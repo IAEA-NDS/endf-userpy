@@ -67,4 +67,9 @@ def get_particle_mass_for_zap(zap):
 
 def get_za_for_residual_nucleus(residual_nucleus):
     charge, sym, mass = residual_nucleus.replace(' ','').split('-')
-    return int(charge)*1000.0 + int(mass)
+    level_map = {'g': 0, 'm': 1}
+    level = None
+    if mass[-1] in level_map:
+        level = level_map[mass[-1]]
+        mass = mass[:-1]
+    return int(charge)*1000.0 + int(mass), level
