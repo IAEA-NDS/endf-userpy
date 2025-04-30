@@ -14,6 +14,10 @@ from .mf6_interpretation_subsecs import (
     compute_angdist_from_subsec,
     compute_yields_from_subsec,
 )
+import logging
+
+
+module_logger = logging.getLogger(__name__)
 
 
 def get_incident_energies(endf_dict, mt, zap):
@@ -95,14 +99,18 @@ def compute_dist2d_values(
     return dist2d
 
 
-def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True):
+def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level=None):
     check_mf6_exists(endf_dict)
     check_mt_exists_in_mf6(endf_dict, mt)
+    module_logger.debug(f'compute yields for MT={mt}, ZAP={zap} and level={level}')
     zap = zap if zap is not None else get_ZAP(endf_dict, mt)
     subsec_nums = find_subsec_nums(endf_dict, mt, zap)
     found_yields = False
     yields = 0.0
-    for subsec_num in subsec_nums:
+    for curlev, subsec_num in enumerate(subsec_nums):
+        if level is not None and curlev != level:
+            module_logger.debug(f'skipping level={curlev} because level={level} requested')
+            continue
         if (not contains_subsec_dist2d(endf_dict, mt, subsec_num)
                 and not include_discrete):
             continue
