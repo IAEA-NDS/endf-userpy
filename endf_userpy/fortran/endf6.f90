@@ -3530,7 +3530,7 @@ end
   real*8 function getcov(ng,eg,ng1,ig1,ig,ndim,cov,ei,ej)
 !
 ! Description
-! Get the covariance cov(MAT,MT,ei-> MAT1,MT1,ej)=cov(ei,ej) 
+! Get the covariance cov(MAT,MT,ei-> MAT1,MT1,ej)=cov(ei,ej)
 ! from the covariance matrix cov(MAT,MT,i -> MAT1,MT1,j)=cov(i,j)
 ! given in NJOY/ERRORR format. The values of MAT,MT,MAT1 and MT1 are
 ! implicit for this function. Therefore, from cov(i,j) the value
@@ -3601,5 +3601,70 @@ end
     endif
   endif
   getcov=y
+  return
+  end
+!-------------------------------------------------------------------------------------------------------------------------------
+  subroutine err2endf(ng,eg,ng1,ig1,ig,ndim,cov,lb,ne,ls,nt,f)
+!
+!  Description
+!  Convert a relative covariance matrix given in NJOY/ERRORR format
+!  to an ENDF-6 formatted NI-type sub-section with LB=5 following
+!  the endf-parserpy recipes for MF33
+!
+!  Input parameters:
+!  ng:       number of energy groups(energy bins)
+!  eg(i):    energy boundaries {eg(i), i=1 to ng+1}
+!  ng1(i):   number of consecutive energy groups for reaction (MAT1/MT1)
+!            for which covariances are given explicitly in row i
+!  ig1(i):   initial energy group index for reaction (MAT1/MT1) in row i
+!  ig(i):    energy group index of reaction (MAT/MT) for row i
+!  ndim:     maximum number of rows (ndim<=NG)
+!  cov(i,j): covariance between the energy group ig(i) of (MAT/MT) and
+!            the energy group ig1(j) of (MAT1/MT1)
+!
+!  Output parameters:
+!  lb: ENDF-6 flag. lb=5 relative covariance matrix
+!  ne: number of energy boundaries. ne-1 intervals.
+!  ls: symmetry flag (ls=1 symmetric matrix, ls=0 asymmetric matrix)
+!  nt: total number of entries in the two arrays {eg} and {f(i,j)} for 
+!      the ENDF-6 list record.
+!  f(i,j): covariance matrix for the list record
+!
+    implicit real*8 (a-h, o-z)
+!   externals arrays
+    dimension eg(*),ng1(*),ig1(*),ig(*),cov(ndim,*),f(ng,*)
+    do i=1,ng
+      do j=1,ng
+        f(i,j)=0.0d0
+      enddo
+    enddo
+    i=1
+    do ki=1,ng
+      if (ig(i).eq.ki) then
+        i1=ig1(i)
+        n1=ng1(i)
+        do j=1,n1
+          f(ki,i1+j-1)=cov(i,j)
+        enddo
+        i=i+1
+      endif
+    enddo
+    lb=5
+    ne=ng+1
+    ls=1
+    do i=1,ng-1
+      do j=i+1,ng
+        if (f(i,j).ne.f(j,i)) then
+          ls=0
+          exit
+        endif
+      enddo
+      if (ls.eq.0) exit
+    enddo
+    if (ls.eq.1) then ! symetric matrix
+      nt=ne*(ne+1)/2
+    else ! asymetric matrix
+      nt=ne*(ne-1)+1
+    endif
   return
   end
