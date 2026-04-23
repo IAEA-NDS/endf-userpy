@@ -9,8 +9,13 @@ from ..primitives.helpers import (
 def _filter_energies_in(
     energies_in, endf_dict, mt, *args, **kwargs
 ):
-    ei_mesh = dict2array(endf_dict[4][mt]['E'], dtype=float)
     eincs = energies_in
+    orig_en_dict = endf_dict[4][mt].get('E')
+    if orig_en_dict is None:
+        # Purely isotropic angular distributions (LTT=0, LI=1)
+        # don't come with an incident energy mesh
+        return (eincs > 0)
+    ei_mesh = dict2array(endf_dict[4][mt]['E'], dtype=float)
     return (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
 
 
