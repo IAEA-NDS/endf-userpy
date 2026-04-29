@@ -77,7 +77,7 @@ def is_zap_consistent(endf_dict, mt, zap):
     try:
         zap_mt = get_ZAP(endf_dict, mt)
         return zap_mt == zap or zap == PARTICLE_ZAP['g']
-    except:
+    except (KeyError, ValueError):
         return True
 
 

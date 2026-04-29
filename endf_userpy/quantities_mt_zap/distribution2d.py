@@ -49,7 +49,7 @@ def compute_dist2d_values(
     elif has_mf4_mt(endf_dict, mt) and has_mf5_mt(endf_dict, mt):
         func = compute_dist2d_values_from_mf4_mf5
     else:
-        raise IndexError(
+        raise ValueError(
             f"Cannot reconstruct double-differential distribution for MT={mt} "
             "because the required data is not available."
         )

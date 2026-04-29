@@ -58,18 +58,23 @@ def compute_angdist_values(
     subsec_nums = find_subsec_nums(endf_dict, mt, zap)
     found_angdist = False
     angdist = 0.0  # will be broadcasted to correct shape
+    skipped_law = None
     for subsec_num in subsec_nums:
         if contains_subsec_dist2d(endf_dict, mt, subsec_num):
+            skipped_law = endf_dict[6][mt]['subsection'][subsec_num]['LAW']
             continue
         found_angdist = True
         angdist += compute_angdist_from_subsec(
             endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
         )
     if not found_angdist:
-        law = endf_dict[6][mt]['subsection'][subsec_num]['LAW']
+        if not subsec_nums:
+            raise ValueError(
+                f'No MF6/MT{mt} subsection contains ZAP={zap}'
+            )
         raise ValueError(
-            f'Found product ZAP={zap} in MF6/MT{mt}/subsection[{subsec_num}] '
-            f'but only double-differential distribution is given (LAW={law})'
+            f'Found product ZAP={zap} in MF6/MT{mt} but only '
+            f'double-differential distribution is given (LAW={skipped_law})'
         )
     return angdist
 
@@ -83,18 +88,23 @@ def compute_dist2d_values(
     subsec_nums = find_subsec_nums(endf_dict, mt, zap)
     found_dist2d = False
     dist2d = 0.0  # will be broadcasted to correct shape
+    skipped_law = None
     for subsec_num in subsec_nums:
         if not contains_subsec_dist2d(endf_dict, mt, subsec_num):
+            skipped_law = endf_dict[6][mt]['subsection'][subsec_num]['LAW']
             continue
         found_dist2d = True
         dist2d += compute_dist2d_from_subsec(
             endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
         )
     if not found_dist2d:
-        law = endf_dict[6][mt]['subsection'][subsec_num]['LAW']
+        if not subsec_nums:
+            raise ValueError(
+                f'No MF6/MT{mt} subsection contains ZAP={zap}'
+            )
         raise ValueError(
-            f'Found product ZAP={zap} in MF6/MT{mt}/subsection[{subsec_num}] '
-            f'but only an angular distribution is given (LAW={law})'
+            f'Found product ZAP={zap} in MF6/MT{mt} but only '
+            f'an angular distribution is given (LAW={skipped_law})'
         )
     return dist2d
 
