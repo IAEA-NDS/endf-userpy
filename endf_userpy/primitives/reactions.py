@@ -316,11 +316,13 @@ def is_unique_path_to_residual(proj, mt):
     # this particle must be either a neutron, proton, gamma
     if ejectile not in ('g', 'n', 'p'):
         return False
-    # for neutrons, there is not an MT number
-    # corresponding to n,el + n,inl so whenever
-    # only one neutron in exit channel, it is only a
-    # partial component and therefore not the unique path
-    if ejectile == 'n' and mult == 1:
+    # for neutron-induced reactions, there is not an MT number
+    # corresponding to n,el + n,inl, so whenever only one neutron is
+    # in the exit channel, MT=4 is only a partial component and
+    # therefore not the unique path. Photon and charged-particle
+    # projectiles do not have this ambiguity, since no elastic MT
+    # alongside MT=4 shares the n ejectile.
+    if proj == 'n' and ejectile == 'n' and mult == 1:
         return False
     # in all other cases, whenever it is discrete level
     # scattering, it can't be the unique path
