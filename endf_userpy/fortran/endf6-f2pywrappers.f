@@ -514,3 +514,22 @@ C     It contains Fortran 77 wrappers to fortran functions.
       absdevf2pywrap = absdev(x1, y1, u1, x2, y2, u2, law, x, y)
       end
 
+
+      subroutine f2pywrapgetcov (getcovf2pywrap, ng, eg, ng1, ig1,
+     & ig, ndim, cov, ei, ej)
+      external getcov
+      integer ng
+      integer ndim
+      real*8 ei
+      real*8 ej
+      real*8 eg(*)
+      integer ng1(*)
+      integer ig1(*)
+      integer ig(*)
+      real*8 cov(ndim,*)
+      real*8 getcovf2pywrap
+      real*8  getcov
+      getcovf2pywrap = getcov(ng, eg, ng1, ig1, ig, ndim, cov, ei,
+     & ej)
+      end
+
