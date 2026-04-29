@@ -232,7 +232,14 @@ def contains_zap(proj, mt, zap):
 
 
 def is_discrete_level_scattering(mt):
-    return '_' in REACTION_DICT[mt][1]
+    ejstr = REACTION_DICT[mt][1]
+    if '_' not in ejstr:
+        return False
+    return ejstr.rsplit('_', 1)[-1].isdigit()
+
+
+def is_continuum_channel(mt):
+    return REACTION_DICT[mt][1].endswith('_c')
 
 
 def get_raw_reaction_string_for_mt(mt):
@@ -324,8 +331,10 @@ def is_unique_path_to_residual(proj, mt):
     # alongside MT=4 shares the n ejectile.
     if proj == 'n' and ejectile == 'n' and mult == 1:
         return False
-    # in all other cases, whenever it is discrete level
-    # scattering, it can't be the unique path
-    if is_discrete_level_scattering(mt):
+    # discrete-level scattering MTs (e.g. MT=51..90, 600..648, ...)
+    # share their residual nucleus with their continuum-channel sibling
+    # (MT=91, 649, ...) and with each other, so none of them is alone
+    # the unique path to that residual.
+    if is_discrete_level_scattering(mt) or is_continuum_channel(mt):
         return False
     return True
