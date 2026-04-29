@@ -109,6 +109,8 @@ def get_residual_production_xs(endf_dict, residual_nucleus, energies_in, mt5_con
         ),
         endf_dict
     )
+    if xs is None:
+        xs = np.zeros_like(energies_in, dtype=float)
     # add mt5 contribution if demanded
     if not mt5_contrib:
         module_logger.debug(f'inclusion of MF6/MT5 disabled by user')
