@@ -315,7 +315,12 @@ def get_emission_energies_from_subsec(endf_dict, mt, subsec_num, nofail=False):
     if law == 1:
         energies = [v for u in subsec['Ep'].values() for v in u.values()]
     elif law == 7:
-        energies = [v['Ep'] for u in subsec['table'].values() for v in u.values()]
+        energies = [
+            e
+            for u in subsec['table'].values()
+            for v in u.values()
+            for e in v['Ep']
+        ]
     else:
         if nofail:
             energies = []
