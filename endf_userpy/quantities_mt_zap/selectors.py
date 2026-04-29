@@ -12,6 +12,26 @@ import logging
 module_logger = logging.getLogger(__name__)
 
 
+def has_continuous_ddx(endf_dict, mt, zap):
+    """Whether (MT, ZAP) carries continuum DDX information.
+
+    Returns True if a true 2D distribution (continuous in both Eout
+    and mu) can be reconstructed for this MT/ZAP, either from MF6
+    (LAW=6/7, or LAW=1 with a continuum part beyond any discrete
+    spikes) or from the MF4 angular distribution combined with the
+    MF5 energy spectrum (neutron only). Returns False for channels
+    that only carry kinematic-delta information (e.g. MT=2 elastic
+    in a typical neutron-induced file, or MT=51..90 with MF6/LAW=2
+    only). Used to decide which channels to admit into a cumulative
+    DDX sum.
+    """
+    if prop.has_mf6_mt(endf_dict, mt):
+        return mf6help.has_cont_part(endf_dict, mt, zap)
+    if prop.has_mf4_mt(endf_dict, mt) and prop.has_mf5_mt(endf_dict, mt):
+        return zap == physconst.get_zap_for_particle('n')
+    return False
+
+
 def contains_zap(endf_dict, mt, zap):
     if mt in (18, 19, 20, 21, 38):
         return zap == physconst.PARTICLE_ZAP['n']
