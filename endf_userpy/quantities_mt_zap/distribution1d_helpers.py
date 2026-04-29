@@ -44,7 +44,7 @@ def integrate_mf6_dist2d_over_eout(
                 endf_dict, mt, zap,
                 cur_ens_inc, np.array([x], dtype=float), cur_mus_out,
                 to_lab
-            )
+            ).item()
             angdist[i, j] = quad(dist2d_func, 0.0, eout_max, epsrel=1e-4)[0]
     return angdist
 
@@ -63,7 +63,7 @@ def _integrate_mf6_dist2d_over_mu_default(
                     endf_dict, mt, zap,
                     cur_ens_inc, cur_ens_out, np.array([x], dtype=float),
                     to_lab
-                )
+                ).item()
                 energydist[i, j] = quad(dist2d_func, -1.0, 1.0, epsrel=1e-4)[0]
         return energydist
 
