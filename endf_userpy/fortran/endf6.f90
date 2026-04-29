@@ -5,7 +5,7 @@
 ! ==============================================================================================================================
   subroutine mf4_get_leg(awr,awi,awp,q,lct,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f4)
 !
-! Descrption:
+! Description:
 ! Get the angular distribution f(E,u) given by Legendre expansion for a set
 ! of incident energies e(ne) at different cosines xmu(nmu) supplied by the
 ! user. The results are given in the f4(ie,ju) array.
@@ -3527,3 +3527,144 @@ endif
 return
 end
 !-------------------------------------------------------------------------------------------------------------------------------
+  real*8 function getcov(ng,eg,ng1,ig1,ig,ndim,cov,ei,ej)
+!
+! Description
+! Get the covariance cov(MAT,MT,ei-> MAT1,MT1,ej)=cov(ei,ej)
+! from the covariance matrix cov(MAT,MT,i -> MAT1,MT1,j)=cov(i,j)
+! given in NJOY/ERRORR format. The values of MAT,MT,MAT1 and MT1 are
+! implicit for this function. Therefore, from cov(i,j) the value
+! of cov(ei,ej) is returned.
+!
+! Input parameters:
+! ng:       number of energy groups(energy bins)
+! eg(i):    energy boundaries {eg(i), i=1 to ng+1}
+! ng1(i):   number of consecutive energy groups for reaction (MAT1/MT1)
+!           for which covariances are given explicitly in row i
+! ig1(i):   initial energy group index for reaction (MAT1/MT1) in row i
+! ig(i):    energy group index of reaction (MAT/MT) for row i
+! ndim:     maximum number of rows (ndim<=NG)
+! cov(i,j): covariance between the energy group ig(i) of (MAT/MT) and
+!           the energy group ig1(j) of (MAT1/MT1)
+! ei:       energy point of (MAT/MT)
+! ej:       energy point of (MAT1/MT1)
+!
+! Output:
+! cov[ei,ej]: covariance between the energy point ei of (MAT/MT) and
+!             the energy point ej of (MAT1/MT1)
+!
+  implicit real*8 (a-h, o-z)
+! externals arrays
+  dimension eg(*),ng1(*),ig1(*),ig(*),cov(ndim,*)
+  y=0.0d0
+  ii=0
+  do i=1,ng
+    if (ei.ge.eg(i).and.ei.le.eg(i+1)) then
+      ii=i
+      exit
+    endif
+  enddo
+  if (ii.gt.0) then
+    jj=0
+    do i=1,ng
+      if (ej.ge.eg(i).and.ej.le.eg(i+1)) then
+        jj=i
+        exit
+      endif
+    enddo
+    if (jj.gt.0) then
+      ic=0
+      i=0
+      do while (ic.eq.0)
+        i=i+1
+        if (ig(i).eq.ii) then
+          ic=i
+          exit
+        elseif (ig(i).eq.ng) then
+          ic=-1
+        endif
+      enddo
+      if (ic.gt.0) then
+        i1=ig1(ic)
+        n1=ng1(ic)
+        if (jj.ge.i1.and.jj.le.(i1+n1-1)) then
+          jc=0
+          do j=1,n1
+            if (jj.eq.(i1+j-1)) then
+               jc=j
+               exit
+            endif
+          enddo
+          if (jc.gt.0) y=cov(ic,jc)
+        endif
+      endif
+    endif
+  endif
+  getcov=y
+  return
+  end
+!-------------------------------------------------------------------------------------------------------------------------------
+  subroutine err2endf(ng,eg,ng1,ig1,ig,ndim,cov,lb,ne,ls,nt,f)
+!
+!  Description
+!  Convert a relative covariance matrix given in NJOY/ERRORR format
+!  to an ENDF-6 formatted NI-type sub-section with LB=5 following
+!  the endf-parserpy recipes for MF33
+!
+!  Input parameters:
+!  ng:       number of energy groups(energy bins)
+!  eg(i):    energy boundaries {eg(i), i=1 to ng+1}
+!  ng1(i):   number of consecutive energy groups for reaction (MAT1/MT1)
+!            for which covariances are given explicitly in row i
+!  ig1(i):   initial energy group index for reaction (MAT1/MT1) in row i
+!  ig(i):    energy group index of reaction (MAT/MT) for row i
+!  ndim:     maximum number of rows (ndim<=NG)
+!  cov(i,j): covariance between the energy group ig(i) of (MAT/MT) and
+!            the energy group ig1(j) of (MAT1/MT1)
+!
+!  Output parameters:
+!  lb: ENDF-6 flag. lb=5 relative covariance matrix
+!  ne: number of energy boundaries. ne-1 intervals.
+!  ls: symmetry flag (ls=1 symmetric matrix, ls=0 asymmetric matrix)
+!  nt: total number of entries in the two arrays {eg} and {f(i,j)} for 
+!      the ENDF-6 list record.
+!  f(i,j): covariance matrix for the list record
+!
+    implicit real*8 (a-h, o-z)
+!   externals arrays
+    dimension eg(*),ng1(*),ig1(*),ig(*),cov(ndim,*),f(ng,*)
+    do i=1,ng
+      do j=1,ng
+        f(i,j)=0.0d0
+      enddo
+    enddo
+    i=1
+    do ki=1,ng
+      if (ig(i).eq.ki) then
+        i1=ig1(i)
+        n1=ng1(i)
+        do j=1,n1
+          f(ki,i1+j-1)=cov(i,j)
+        enddo
+        i=i+1
+      endif
+    enddo
+    lb=5
+    ne=ng+1
+    ls=1
+    do i=1,ng-1
+      do j=i+1,ng
+        if (f(i,j).ne.f(j,i)) then
+          ls=0
+          exit
+        endif
+      enddo
+      if (ls.eq.0) exit
+    enddo
+    if (ls.eq.1) then ! symetric matrix
+      nt=ne*(ne+1)/2
+    else ! asymetric matrix
+      nt=ne*(ne-1)+1
+    endif
+  return
+  end
