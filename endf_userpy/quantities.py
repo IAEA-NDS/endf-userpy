@@ -91,12 +91,11 @@ def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
             )
             xs[eincs_sel] += mt5_xs
             if np.any(mt5_xs != 0.0):
-                module_logger.debug('include MF6/MT5 component for MT={mt}')
+                module_logger.debug(f'include MF6/MT5 component for MT={mt}')
     return xs
 
 
 def get_residual_production_xs(endf_dict, residual_nucleus, energies_in, mt5_contrib=True):
-    module_logger.debug(f'ahahahahah')
     za_residual, level = physconst.get_za_for_residual_nucleus(residual_nucleus)
     if level is not None:
         module_logger.debug(f'user requested isomeric state {level}')
