@@ -77,18 +77,18 @@ def get_dist2d_from_subsec_law1(
     for i in range(cont_result_arr.shape[0]):
         curidx = idcs[i]
         cur_eu = np.array([eu[i]], order='F')
-        lei = ei_interp[curidx]
+        lei = ei_interp[curidx].item()
 
-        e1 = ei_mesh[curidx]
-        nd1 = nd_arr[curidx]
-        na1 = na_arr[curidx]
+        e1 = ei_mesh[curidx].item()
+        nd1 = nd_arr[curidx].item()
+        na1 = na_arr[curidx].item()
         ep1 = dict2array(subsec['Ep'][curidx+1], dtype=float, order='F')
         nep1 = len(ep1)  # also nep_arr[curidx]
         b1 = dict2array(subsec['b'][curidx+1], dtype=float, order='F')
 
-        e2 = ei_mesh[curidx+1]
-        nd2 = nd_arr[curidx+1]
-        na2 = na_arr[curidx+1]
+        e2 = ei_mesh[curidx+1].item()
+        nd2 = nd_arr[curidx+1].item()
+        na2 = na_arr[curidx+1].item()
         ep2 = dict2array(subsec['Ep'][curidx+2], dtype=float, order='F')
         nep2 = len(ep2)
         b2 = dict2array(subsec['b'][curidx+2], dtype=float, order='F')
@@ -157,15 +157,15 @@ def get_angdist_from_subsec_law2(
     for i in range(neu):
         curidx = idcs[i]
         cur_eu = np.array([eu[i]], dtype=float, order='F')
-        ilaw = ei_interp[curidx]
+        ilaw = ei_interp[curidx].item()
 
-        e1 = ei_mesh[curidx]
+        e1 = ei_mesh[curidx].item()
         a1 = a_arr[curidx]
-        nl1 = nl_arr[curidx]
+        nl1 = nl_arr[curidx].item()
 
-        e2 = ei_mesh[curidx+1]
+        e2 = ei_mesh[curidx+1].item()
         a2 = a_arr[curidx+1]
-        nl2 = nl_arr[curidx+1]
+        nl2 = nl_arr[curidx+1].item()
 
         cur_result = np.zeros((1, nmu), dtype=float, order='F')
 
