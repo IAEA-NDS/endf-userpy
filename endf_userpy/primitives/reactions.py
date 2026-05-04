@@ -320,8 +320,9 @@ def is_unique_path_to_residual(proj, mt):
     if ejectiles is None or len(ejectiles) > 1:
         return False
     mult, ejectile = ejectiles[0]
-    # this particle must be either a neutron, proton, gamma
-    if ejectile not in ('g', 'n', 'p'):
+    # this particle must be a single light-ion ejectile whose residual
+    # ZA is uniquely determined by the projectile, target, and ejectile
+    if ejectile not in ('g', 'n', 'p', 'd', 't', 'h', 'a'):
         return False
     # for neutron-induced reactions, there is not an MT number
     # corresponding to n,el + n,inl, so whenever only one neutron is
