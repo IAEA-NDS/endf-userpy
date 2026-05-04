@@ -97,7 +97,7 @@ setup(
     ext_modules=[extension],
     cmdclass={'build_ext': build_ext},
     install_requires=[
-        'numpy',
+        'numpy>=2.0',
         'scipy',
         'endf_parserpy',
     ],
