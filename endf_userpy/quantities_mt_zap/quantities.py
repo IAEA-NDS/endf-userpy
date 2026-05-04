@@ -200,6 +200,14 @@ def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
     in MF8/MT for this ZAP.
     """
     if not (8 in endf_dict and mt in endf_dict[8]):
+        if (6 in endf_dict and mt in endf_dict[6]
+                and mf6_help.contains_zap(endf_dict, mt, za_residual)):
+            xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+            y = mf6_interp.compute_yields(
+                endf_dict, mt, za_residual, energies_in,
+                include_discrete=True, level=lfs,
+            )
+            return xs * y
         if lfs not in (None, 0):
             raise ValueError(
                 f'no MF8 information for MT={mt}, cannot resolve isomer level '

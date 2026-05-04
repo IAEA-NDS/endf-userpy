@@ -75,9 +75,12 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
     """Whether MT produces residual nucleus (residual_za, lfs).
 
     Prefers MF8/MT as the authoritative listing of (ZAP, LFS) pairs
-    produced by this MT. Falls back to the reaction-string-based
-    contains_residual_za when MF8/MT is absent (in which case
-    `lfs` must be None or 0). `lfs=None` means "any isomer state".
+    produced by this MT. When MF8/MT is absent, falls back to MF6/MT
+    if it carries ZAP-tagged subsections (the catch-all MT=5 case in
+    photonuclear and proton-induced files), and finally to the
+    reaction-string-based contains_residual_za. `lfs=None` means
+    "any isomer state"; the MF6 and reaction-string fallbacks cannot
+    resolve isomers, so they only apply when `lfs` is None or 0.
     """
     if 8 in endf_dict and mt in endf_dict[8]:
         for sub in endf_dict[8][mt]['subsection'].values():
@@ -88,6 +91,9 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
         return False
     if lfs not in (None, 0):
         return False
+    if 6 in endf_dict and mt in endf_dict[6]:
+        if mf6help.contains_zap(endf_dict, mt, residual_za):
+            return True
     return contains_residual_za(endf_dict, mt, residual_za)
 
 
