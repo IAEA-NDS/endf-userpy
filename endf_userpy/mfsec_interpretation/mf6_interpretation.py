@@ -14,6 +14,7 @@ from .mf6_interpretation_subsecs import (
     compute_angdist_from_subsec,
     compute_yields_from_subsec,
 )
+from . import mf8_interpretation as mf8_interp
 import logging
 
 
@@ -115,11 +116,27 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
     module_logger.debug(f'compute yields for MT={mt}, ZAP={zap} and level={level}')
     zap = zap if zap is not None else get_ZAP(endf_dict, mt)
     subsec_nums = find_subsec_nums(endf_dict, mt, zap)
+    target_position = None
+    if level is not None:
+        if 8 in endf_dict and mt in endf_dict[8]:
+            target_position = mf8_interp.get_mf6_subsec_position_for(
+                endf_dict, mt, zap, level
+            )
+            module_logger.debug(
+                f'MF8/MT={mt} maps LFS={level} to MF6 subsection position {target_position}'
+            )
+        else:
+            target_position = level
+            module_logger.debug(
+                f'no MF8/MT={mt} entry, treating level={level} as positional index'
+            )
     found_yields = False
     yields = 0.0
     for curlev, subsec_num in enumerate(subsec_nums):
-        if level is not None and curlev != level:
-            module_logger.debug(f'skipping level={curlev} because level={level} requested')
+        if target_position is not None and curlev != target_position:
+            module_logger.debug(
+                f'skipping subsection position {curlev} because target is {target_position}'
+            )
             continue
         if (not contains_subsec_dist2d(endf_dict, mt, subsec_num)
                 and not include_discrete):

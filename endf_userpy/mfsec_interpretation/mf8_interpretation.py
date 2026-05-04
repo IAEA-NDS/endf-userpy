@@ -37,7 +37,7 @@ def get_subsecs(endf_dict, mt, zap, level=None):
 
 
 def get_mf_switch(endf_dict, mt, zap, level=None):
-    subsecs = get_subsecs(endf_dict, mt, zap, level) 
+    subsecs = get_subsecs(endf_dict, mt, zap, level)
     if len(subsecs) == 0:
         levelstr = f', level={level}' if level is not None else ''
         raise IndexError(
@@ -49,3 +49,26 @@ def get_mf_switch(endf_dict, mt, zap, level=None):
             f'Multiple subsections associated with MF=8, MT={mt}, ZAP={zap}{levelstr}'
         )
     return subsecs[0]['LMF']
+
+
+def get_mf6_subsec_position_for(endf_dict, mt, zap, lfs):
+    """Position of the MF6 subsection matching (mt, zap, lfs).
+
+    For LMF=6 (data routed to MF6) the convention is that MF6
+    subsections appear in the same order as the corresponding MF8
+    entries for the same (mt, zap). This function walks MF8/mt
+    subsections in order, counts those with matching ZAP, and returns
+    the 0-based position whose LFS matches the request. The caller
+    can then index into MF6 subsections filtered by the same ZAP.
+    """
+    mf8sec = endf_dict[8][mt]['subsection']
+    pos = 0
+    for sub in mf8sec.values():
+        if sub['ZAP'] != zap:
+            continue
+        if sub['LFS'] == lfs:
+            return pos
+        pos += 1
+    raise IndexError(
+        f'MF8/MT={mt} has no subsection with ZAP={zap} and LFS={lfs}'
+    )
