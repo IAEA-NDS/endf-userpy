@@ -7,6 +7,9 @@ from ..mfsec_interpretation import mf1_interpretation as mf1_interp
 from ..mfsec_interpretation import mf3_interpretation as mf3_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
+from ..mfsec_interpretation import mf8_interpretation as mf8_interp
+from ..mfsec_interpretation import mf9_interpretation as mf9_interp
+from ..mfsec_interpretation import mf10_interpretation as mf10_interp
 from .distribution1d import (
     compute_angdist_values,
     compute_energydist_values,
@@ -157,3 +160,70 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, **kwargs):
             cum_res += cur_res
 
     return cum_res
+
+
+def _compute_residual_xs_for_lfs(endf_dict, mt, za_residual, lfs, energies_in):
+    lmf = mf8_interp.get_mf_switch(endf_dict, mt, za_residual, lfs)
+    if lmf == 3:
+        return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+    if lmf == 6:
+        xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        y = mf6_interp.compute_yields(
+            endf_dict, mt, za_residual, energies_in,
+            include_discrete=True, level=lfs,
+        )
+        return xs * y
+    if lmf == 9:
+        xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        y = mf9_interp.compute_yields(
+            endf_dict, mt, za_residual, energies_in, level=lfs
+        )
+        return xs * y
+    if lmf == 10:
+        return mf10_interp.compute_cross_section(
+            endf_dict, mt, za_residual, energies_in, level=lfs
+        )
+    raise ValueError(
+        f'unsupported LMF={lmf} in MF8/MT={mt} for ZAP={za_residual}, LFS={lfs}'
+    )
+
+
+def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
+    """Cross section for producing (za_residual, lfs) via reaction MT.
+
+    Dispatches via MF8 LMF: 3 (MF3 only, no isomer split), 6
+    (MF3/MT * MF6/MT yield resolved by LFS), 9 (MF3/MT * MF9/MT
+    yield), 10 (MF10/MT directly). When MF8/MT is absent, falls back
+    to MF3/MT (and refuses to resolve a non-zero LFS).
+
+    If `lfs` is None, sums contributions from all LFS values present
+    in MF8/MT for this ZAP.
+    """
+    if not (8 in endf_dict and mt in endf_dict[8]):
+        if lfs not in (None, 0):
+            raise ValueError(
+                f'no MF8 information for MT={mt}, cannot resolve isomer level '
+                f'(requested LFS={lfs})'
+            )
+        return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+
+    available_lfs = sorted({
+        sub['LFS'] for sub in endf_dict[8][mt]['subsection'].values()
+        if sub['ZAP'] == za_residual
+    })
+    if not available_lfs:
+        return np.zeros_like(energies_in, dtype=float)
+
+    if lfs is not None:
+        if lfs not in available_lfs:
+            return np.zeros_like(energies_in, dtype=float)
+        return _compute_residual_xs_for_lfs(
+            endf_dict, mt, za_residual, lfs, energies_in
+        )
+
+    total = np.zeros_like(energies_in, dtype=float)
+    for cur_lfs in available_lfs:
+        total = total + _compute_residual_xs_for_lfs(
+            endf_dict, mt, za_residual, cur_lfs, energies_in
+        )
+    return total

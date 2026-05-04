@@ -71,6 +71,26 @@ def contains_residual_za(endf_dict, mt, residual_za):
     return real_za_residual == residual_za
 
 
+def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
+    """Whether MT produces residual nucleus (residual_za, lfs).
+
+    Prefers MF8/MT as the authoritative listing of (ZAP, LFS) pairs
+    produced by this MT. Falls back to the reaction-string-based
+    contains_residual_za when MF8/MT is absent (in which case
+    `lfs` must be None or 0). `lfs=None` means "any isomer state".
+    """
+    if 8 in endf_dict and mt in endf_dict[8]:
+        for sub in endf_dict[8][mt]['subsection'].values():
+            if sub['ZAP'] != residual_za:
+                continue
+            if lfs is None or sub['LFS'] == lfs:
+                return True
+        return False
+    if lfs not in (None, 0):
+        return False
+    return contains_residual_za(endf_dict, mt, residual_za)
+
+
 def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
     if user_mts is not None:
         if not (hasattr(user_mts, '__iter__') or
