@@ -91,13 +91,15 @@ extension = Extension(
 
 setup(
     name='endf-userpy',
-    version='0.0',
+    version='0.1.0a1',
     #packages=['endf_userpy'],
     packages=find_packages(),
     ext_modules=[extension],
     cmdclass={'build_ext': build_ext},
     install_requires=[
-        'numpy'
+        'numpy',
+        'scipy',
+        'endf_parserpy',
     ],
     description='High-level interpretation of ENDF-6 data',
     long_description=open('README.md').read(),
