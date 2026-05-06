@@ -10,8 +10,15 @@ build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
 # *-win32 / *-manylinux_i686: skip 32-bit.
 # *-manylinux_aarch64: aarch64 needs QEMU; not enabled in this workflow yet.
 skip = "*-musllinux_* *-win32 *-manylinux_i686 *-manylinux_aarch64"
-# Smoke test that loads the Fortran extension and the public API.
-test-command = 'python -c "import endf_userpy.fortran.endf6 as ef; from endf_userpy.quantities import get_reaction_xs; print(ef.__file__)"'
+# Wheel smoke test: builds an MF6 LAW1 distribution for Be-9 (n,2n),
+# which delegates to the Fortran feep_*_law1con routines. If the
+# extension or its bundled runtime libs are broken on a given
+# platform, this fails before the wheel ever ships.
+test-sources = [
+    "tests/wheel_smoke.py",
+    "tests/data/n-004_Be_009.endf",
+]
+test-command = "python tests/wheel_smoke.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 (AlmaLinux 8 based) ships gcc-toolset-12 with gfortran.
