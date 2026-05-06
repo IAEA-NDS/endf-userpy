@@ -14,11 +14,9 @@ skip = "*-musllinux_* *-win32 *-manylinux_i686 *-manylinux_aarch64"
 # which delegates to the Fortran feep_*_law1con routines. If the
 # extension or its bundled runtime libs are broken on a given
 # platform, this fails before the wheel ever ships.
-test-sources = [
-    "tests/wheel_smoke.py",
-    "tests/data/n-004_Be_009.endf",
-]
-test-command = "python tests/wheel_smoke.py"
+# {project} is replaced by cibuildwheel with the project root path;
+# the script locates its data file relative to its own location.
+test-command = "python {project}/tests/wheel_smoke.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 (AlmaLinux 8 based) ships gcc-toolset-12 with gfortran.

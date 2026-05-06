@@ -16,7 +16,9 @@ from endf_userpy.quantities import (
 )
 
 
-DATA_FILE = os.path.join('tests', 'data', 'n-004_Be_009.endf')
+DATA_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'data', 'n-004_Be_009.endf'
+)
 
 ed = EndfParserCpp().parsefile(DATA_FILE)
 
