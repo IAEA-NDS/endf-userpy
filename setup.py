@@ -1,6 +1,7 @@
 from setuptools import setup, Extension, find_packages
 from setuptools.command.build_ext import build_ext as build_ext_orig
 import numpy
+import numpy.f2py
 import subprocess
 import os
 from pathlib import Path
@@ -92,10 +93,17 @@ extension = Extension(
 setup(
     name='endf-userpy',
     version='0.1.0a1',
-    #packages=['endf_userpy'],
-    packages=find_packages(),
+    author='Georg Schnabel, Daniel Lopez Aldama',
+    license='MIT',
+    url='https://github.com/IAEA-NDS/endf-userpy',
+    project_urls={
+        'Repository': 'https://github.com/IAEA-NDS/endf-userpy',
+        'Issues': 'https://github.com/IAEA-NDS/endf-userpy/issues',
+    },
+    packages=find_packages(include=['endf_userpy', 'endf_userpy.*']),
     ext_modules=[extension],
     cmdclass={'build_ext': build_ext},
+    python_requires='>=3.9',
     install_requires=[
         'numpy>=2.0',
         'scipy',
@@ -105,9 +113,21 @@ setup(
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     classifiers=[
+        'Development Status :: 3 - Alpha',
+        'Intended Audience :: Science/Research',
+        'License :: OSI Approved :: MIT License',
+        'Operating System :: OS Independent',
+        'Operating System :: POSIX :: Linux',
+        'Operating System :: MacOS :: MacOS X',
+        'Operating System :: Microsoft :: Windows',
         'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
+        'Programming Language :: Python :: 3.13',
         'Programming Language :: Fortran',
         'Programming Language :: C',
-        'Operating System :: OS Independent',
+        'Topic :: Scientific/Engineering :: Physics',
     ],
 )

@@ -1,0 +1,43 @@
+include LICENSE
+include README.md
+include pyproject.toml
+
+# Fortran and C sources required to build the extension from sdist.
+include endf_userpy/fortran/endf6.f90
+include endf_userpy/fortran/endf6-f2pywrappers.f
+include endf_userpy/fortran/endf6module.c
+
+# Test data, so the test suite is runnable from a sdist checkout.
+recursive-include tests *.py
+recursive-include tests/data *
+include tests/conftest.py
+
+# Numbered example scripts at the top level of examples/.
+include examples/[0-9][0-9]_*.py
+
+# Sphinx sources (not the rendered build).
+recursive-include docs/source *
+include docs/Makefile docs/make.bat
+
+# Build artifacts and scratch files that must never ship.
+global-exclude *.o
+global-exclude *.so
+global-exclude *.pyd
+global-exclude *.pyf
+global-exclude endf6module_active.c
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude .DS_Store
+prune build
+prune dist
+prune testenv
+prune tests_fortran
+prune docs/build
+prune .pytest_cache
+prune .github
+prune endf_userpy.egg-info
+exclude setup.py.bkup
+exclude endf_userpy/daniel_notes.txt
+exclude tests/tmp.py
+exclude tests/manual_test_*.py
+exclude tests/adhoc_test_*.py
