@@ -79,19 +79,28 @@ def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
     xi = x[is_inside]
     fi = np.zeros(xi.shape, dtype=float)
     idcs = find_interval(xp, xi)
+    # Per ENDF-6 TAB1 semantics, consecutive interpolation regions
+    # share their boundary row: region n covers rows NBT(n-1)..NBT(n).
+    # In Python 0-indexing, region 0 is xp[0:NBT[0]] and region k>0 is
+    # xp[NBT[k-1]-1:NBT[k]] (overlapping the boundary). The interval
+    # starting at the shared row belongs to the upper region.
     first_idx = 0
-    for i in range(len(int_arr)):
+    nregions = len(int_arr)
+    for i in range(nregions):
         last_idx = nbt_arr[i]
+        is_last = (i == nregions - 1)
         interp_type = int_arr[i]
         cur_xp = xp[first_idx:last_idx]
         cur_fp = fp[first_idx:last_idx]
-        is_in_range = (idcs >= first_idx) & (idcs < last_idx)
+        upper = last_idx if is_last else last_idx - 1
+        is_in_range = (idcs >= first_idx) & (idcs < upper)
         cur_idcs = idcs[is_in_range]
         cur_x = xi[is_in_range]
         fi[is_in_range] = interp(
             cur_x, cur_xp, cur_fp, interp_type, outside_value
         )
-        first_idx = last_idx
+        # Share the boundary row with the next region.
+        first_idx = last_idx - 1
 
     f = np.empty(x.shape, dtype=float)
     f[~is_inside] = outside_value
