@@ -34,7 +34,7 @@ jobs:
         uses: pypa/cibuildwheel@v2.21.3
 
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -52,7 +52,7 @@ jobs:
           pip install --upgrade build
           python -m build --sdist
       - name: Upload sdist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -72,7 +72,7 @@ jobs:
       id-token: write
     steps:
       - name: Download all artifacts into dist/
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
