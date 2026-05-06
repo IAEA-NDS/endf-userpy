@@ -1,4 +1,5 @@
 import numpy as np
+import warnings
 from .primitives import physical_constants as physconst
 from .primitives import properties as prop
 from .primitives import reactions as reac
@@ -10,6 +11,44 @@ import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
 from .mfsec_interpretation import mf6_interpretation as mf6interp
 from .mfsec_interpretation import mf8_interpretation as mf8interp
+
+
+# Cache of (id(endf_dict), mt, zap, lfs) tuples we have already warned
+# about, so the warning fires once per file+MT+residual+isomer rather
+# than once per call. id() can be reused after garbage collection but
+# the worst case is a missed warning, never a wrong result.
+_isomer_warning_seen = set()
+
+
+def _warn_if_missing_isomer_routing(
+    endf_dict, residual_str, za_residual, lfs, mt5_contrib
+):
+    """Warn for MTs that could physically produce ``za_residual`` but
+    lack an MF8 entry to resolve the isomer state. Called only when
+    the user explicitly requested a non-ground LFS.
+    """
+    avail_mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
+    has_mf8 = (8 in endf_dict)
+    for mt in sorted(avail_mts):
+        if mt == 5 and not mt5_contrib:
+            continue
+        if not selectors.contains_residual_za(endf_dict, mt, za_residual):
+            continue
+        if has_mf8 and mt in endf_dict[8]:
+            continue
+        key = (id(endf_dict), mt, int(za_residual), int(lfs))
+        if key in _isomer_warning_seen:
+            continue
+        _isomer_warning_seen.add(key)
+        warnings.warn(
+            f"MT={mt} has no MF8 isomer routing in this file; "
+            f"production of '{residual_str}' from MT={mt} is unresolved "
+            f"at the LFS level. Returning 0 for this isomer. "
+            f"The metastable may still be produced according to other "
+            f"evaluations.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _format_lfs_suffix(lfs):
@@ -157,6 +196,10 @@ def get_residual_production_xs(endf_dict, residual_nucleus, energies_in, mt5_con
     za_residual, level = physconst.get_za_for_residual_nucleus(residual_nucleus)
     if level is not None:
         module_logger.debug(f'user requested isomeric state LFS={level}')
+    if level not in (None, 0):
+        _warn_if_missing_isomer_routing(
+            endf_dict, residual_nucleus, za_residual, level, mt5_contrib
+        )
     xs = quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt: quant_mt_zap.compute_residual_xs(
             endf_dict, mt, za_residual, level, energies_in
