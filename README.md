@@ -21,16 +21,34 @@ piece of data lives in.
 
 ## Installation
 
-Building requires a Fortran compiler (`gfortran` on Linux/macOS,
-`ifx` on Windows) because part of the numerical work is done by a
-f2py extension.
+```bash
+pip install endf-userpy
+```
+
+Prebuilt wheels are available for cpython 3.9–3.13 on:
+
+- Linux x86_64 (`manylinux_2_28`)
+- macOS arm64 (>= 14.0)
+- macOS x86_64 (>= 15.0)
+- Windows AMD64
+
+Other platforms or Python versions install from the sdist
+automatically and need a Fortran compiler (`gfortran`) on `PATH`.
+
+Runtime dependencies (`numpy`, `scipy`, `endf_parserpy`) are pulled
+in automatically. Some examples additionally use `matplotlib`.
+
+### From source
 
 ```bash
+git clone https://github.com/IAEA-NDS/endf-userpy
+cd endf-userpy
 pip install -e .
 ```
 
-Runtime dependencies: `numpy`, `scipy`, `endf_parserpy`,
-`matplotlib` (only for the examples).
+Requires `gfortran` on `PATH`. Windows users who prefer to build
+with the Intel Fortran compiler (`ifx`) can opt in by setting
+`ENDF_USERPY_USE_IFX=1` in the environment before `pip install`.
 
 ## Quick start
 
