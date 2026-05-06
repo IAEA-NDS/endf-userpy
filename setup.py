@@ -21,6 +21,14 @@ USE_IFX = (
 
 
 class build_ext(build_ext_orig):
+    def initialize_options(self):
+        super().initialize_options()
+        # On Windows with gfortran, use the MinGW toolchain end-to-end so
+        # the C compile + link step understands -lgfortran and finds
+        # MinGW's libgfortran.dll.a. (The legacy ifx path keeps MSVC.)
+        if sys.platform == 'win32' and not USE_IFX:
+            self.compiler = 'mingw32'
+
     def run(self):
         # Compile the Fortran code
         if USE_IFX:
