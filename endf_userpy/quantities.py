@@ -9,6 +9,21 @@ from .quantities_mt_zap import selectors
 import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
 from .mfsec_interpretation import mf6_interpretation as mf6interp
+from .mfsec_interpretation import mf8_interpretation as mf8interp
+
+
+def _format_lfs_suffix(lfs):
+    if lfs == 0:
+        return 'g'
+    if lfs == 1:
+        return 'm'
+    return f'm{lfs}'
+
+
+def _format_residual(zap, lfs):
+    z, a = unpack_za(zap)
+    sym = physconst.ELEMENT_SYMBOLS[z]
+    return f'{sym}-{a}{_format_lfs_suffix(lfs)}'
 
 
 module_logger = logging.getLogger(__name__)
@@ -24,6 +39,50 @@ def get_available_reactions(endf_dict):
         for mt in mts
     ]
     return reacs
+
+
+def get_declared_residuals(endf_dict):
+    """List residuals declared via MF8, with isomer suffix.
+
+    Returns a sorted list of strings like ``["Co-58g", "Co-58m",
+    "Co-60g", "Co-60m"]``. Empty list if MF8 is absent. The result
+    is what the file explicitly says, not what physics-based MT/ZAP
+    accounting would predict.
+    """
+    pairs = mf8interp.get_declared_zap_lfs(endf_dict)
+    return [
+        _format_residual(zap, lfs)
+        for zap, lfs in sorted(pairs)
+    ]
+
+
+def is_residual_declared(endf_dict, residual_nucleus):
+    """True iff the residual (with isomer state) is declared in MF8.
+
+    The residual string follows the same format as for
+    ``get_residual_production_xs`` (e.g. ``"Co-58m"``,
+    ``"27-Co-58g"``). If no isomer suffix is given, returns True iff
+    the bare nucleus is declared in any state.
+    """
+    zap, lfs = physconst.get_za_for_residual_nucleus(residual_nucleus)
+    if lfs is None:
+        return len(mf8interp.get_declared_lfs_for_zap(endf_dict, zap)) > 0
+    return mf8interp.is_zap_lfs_declared(endf_dict, zap, lfs)
+
+
+def get_declared_isomer_states(endf_dict, residual_nucleus):
+    """Isomer-state suffixes declared in MF8 for a given nucleus.
+
+    Any isomer suffix on the input is ignored: the function asks
+    "which states of this nucleus does the file declare?". For
+    ``"Co-58"`` it returns e.g. ``["g", "m"]``. Empty list if the
+    nucleus has no MF8 entry.
+    """
+    zap, _ = physconst.get_za_for_residual_nucleus(residual_nucleus)
+    return [
+        _format_lfs_suffix(lfs)
+        for lfs in mf8interp.get_declared_lfs_for_zap(endf_dict, zap)
+    ]
 
 
 def get_incident_energies(endf_dict, reaction):

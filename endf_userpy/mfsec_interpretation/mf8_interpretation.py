@@ -1,3 +1,64 @@
+def get_declared_zap_lfs(endf_dict):
+    """All (ZAP, LFS) pairs declared anywhere in MF8.
+
+    Returns an empty set if MF8 is not present in the file.
+    """
+    if 8 not in endf_dict:
+        return set()
+    pairs = set()
+    for sec in endf_dict[8].values():
+        for subsec in sec['subsection'].values():
+            pairs.add((int(subsec['ZAP']), int(subsec['LFS'])))
+    return pairs
+
+
+def get_declared_lfs_for_zap(endf_dict, zap):
+    """LFS values declared for a given ZAP in MF8.
+
+    Returns a sorted list, possibly empty.
+    """
+    if 8 not in endf_dict:
+        return []
+    zap = int(zap)
+    lfs_values = set()
+    for sec in endf_dict[8].values():
+        for subsec in sec['subsection'].values():
+            if int(subsec['ZAP']) == zap:
+                lfs_values.add(int(subsec['LFS']))
+    return sorted(lfs_values)
+
+
+def is_zap_lfs_declared(endf_dict, zap, lfs):
+    """True iff the (ZAP, LFS) pair appears in any MF8 subsection."""
+    if 8 not in endf_dict:
+        return False
+    zap = int(zap)
+    lfs = int(lfs)
+    for sec in endf_dict[8].values():
+        for subsec in sec['subsection'].values():
+            if int(subsec['ZAP']) == zap and int(subsec['LFS']) == lfs:
+                return True
+    return False
+
+
+def get_mts_producing(endf_dict, zap, lfs):
+    """MTs whose MF8 entries route to the given (ZAP, LFS) residual.
+
+    Returns a sorted list, possibly empty.
+    """
+    if 8 not in endf_dict:
+        return []
+    zap = int(zap)
+    lfs = int(lfs)
+    mts = []
+    for mt, sec in endf_dict[8].items():
+        for subsec in sec['subsection'].values():
+            if int(subsec['ZAP']) == zap and int(subsec['LFS']) == lfs:
+                mts.append(mt)
+                break
+    return sorted(mts)
+
+
 def list_subsecs(endf_dict, mt=None, zap=None, level=None):
     mt_secs = endf_dict[8]
     mtnums = list(mt_secs) if mt is None else [mt]
