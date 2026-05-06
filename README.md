@@ -113,3 +113,13 @@ each include the `wget` command to fetch the JENDL-5 file they need.
 ## Filing issues
 
 [github.com/IAEA-NDS/endf-userpy/issues](https://github.com/IAEA-NDS/endf-userpy/issues)
+
+## License and copyright
+
+`endf-userpy` is distributed under the MIT license,
+see the `LICENSE` file for details.
+
+Nothing in this license shall be construed as a waiver, either express or implied,
+of any of the privileges and immunities accorded to the IAEA by its Member States.
+
+Copyright (c) 2026 International Atomic Energy Agency
