@@ -110,7 +110,7 @@ extension = Extension(
 
 setup(
     name='endf-userpy',
-    version='0.1.0a2',
+    version='0.1.0a3',
     author='Georg Schnabel, Daniel Lopez Aldama',
     license='MIT',
     url='https://github.com/IAEA-NDS/endf-userpy',
