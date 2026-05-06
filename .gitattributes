@@ -1,0 +1,5 @@
+# f2py auto-generates the C wrapper and the Fortran wrapper from
+# endf6.f90. Mark them as generated so GitHub Linguist excludes them
+# from language statistics and collapses them in diffs by default.
+endf_userpy/fortran/endf6module.c       linguist-generated=true
+endf_userpy/fortran/endf6-f2pywrappers.f linguist-generated=true
