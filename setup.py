@@ -10,15 +10,25 @@ import sysconfig
 import sys
 
 
+# Default Fortran compiler is gfortran on every platform. Set
+# ENDF_USERPY_USE_IFX=1 (or yes/true/on) on Windows to opt into the
+# legacy Intel Fortran (ifx) build path instead.
+USE_IFX = (
+    sys.platform == 'win32'
+    and os.environ.get('ENDF_USERPY_USE_IFX', '').strip().lower()
+    in ('1', 'yes', 'true', 'on')
+)
+
+
 class build_ext(build_ext_orig):
     def run(self):
         # Compile the Fortran code
-        if sys.platform != 'win32':
-            subprocess.check_call(['gfortran', '-fPIC', '-c', 'endf_userpy/fortran/endf6.f90', '-o', 'endf_userpy/fortran/endf6.o'])
-            subprocess.check_call(['gfortran', '-fPIC', '-c', 'endf_userpy/fortran/endf6-f2pywrappers.f', '-o', 'endf_userpy/fortran/endf6-f2pywrappers.o'])
-        else:
+        if USE_IFX:
             subprocess.check_call(['ifx', '/c', 'endf_userpy/fortran/endf6.f90', '/Foendf_userpy/fortran/endf6.o'])
             subprocess.check_call(['ifx', '/c', 'endf_userpy/fortran/endf6-f2pywrappers.f', '/Foendf_userpy/fortran/endf6-f2pywrappers.o'])
+        else:
+            subprocess.check_call(['gfortran', '-fPIC', '-c', 'endf_userpy/fortran/endf6.f90', '-o', 'endf_userpy/fortran/endf6.o'])
+            subprocess.check_call(['gfortran', '-fPIC', '-c', 'endf_userpy/fortran/endf6-f2pywrappers.f', '-o', 'endf_userpy/fortran/endf6-f2pywrappers.o'])
         # Call the original build_ext
         super().run()
 
@@ -63,14 +73,14 @@ def prepare_endf6module_c(source_file, dest_file, on_windows):
 # Define the extension module
 c_module_template_file = Path('endf_userpy') / 'fortran' / 'endf6module.c'
 c_module_file = Path('endf_userpy') / 'fortran' / 'endf6module_active.c'
-if sys.platform != 'win32':
-    extra_link_args = ['-lgfortran']
-    add_libraries = ['gfortran']
-    prepare_endf6module_c(c_module_template_file, c_module_file, False)
-else:
+if USE_IFX:
     extra_link_args = []
     add_libraries = []
     prepare_endf6module_c(c_module_template_file, c_module_file, True)
+else:
+    extra_link_args = ['-lgfortran']
+    add_libraries = ['gfortran']
+    prepare_endf6module_c(c_module_template_file, c_module_file, False)
 
 extension = Extension(
     'endf6',
