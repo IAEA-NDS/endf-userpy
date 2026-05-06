@@ -73,10 +73,15 @@ module_logger = logging.getLogger(__name__)
 
 def get_available_reactions(endf_dict):
     mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
-    reacs = [
-        prop.get_reaction_string_for_mt(endf_dict, mt)
-        for mt in mts
-    ]
+    reacs = []
+    for mt in mts:
+        if not reac.is_known_reaction_mt(mt):
+            module_logger.debug(
+                f'skipping MT={mt} from available reactions '
+                f'(not in reaction table; e.g. HEATR heating number)'
+            )
+            continue
+        reacs.append(prop.get_reaction_string_for_mt(endf_dict, mt))
     return reacs
 
 

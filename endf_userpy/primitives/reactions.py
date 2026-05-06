@@ -176,9 +176,25 @@ SUM_RULES = {
 SUM_RULE_MAP = {mt: k for k, v in SUM_RULES.items() for mt in v}
 
 
+def is_known_reaction_mt(mt):
+    """True iff `mt` is a reaction MT recognised by this package.
+
+    HEATR-injected heating numbers (MT 301..450), MF1/MF8-only book-
+    keeping MTs, and other non-reaction MT values that may appear in
+    a merged ENDF file return False.
+    """
+    return mt in REACTION_DICT
+
+
 def get_ejectiles(proj, mt):
-    """Get ejectiles and their multiplicities"""
+    """Get ejectiles and their multiplicities.
+
+    Returns None for MTs that are not in the reaction table (e.g.
+    HEATR heating numbers MT 301..450 in a merged file).
+    """
     result = []
+    if mt not in REACTION_DICT:
+        return None
     ejectiles = REACTION_DICT[mt][1]
     i = 0
     while i < len(ejectiles):
@@ -232,6 +248,8 @@ def contains_zap(proj, mt, zap):
 
 
 def is_discrete_level_scattering(mt):
+    if mt not in REACTION_DICT:
+        return False
     ejstr = REACTION_DICT[mt][1]
     if '_' not in ejstr:
         return False
@@ -239,10 +257,17 @@ def is_discrete_level_scattering(mt):
 
 
 def is_continuum_channel(mt):
+    if mt not in REACTION_DICT:
+        return False
     return REACTION_DICT[mt][1].endswith('_c')
 
 
 def get_raw_reaction_string_for_mt(mt):
+    if mt not in REACTION_DICT:
+        raise ValueError(
+            f'MT={mt} is not a known ENDF reaction; cannot form a '
+            f'reaction string. Use is_known_reaction_mt() to filter.'
+        )
     t = REACTION_DICT[mt]
     return f'({t[0]},{t[1]})'
 
