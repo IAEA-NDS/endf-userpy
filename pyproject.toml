@@ -22,6 +22,12 @@ archs = ["x86_64"]
 [tool.cibuildwheel.macos]
 archs = ["auto"]
 
+# Homebrew arm64 gcc@13 bottle targets macOS 14, so the wheel that
+# bundles its libgfortran/libquadmath has to advertise the same.
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_arm64"
+environment.MACOSX_DEPLOYMENT_TARGET = "14.0"
+
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]
 # delvewheel bundles the Fortran/MinGW runtime DLLs into the wheel.
