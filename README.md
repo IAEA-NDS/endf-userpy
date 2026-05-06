@@ -17,12 +17,13 @@ piece of data lives in.
 
 > **Status.** This is an early alpha release. The public API is
 > stabilising but may still change. See "Known limitations" below.
+> Feedback by creating issues is appreciated.
 
 ## Installation
 
 Building requires a Fortran compiler (`gfortran` on Linux/macOS,
 `ifx` on Windows) because part of the numerical work is done by a
-small f2py extension.
+f2py extension.
 
 ```bash
 pip install -e .
