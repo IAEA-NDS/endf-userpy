@@ -26,18 +26,11 @@ archs = ["x86_64"]
 
 [tool.cibuildwheel.macos]
 archs = ["auto"]
-
-# Homebrew gcc@13 bottles target the host macOS the bottle was built
-# on - macOS 14 for arm64, macOS 15 for x86_64 (macos-15-intel runner).
-# The wheel has to advertise at least the same target as the libs
-# it bundles, otherwise delocate refuses the repair.
-[[tool.cibuildwheel.overrides]]
-select = "*-macosx_arm64"
-environment.MACOSX_DEPLOYMENT_TARGET = "14.0"
-
-[[tool.cibuildwheel.overrides]]
-select = "*-macosx_x86_64"
-environment.MACOSX_DEPLOYMENT_TARGET = "15.0"
+# setup.py statically links libgfortran/libquadmath/libgcc/libgcc_eh
+# into the extension on macOS, so delocate has nothing to bundle and
+# the wheel's macOS minimum is no longer pulled up to whatever the
+# Homebrew gcc bottle was built against. cibuildwheel's defaults
+# (10.12 for x86_64, 11.0 for arm64) apply.
 
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]
