@@ -4,6 +4,7 @@ import numpy
 import numpy.f2py
 import subprocess
 import os
+import platform
 from pathlib import Path
 import shutil
 import sysconfig
@@ -18,6 +19,44 @@ USE_IFX = (
     and os.environ.get('ENDF_USERPY_USE_IFX', '').strip().lower()
     in ('1', 'yes', 'true', 'on')
 )
+
+
+def _find_gfortran_libdir():
+    """Locate the directory containing libgfortran on macOS.
+
+    Homebrew installs gfortran's runtime under
+    ``$(brew --prefix gcc)/lib/gcc/<N>/``, which clang's default linker
+    search path does not include. Asking gfortran where the library
+    lives via ``-print-file-name`` is the portable way to discover it.
+    Returns None if gfortran is unavailable or does not know where its
+    runtime lives.
+    """
+    if sys.platform != 'darwin':
+        return None
+    try:
+        result = subprocess.check_output(
+            ['gfortran', '-print-file-name=libgfortran.dylib'],
+            text=True,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    if os.path.isfile(result):
+        return os.path.dirname(result)
+    return None
+
+
+# Force single-arch on macOS when the host Python is universal2 but the
+# available gfortran is single-arch. Without this, distutils inherits
+# the universal2 ARCHFLAGS, the Fortran .o files end up host-arch only,
+# and the link step fails for the cross-arch slice. Respect any
+# ARCHFLAGS the user has already set.
+if (
+    sys.platform == 'darwin'
+    and not USE_IFX
+    and 'ARCHFLAGS' not in os.environ
+    and 'universal2' in sysconfig.get_platform()
+):
+    os.environ['ARCHFLAGS'] = f'-arch {platform.machine()}'
 
 
 class build_ext(build_ext_orig):
@@ -90,6 +129,16 @@ else:
     add_libraries = ['gfortran']
     prepare_endf6module_c(c_module_template_file, c_module_file, False)
 
+
+# Hand the linker an explicit -L for Homebrew's gfortran runtime on
+# macOS; clang would not find it via its default search path.
+extra_library_dirs = []
+if not USE_IFX:
+    gfortran_libdir = _find_gfortran_libdir()
+    if gfortran_libdir is not None:
+        extra_library_dirs.append(gfortran_libdir)
+
+
 extension = Extension(
     'endf6',
     sources=[
@@ -104,6 +153,7 @@ extension = Extension(
         numpy.get_include(),
         numpy.f2py.get_include(),
     ],
+    library_dirs=extra_library_dirs,
     libraries=add_libraries,
     extra_link_args=extra_link_args,
 )
