@@ -106,10 +106,19 @@ def _prepare_angdist_to_energydist_conversion(
             'check Q-value stored in MF3/MT{mt}.'
         )
 
-    angle_cosines_out = conv_relat.compute_cos_phi_from_Ekin(
+    # conv_relat.compute_cos_phi_from_Ekin returns cos(pi - theta_lab),
+    # i.e. the cosine of the angle between the ejectile and the
+    # *opposite* of the beam direction. The downstream angular-
+    # distribution evaluators (mf4_interp.compute_angdist_values,
+    # mf6_interp.compute_angdist_values) take the standard
+    # mu = cos(theta_lab); negate to bridge the conventions. The
+    # Jacobian sign flips with it; np.abs() in the caller masks the
+    # sign of jacvals, so this is purely cosmetic for the magnitude
+    # but kept consistent with the cos negation.
+    angle_cosines_out = -conv_relat.compute_cos_phi_from_Ekin(
         energies_out, energies_in, m_i, m_t, m_e, m_r
     )
-    jacvals = conv_relat.compute_dcos_phi_dEkin(
+    jacvals = -conv_relat.compute_dcos_phi_dEkin(
         energies_out, energies_in, m_i, m_t, m_e, m_r
     )
     return angle_cosines_out, jacvals
