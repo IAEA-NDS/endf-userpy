@@ -51,6 +51,20 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
         yields = mf6_interp.compute_yields(
             endf_dict, mt, zap, energies_in, include_discrete, level
         )
+    elif reaction.is_x_particle_production_mt(mt):
+        # MT 201..207 in MF3 already store the production cross
+        # section (multiplicity baked in). Treat the yield as 1 for
+        # the labelled particle, 0 otherwise, so xs * yield is the
+        # production xs unchanged.
+        if level is not None:
+            raise ValueError(
+                f'X-particle production MT={mt} has no level structure'
+            )
+        expected_zap = get_zap_for_particle(
+            reaction.X_PRODUCTION_SUM_TO_PARTICLE[mt]
+        )
+        yield_val = 1.0 if zap == expected_zap else 0.0
+        yields = np.full(len(energies_in), yield_val, dtype=float)
     else:
         if level is not None:
             raise ValueError(

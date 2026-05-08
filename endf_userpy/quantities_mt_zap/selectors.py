@@ -37,13 +37,17 @@ def contains_zap(endf_dict, mt, zap):
         return zap == physconst.PARTICLE_ZAP['n']
     if prop.has_mf6_mt(endf_dict, mt):
         return mf6help.contains_zap(endf_dict, mt, zap)
-    if not reac.is_known_reaction_mt(mt) or reac.is_x_particle_production_mt(mt):
+    if reac.is_x_particle_production_mt(mt):
+        # MT 201..207 aggregate production of one specific particle;
+        # whether they actually contribute to a cumulative sum is
+        # decided by satisfies_select_heuristic (partials win when
+        # available).
+        particle = reac.X_PRODUCTION_SUM_TO_PARTICLE[mt]
+        return zap == physconst.get_zap_for_particle(particle)
+    if not reac.is_known_reaction_mt(mt):
         # HEATR-injected MTs (301..450), dosimetry/bookkeeping MTs
-        # (251..253, 451+), and similar non-reaction MF3 entries carry
-        # no ejectile information. MT 201..207 are X-particle
-        # production sums that are redundant with the partial channels
-        # when those exist; promoting them to a fallback source needs
-        # sum-rule logic and is tracked separately.
+        # (251..253, 451+), and similar non-reaction MF3 entries
+        # carry no ejectile information.
         return False
 
     projectile = prop.get_projectile(endf_dict)
@@ -105,12 +109,86 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
     return contains_residual_za(endf_dict, mt, residual_za)
 
 
-def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
+def _partials_can_answer(endf_dict, partials, zap, op):
+    """Predicate: can the partial-channel path satisfy the requested
+    operation for the given particle?"""
+    if not partials:
+        return False
+    if op == 'xs':
+        # Every partial in the list is in MF3 by construction.
+        return True
+    if op in ('dexs', 'daxs'):
+        return any(
+            prop.has_mf6_mt(endf_dict, m)
+            or (prop.has_mf4_mt(endf_dict, m) and prop.has_mf5_mt(endf_dict, m))
+            for m in partials
+        )
+    if op == 'ddxs':
+        return any(has_continuous_ddx(endf_dict, m, zap) for m in partials)
+    return False
+
+
+def _x_production_sum_can_answer(endf_dict, sum_mt, zap, op):
+    """Whether the aggregate MT 201..207 entry has the data needed."""
+    if op == 'xs':
+        return sum_mt in endf_dict.get(3, {})
+    if op in ('dexs', 'daxs'):
+        return (
+            prop.has_mf6_mt(endf_dict, sum_mt)
+            or (prop.has_mf4_mt(endf_dict, sum_mt)
+                and prop.has_mf5_mt(endf_dict, sum_mt))
+        )
+    if op == 'ddxs':
+        return has_continuous_ddx(endf_dict, sum_mt, zap)
+    return False
+
+
+def _resolve_x_production(endf_dict, mt, zap, op):
+    """Decide MT 201..207 vs. partials admission for `(zap, op)`.
+
+    Returns False to explicitly exclude `mt` under this policy; None
+    to defer to the existing reaction/sum-rule logic (so partial-MT
+    selection still respects user_mts, ancestor rules, etc.); True
+    only when admitting MT 201..207 as the active source. Never mix
+    the two paths.
+    """
+    if zap is None or op is None:
+        return None
+    particle = physconst.ZAP_PARTICLE.get(zap)
+    if particle is None:
+        return None
+    sum_mt = reac.get_x_production_sum_mt(particle)
+    if sum_mt is None:
+        return None
+
+    proj = prop.get_projectile(endf_dict)
+    avail_mts = list(endf_dict.get(3, {}).keys())
+    partials = reac.get_x_production_partials(proj, sum_mt, avail_mts)
+
+    is_sum = (mt == sum_mt)
+    if not is_sum and mt not in partials:
+        return None  # mt unrelated to this decision
+
+    if _partials_can_answer(endf_dict, partials, zap, op):
+        # Partials win. Drop the sum; defer partials to existing logic.
+        return False if is_sum else None
+    if is_sum:
+        # Partials can't answer; use the sum if it has data.
+        return _x_production_sum_can_answer(endf_dict, sum_mt, zap, op)
+    # Partials can't answer and `mt` is a partial; exclude.
+    return False
+
+
+def satisfies_select_heuristic(endf_dict, mt, user_mts=None, *, op=None, zap=None):
     if user_mts is not None:
         if not (hasattr(user_mts, '__iter__') or
                 hasattr(user_mts, '__contains__')):
             user_mts = [user_mts]
         user_mts = set(user_mts)
+
+    x_decision = _resolve_x_production(endf_dict, mt, zap, op)
+    if x_decision is not None:
+        return x_decision
 
     if not reac.is_sum_mt(mt) and not reac.is_in_sum_mt(mt):
         # no sum rule involved so we select the mt number
