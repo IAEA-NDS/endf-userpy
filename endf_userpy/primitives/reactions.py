@@ -186,6 +186,21 @@ def is_known_reaction_mt(mt):
     return mt in REACTION_DICT
 
 
+X_PARTICLE_PRODUCTION_MTS = frozenset((201, 202, 203, 204, 205, 206, 207))
+
+
+def is_x_particle_production_mt(mt):
+    """True for MT 201..207, the X-particle production cross sections.
+
+    These are sums over every channel emitting the labelled particle
+    weighted by the (energy-dependent) particle multiplicity. They are
+    redundant with the partial channels in well-populated files;
+    sourcing them as a fallback when partials are absent would require
+    sum-rule logic that is not implemented yet.
+    """
+    return mt in X_PARTICLE_PRODUCTION_MTS
+
+
 def get_ejectiles(proj, mt):
     """Get ejectiles and their multiplicities.
 

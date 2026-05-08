@@ -37,6 +37,14 @@ def contains_zap(endf_dict, mt, zap):
         return zap == physconst.PARTICLE_ZAP['n']
     if prop.has_mf6_mt(endf_dict, mt):
         return mf6help.contains_zap(endf_dict, mt, zap)
+    if not reac.is_known_reaction_mt(mt) or reac.is_x_particle_production_mt(mt):
+        # HEATR-injected MTs (301..450), dosimetry/bookkeeping MTs
+        # (251..253, 451+), and similar non-reaction MF3 entries carry
+        # no ejectile information. MT 201..207 are X-particle
+        # production sums that are redundant with the partial channels
+        # when those exist; promoting them to a fallback source needs
+        # sum-rule logic and is tracked separately.
+        return False
 
     projectile = prop.get_projectile(endf_dict)
     ret = reac.contains_zap(projectile, mt, zap)
