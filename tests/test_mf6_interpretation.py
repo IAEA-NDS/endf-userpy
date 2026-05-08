@@ -20,6 +20,11 @@ from endf_parserpy.utils.user_tools import locate, get_endf_values
 from endf_parserpy import EndfPath
 
 
+TESTS_DIR = Path(__file__).resolve().parent
+DATA_DIR = TESTS_DIR / 'data'
+FORTRAN_TESTS_DIR = TESTS_DIR.parent / 'tests_fortran'
+
+
 def parse_fortran_test_output(cont, mt, subsec_num):
     pat1 = r' *imt= *(\d+) *MT= *(\d+)'
     pat2 = r' *Particle *(\d+)'
@@ -106,7 +111,7 @@ def test_dist2d_law1_python_interface(endf_file):
     exefile = 'test_mf6'
     if sys.platform == 'win32':
         exefile += '.exe'
-    cont, endf_dict = call_fortran_test(Path('..') / 'tests_fortran' / exefile, endf_file)
+    cont, endf_dict = call_fortran_test(FORTRAN_TESTS_DIR / exefile, endf_file)
     if 6 not in endf_dict:
         return
     mt_ss = find_subsections_by_law(endf_dict, 1)
@@ -142,8 +147,8 @@ def test_dist2d_law1_python_interface(endf_file):
 
 def test_dist1d_law2_interface():
     parser = EndfParserCpp()
-    endf_file = "data/n-001_H_001.endf"
-    endf_dict = parser.parsefile(endf_file) 
+    endf_file = DATA_DIR / "n-001_H_001.endf"
+    endf_dict = parser.parsefile(endf_file)
     Einc = np.array([50000, 70000], dtype=float)
     mu = np.cos(deg2rad([30, 50, 70]))
     cont_arr = compute_angdist_from_subsec(
@@ -153,8 +158,8 @@ def test_dist1d_law2_interface():
 
 def test_dist2d_law6_interface():
     parser = EndfParserCpp()
-    endf_file = "data/n-001_H_002.endf"
-    endf_dict = parser.parsefile(endf_file) 
+    endf_file = DATA_DIR / "n-001_H_002.endf"
+    endf_dict = parser.parsefile(endf_file)
     Einc = np.array([50000, 70000])
     mu = np.cos(deg2rad([30, 50, 70]))
     Eout = np.linspace(10000, 70000, 5) 
@@ -165,7 +170,7 @@ def test_dist2d_law6_interface():
 
 def test_dist2d_law7_interface():
     parser = EndfParserCpp()
-    endf_file = "data/n-004_Be_009.endf"
+    endf_file = DATA_DIR / "n-004_Be_009.endf"
     endf_dict = parser.parsefile(endf_file)
     Einc = np.array([1.8e6, 2e6])
     mu = np.cos(deg2rad([30, 50, 70]))
