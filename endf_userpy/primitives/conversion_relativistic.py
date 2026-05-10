@@ -1,9 +1,16 @@
 import numpy as np
 
 
-# Relativistic conversion from kinetic energy of emitted particle
-# to cosine angle of emitted particle and the opposite direction
-# (all in laboratory system). 
+# Relativistic conversion between the kinetic energy of the emitted
+# particle and the cosine of the angle between the emitted particle's
+# momentum and the *opposite* of the beam direction (all in the
+# laboratory system). All four functions in this module use the same
+# convention, so cos_phi(Ekin) and Ekin(cos_phi) round-trip exactly.
+# Note that this is *not* the standard scattering-angle convention
+# (cos theta_lab); cos_phi = cos(pi - theta_lab) = -cos(theta_lab).
+# Callers that pass the result to angular-distribution evaluators
+# expecting standard mu = cos(theta_lab) must negate first; see
+# distribution1d_helpers._prepare_angdist_to_energydist_conversion.
 #
 # Meaning of variable names
 #
@@ -15,7 +22,7 @@ import numpy as np
 # m_e: mass of ejectile in MeV
 #
 # Ekin: kinetic energy of ejectile in MeV
-# cos_phi: cosine of scattering angle of ejectile
+# cos_phi: cosine of (pi - theta_lab) for the ejectile
 
 def compute_Ekin_from_cos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r):
     x0 = m_e**2
