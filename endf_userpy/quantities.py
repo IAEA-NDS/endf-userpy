@@ -150,7 +150,9 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
     mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
     select_mts = [
         mt for mt in mts
-        if selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+        if selectors.satisfies_select_heuristic(
+            endf_dict, mt, user_mts, op='dexs', zap=zap
+        )
         and selectors.contains_zap(endf_dict, mt, zap)
     ]
     module_logger.debug('selected ' + ','.join(str(mt) for mt in select_mts))
@@ -229,7 +231,9 @@ def get_particle_production_xs(endf_dict, reaction, particle, energies_in):
     return quant_mt_zap.compute_cumulative_quantity(
         quant_mt_zap.compute_prodxs,
         lambda endf_dict, mt, zap, energies_in: (
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_select_heuristic(
+                endf_dict, mt, user_mts, op='xs', zap=zap
+            )
             and selectors.contains_zap(endf_dict, mt, zap)
         ),
         endf_dict, zap, energies_in
@@ -245,7 +249,9 @@ def get_particle_production_dxs_dE(
         quant_mt_zap.compute_dexs,
         lambda endf_dict, mt, zap, energies_in, energies_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_select_heuristic(
+                endf_dict, mt, user_mts, op='dexs', zap=zap
+            )
         ),
         endf_dict, zap, energies_in, energies_out
     )
@@ -260,7 +266,9 @@ def get_particle_production_dxs_dmu(
         quant_mt_zap.compute_daxs,
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_select_heuristic(
+                endf_dict, mt, user_mts, op='daxs', zap=zap
+            )
         ),
         endf_dict, zap, energies_in, angle_cosines_out
     )
@@ -276,7 +284,9 @@ def get_particle_production_ddxs(
         lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_continuous_ddx(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_select_heuristic(
+                endf_dict, mt, user_mts, op='ddxs', zap=zap
+            )
         ),
         endf_dict, zap, energies_in, energies_out, angle_cosines_out
     )

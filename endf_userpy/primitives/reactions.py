@@ -186,19 +186,56 @@ def is_known_reaction_mt(mt):
     return mt in REACTION_DICT
 
 
-X_PARTICLE_PRODUCTION_MTS = frozenset((201, 202, 203, 204, 205, 206, 207))
+X_PRODUCTION_SUM_TO_PARTICLE = {
+    201: 'n', 202: 'g', 203: 'p', 204: 'd',
+    205: 't', 206: 'h', 207: 'a',
+}
+PARTICLE_TO_X_PRODUCTION_SUM = {
+    v: k for k, v in X_PRODUCTION_SUM_TO_PARTICLE.items()
+}
+X_PARTICLE_PRODUCTION_MTS = frozenset(X_PRODUCTION_SUM_TO_PARTICLE)
 
 
 def is_x_particle_production_mt(mt):
     """True for MT 201..207, the X-particle production cross sections.
 
     These are sums over every channel emitting the labelled particle
-    weighted by the (energy-dependent) particle multiplicity. They are
-    redundant with the partial channels in well-populated files;
-    sourcing them as a fallback when partials are absent would require
-    sum-rule logic that is not implemented yet.
+    weighted by the (energy-dependent) particle multiplicity. The
+    multiplicity is folded into the MF3 cross section directly, so
+    code paths that ordinarily multiply by a per-channel yield should
+    treat MT 201..207 as if the yield were 1.
     """
     return mt in X_PARTICLE_PRODUCTION_MTS
+
+
+def get_x_production_sum_mt(particle):
+    """MT 201..207 number that aggregates production of `particle`."""
+    return PARTICLE_TO_X_PRODUCTION_SUM.get(particle)
+
+
+def get_x_production_partials(proj, sum_mt, available_mts):
+    """Partial reaction MTs that contribute to MT `sum_mt`.
+
+    Filters `available_mts` (typically `endf_dict[3].keys()`) down to
+    those reaction channels that emit at least one of the labelled
+    particle for `proj`. Used to decide whether the partial-channel
+    path can answer a particle-production query, in which case the
+    aggregate MT 201..207 entry is excluded to avoid double counting.
+    """
+    if sum_mt not in X_PRODUCTION_SUM_TO_PARTICLE:
+        return []
+    particle = X_PRODUCTION_SUM_TO_PARTICLE[sum_mt]
+    zap = get_zap_for_particle(particle)
+    out = []
+    for mt in available_mts:
+        if is_x_particle_production_mt(mt):
+            continue
+        if not is_known_reaction_mt(mt):
+            continue
+        mult = get_multiplicity_for_zap(proj, mt, zap)
+        if mult is not None and mult > 0:
+            out.append(mt)
+    return out
 
 
 def get_ejectiles(proj, mt):
