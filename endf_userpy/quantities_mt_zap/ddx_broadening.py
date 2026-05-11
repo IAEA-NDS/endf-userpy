@@ -15,9 +15,11 @@ from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..primitives import conversion_relativistic as conv_relat
+from ..primitives import reactions as reactions
 from ..primitives.convolution import adaptive_convolve
 from ..primitives.physical_constants import get_particle_mass_for_zap
 from ..primitives.properties import (
+    get_projectile,
     get_projectile_mass,
     get_target_mass,
     get_reaction_qvalue,
@@ -215,22 +217,20 @@ def _compute_eout_kin(
 
 
 def _compute_discrete_yields(endf_dict, mt, zap, energies_in):
-    """Yield of the discrete-only part of (MT, ZAP).
+    """Yield of the discrete two-body part of (MT, ZAP).
 
-    For MF6-bearing channels we isolate the discrete share via the
-    `include_discrete=True/False` switch of compute_yields. For MF4-
-    only (e.g. MT 2 elastic), the entire distribution is intrinsically
-    a kinematic delta, so the full multiplicity is "discrete" by our
-    classification.
+    For a 2-body discrete-level channel the outgoing-particle
+    multiplicity is fixed by the reaction (1 for (n,n'), 1 for (n,p'),
+    etc.), so we read it from the reaction-string table. This avoids
+    depending on MF6 yield bookkeeping, which in some evaluations
+    (e.g. JENDL-5 U-238 MT 51..76) only lists the heavy residual in
+    its subsections and not the light ejectile.
     """
-    if has_mf6_mt(endf_dict, mt):
-        y_all = compute_yields(
-            endf_dict, mt, zap, energies_in, include_discrete=True,
+    proj = get_projectile(endf_dict)
+    mult = reactions.get_multiplicity_for_zap(proj, mt, zap)
+    if mult is None:
+        raise ValueError(
+            f"No multiplicity defined for projectile={proj}, MT={mt}, "
+            f"ZAP={zap}; cannot compute discrete yield."
         )
-        y_cont = compute_yields(
-            endf_dict, mt, zap, energies_in, include_discrete=False,
-        )
-        return y_all - y_cont
-    return compute_yields(
-        endf_dict, mt, zap, energies_in, include_discrete=True,
-    )
+    return np.full(len(energies_in), float(mult))

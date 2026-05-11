@@ -32,6 +32,8 @@ def patched_environment(monkeypatch):
         'target_mass': 27 * 939.565e6,
         'ejectile_mass': 939.565e6,
         'qvalue': 0.0,
+        'projectile': 'n',
+        'multiplicity': 1.0,
     }
 
     def fake_dist2d(endf_dict, mt, zap, einc, eouts, mus, to_lab=True):
@@ -84,6 +86,13 @@ def patched_environment(monkeypatch):
     )
     monkeypatch.setattr(
         ddxb, 'get_reaction_qvalue', lambda d, mt: state['qvalue']
+    )
+    monkeypatch.setattr(
+        ddxb, 'get_projectile', lambda d: state['projectile']
+    )
+    monkeypatch.setattr(
+        ddxb.reactions, 'get_multiplicity_for_zap',
+        lambda proj, mt, zap: state['multiplicity'],
     )
 
     def setter(**overrides):
@@ -299,14 +308,13 @@ def test_discrete_isotropic_integrates_to_xs_times_yield(patched_environment):
     assert abs(integral - expected) / expected < 5e-3
 
 
-def test_discrete_yield_isolated_via_include_discrete_difference(
-    patched_environment,
-):
-    """For an MT with both LAW=1 and LAW=2 in MF6, the discrete
-    folder must use only the discrete share of the yield, computed
-    as yields_all - yields_cont. With yields_all = 3 and yields_cont
-    = 1 (so the discrete share is 2), the integrated discrete DDX
-    should match xs * 2, not xs * 3 or xs * 1."""
+def test_discrete_yield_from_reaction_multiplicity(patched_environment):
+    """The discrete folder reads the outgoing-particle multiplicity
+    from the reaction-string table (always 1 for genuine 2-body
+    channels like (n,n'), (n,p'), etc.). It does NOT consult the MF6
+    yield bookkeeping, which in some evaluations only lists the heavy
+    residual. Setting multiplicity=2 on the (synthetic) reaction
+    table and checking the integral scales linearly verifies this."""
     m_n = 939.565e6
     A = 56.0
     xs_val = 0.5
@@ -317,8 +325,7 @@ def test_discrete_yield_isolated_via_include_discrete_difference(
         projectile_mass=m_n, target_mass=A * m_n, ejectile_mass=m_n,
         qvalue=0.0,
         xs=lambda einc: np.full(len(einc), xs_val),
-        yields_all=lambda einc: np.full(len(einc), 3.0),
-        yields_cont=lambda einc: np.full(len(einc), 1.0),
+        multiplicity=2.0,
     )
 
     e_in = 1.4e7
@@ -338,8 +345,26 @@ def test_discrete_yield_isolated_via_include_discrete_difference(
         np.trapezoid(result[0], eouts, axis=0),
         mus,
     ) * 2 * np.pi
-    expected = xs_val * (3.0 - 1.0)  # discrete share only
+    expected = xs_val * 2.0
     assert abs(integral - expected) / expected < 5e-3
+
+
+def test_discrete_yield_raises_when_no_multiplicity(patched_environment):
+    """If the reaction table has no multiplicity for (proj, mt, zap),
+    fail loudly rather than silently zeroing."""
+    patched_environment(
+        has_mf4=True, has_mf5=False, has_mf6=False,
+        angdist=lambda einc, mus: np.full((len(einc), len(mus)), 0.5),
+        multiplicity=None,
+    )
+    with pytest.raises(ValueError, match="No multiplicity"):
+        ddxb.compute_ddx_discrete_broadened(
+            endf_dict=None, mt=2, zap=1,
+            energies_in=np.array([1.4e7]),
+            energies_out=np.array([1.0e7]),
+            angle_cosines_out=np.array([0.0]),
+            kernel=lambda d: _gaussian(d, 1.0e5),
+        )
 
 
 def test_discrete_rejects_channel_without_two_body_data(patched_environment):
