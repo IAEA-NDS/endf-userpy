@@ -150,6 +150,26 @@ def test_select_heuristic_for_dexs_excludes_partials_when_falling_back_to_sum():
     )
 
 
+def test_select_heuristic_for_dexs_all_or_nothing_with_partial_coverage():
+    """Mixed coverage: MT 16 has MF6 but MT 91 does not. Under the
+    all-or-nothing policy the partials path is rejected and MT 201
+    takes over (if it has the data), or the query degrades to zero.
+    Concretely: MT 201 is admitted and MT 16 is excluded so the
+    cumulative sum doesn't blend the two sources.
+    """
+    endf_dict = {
+        1: {451: {'NSUB': 10}},
+        3: {16: {}, 91: {}, 201: {}},
+        6: {16: {}, 201: {}},  # MT 91 has no MF6 / no MF4+MF5
+    }
+    assert selectors.satisfies_select_heuristic(
+        endf_dict, 201, op='dexs', zap=ZAP_N
+    )
+    assert not selectors.satisfies_select_heuristic(
+        endf_dict, 16, op='dexs', zap=ZAP_N
+    )
+
+
 def test_select_heuristic_x_branch_unrelated_mt_falls_through():
     """An MT that is neither MT 201..207 nor a contributing partial is
     not affected by the X-production branch."""

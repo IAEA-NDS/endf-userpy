@@ -118,13 +118,13 @@ def _partials_can_answer(endf_dict, partials, zap, op):
         # Every partial in the list is in MF3 by construction.
         return True
     if op in ('dexs', 'daxs'):
-        return any(
+        return all(
             prop.has_mf6_mt(endf_dict, m)
             or (prop.has_mf4_mt(endf_dict, m) and prop.has_mf5_mt(endf_dict, m))
             for m in partials
         )
     if op == 'ddxs':
-        return any(has_continuous_ddx(endf_dict, m, zap) for m in partials)
+        return all(has_continuous_ddx(endf_dict, m, zap) for m in partials)
     return False
 
 
