@@ -34,7 +34,11 @@ def patched_environment(monkeypatch):
         'qvalue': 0.0,
         'projectile': 'n',
         'multiplicity': 1.0,
+        'dexs': lambda einc, eouts: np.zeros((len(einc), len(eouts))),
     }
+
+    def fake_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True):
+        return state['dexs'](einc, eouts)
 
     def fake_dist2d(endf_dict, mt, zap, einc, eouts, mus, to_lab=True):
         return state['dist2d'](einc, eouts, mus)
@@ -54,6 +58,7 @@ def patched_environment(monkeypatch):
         return state['angdist'](einc, mus)
 
     monkeypatch.setattr(ddxb, 'compute_dist2d_values', fake_dist2d)
+    monkeypatch.setattr(ddxb, 'compute_dexs', fake_dexs)
     monkeypatch.setattr(ddxb, 'compute_yields', fake_yields)
     monkeypatch.setattr(ddxb.mf3_interp, 'compute_cross_section', fake_xs)
     monkeypatch.setattr(
@@ -431,3 +436,98 @@ def test_has_discrete_two_body_ddx_mf4_plus_mf5_does_not(monkeypatch):
     monkeypatch.setattr(selectors.prop, 'has_mf5_mt', lambda d, mt: True)
     zap_n = selectors.physconst.PARTICLE_ZAP['n']
     assert selectors.has_discrete_two_body_ddx({}, 91, zap_n) is False
+
+
+# ============================================================
+# dxs/dE folder tests
+# ============================================================
+
+
+def test_dxs_dE_constant_spectrum_preserved(patched_environment):
+    """Constant dexs * unit-norm kernel = same constant, in the
+    interior of the eout window. compute_dexs already includes xs *
+    yield, so the broadened result is literally the constant."""
+    patched_environment(
+        dexs=lambda einc, eouts: np.full((len(einc), len(eouts)), 0.42),
+    )
+
+    einc = np.array([1.0e6, 5.0e6])
+    eouts = np.linspace(-2.0e6, 2.0e6, 21)
+    sigma = 3.0e5
+
+    result = ddxb.compute_dxs_dE_broadened(
+        endf_dict=None, mt=0, zap=1,
+        energies_in=einc, energies_out=eouts,
+        kernel=lambda d: _gaussian(d, sigma),
+        kernel_width=sigma,
+        rtol=1e-5,
+    )
+
+    assert result.shape == (len(einc), len(eouts))
+    np.testing.assert_allclose(result, 0.42, atol=1e-5)
+
+
+def test_dxs_dE_gaussian_broadens_analytically(patched_environment):
+    """Gaussian-shaped dexs convolved with a Gaussian kernel produces
+    the wider Gaussian sigma_y = sqrt(sigma_f^2 + sigma_k^2). compute
+    _dexs already carries the xs/yield factors so they show up as
+    the amplitude of the input Gaussian."""
+    sigma_f = 4.0e5
+    sigma_k = 2.0e5
+    e_centre = 1.4e7
+    amplitude = 1.75  # absorbs any xs * yield factor in compute_dexs
+
+    def dexs(einc, eouts):
+        spec = amplitude * _gaussian(eouts, sigma_f, mu=e_centre)
+        return np.broadcast_to(spec, (len(einc), len(eouts))).copy()
+
+    patched_environment(dexs=dexs)
+
+    einc = np.array([1.4e7])
+    eouts = np.linspace(e_centre - 2.0e6, e_centre + 2.0e6, 41)
+
+    result = ddxb.compute_dxs_dE_broadened(
+        endf_dict=None, mt=0, zap=1,
+        energies_in=einc, energies_out=eouts,
+        kernel=lambda d: _gaussian(d, sigma_k),
+        kernel_width=sigma_k,
+        rtol=1e-6,
+        max_iter=10,
+    )
+
+    sigma_y = np.sqrt(sigma_f ** 2 + sigma_k ** 2)
+    expected = amplitude * _gaussian(eouts, sigma_y, mu=e_centre)
+    np.testing.assert_allclose(result[0], expected, rtol=1e-3, atol=1e-12)
+
+
+def test_dxs_dE_integral_preserved(patched_environment):
+    """A unit-norm kernel preserves the integral of dexs over E_out
+    (i.e. the production cross section). Sample a smooth dexs, broaden,
+    integrate, compare against the unbroadened integral."""
+    sigma_f = 4.0e5
+    sigma_k = 2.0e5
+    e_centre = 1.4e7
+    amplitude = 0.3
+
+    def dexs(einc, eouts):
+        spec = amplitude * _gaussian(eouts, sigma_f, mu=e_centre)
+        return np.broadcast_to(spec, (len(einc), len(eouts))).copy()
+
+    patched_environment(dexs=dexs)
+
+    einc = np.array([1.4e7])
+    eouts = np.linspace(e_centre - 3.0e6, e_centre + 3.0e6, 401)
+
+    broadened = ddxb.compute_dxs_dE_broadened(
+        endf_dict=None, mt=0, zap=1,
+        energies_in=einc, energies_out=eouts,
+        kernel=lambda d: _gaussian(d, sigma_k),
+        kernel_width=sigma_k,
+        rtol=1e-5,
+        max_iter=10,
+    )
+    integral = np.trapezoid(broadened[0], eouts)
+    # The underlying gaussian integrates to amplitude over its
+    # support; the eouts grid spans +/- 7.5 sigma_f so truncation is
+    # negligible.
+    assert abs(integral - amplitude) / amplitude < 1e-3

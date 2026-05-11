@@ -1,13 +1,21 @@
-"""Broadening of double-differential cross sections along E_out.
+"""Broadening of secondary-distribution cross sections along E_out.
 
-This module holds per-(MT, ZAP) routines that apply a 1D convolution
-kernel along the outgoing-energy axis. The continuous-part routine
-wraps `adaptive_convolve` around the existing 2D distribution
-machinery; the discrete-part routine evaluates the kernel directly
-at the kinematic locus E_out_kin(E_in, mu) without any convolution
-because the underlying distribution is a Dirac line in (E_out, mu).
+Three per-(MT, ZAP) routines live here:
 
-The dispatcher that combines both lives in `endf_userpy.quantities`.
+  - `compute_ddx_continuous_broadened`: 2D DDX continuum, convolved
+    along E_out via `adaptive_convolve`.
+  - `compute_ddx_discrete_broadened`: 2D DDX for 2-body discrete-
+    level channels, where the kernel replaces the kinematic delta
+    pointwise (no convolution needed because the distribution is a
+    Dirac line, not a continuum).
+  - `compute_dxs_dE_broadened`: 1D dxs/dE, convolved along E_out via
+    `adaptive_convolve`. Continuous and discrete channels share this
+    path because the integration over mu already turns the 2-body
+    delta into a finite "kinematic box" with integrable singularities
+    at E_out_min, E_out_max.
+
+The dispatchers that combine these into the public API live in
+`endf_userpy.quantities`.
 """
 import numpy as np
 from ..mfsec_interpretation import mf3_interpretation as mf3_interp
@@ -28,7 +36,7 @@ from ..primitives.properties import (
     has_mf6_mt,
 )
 from .distribution2d import compute_dist2d_values
-from .quantities import compute_yields
+from .quantities import compute_yields, compute_dexs
 import logging
 
 
@@ -103,6 +111,56 @@ def compute_ddx_continuous_broadened(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
     return ddx * yields * xs / (2 * np.pi)
+
+
+def compute_dxs_dE_broadened(
+    endf_dict, mt, zap,
+    energies_in, energies_out,
+    kernel, kernel_width,
+    to_lab=True,
+    **convolve_kwargs,
+):
+    """1D dxs/dE for (MT, ZAP) convolved with `kernel` along E_out.
+
+    Wraps `adaptive_convolve` around the existing `compute_dexs`. No
+    separate discrete branch is needed: integrating the (E_out, mu)
+    delta over mu already turns 2-body discrete-level channels into
+    finite "kinematic boxes" with 1/sqrt singularities at E_out_min
+    and E_out_max. Those singularities are integrable, the Gaussian
+    kernel low-passes them, and the convolved result is smooth; the
+    adaptive doubling may need a few extra iterations near the
+    kinematic boundaries to converge.
+
+    Parameters
+    ----------
+    endf_dict, mt, zap, energies_in, energies_out, to_lab
+        Same as `compute_dexs`.
+    kernel : callable
+        `kernel(delta_E)`. Should integrate to ~1 over its support.
+    kernel_width : float
+        Characteristic kernel width in eV.
+    **convolve_kwargs
+        Forwarded to `adaptive_convolve`.
+
+    Returns
+    -------
+    dxs_dE : ndarray
+        Broadened dxs/dE, shape `(n_einc, n_eouts)`. Same units as
+        `compute_dexs`.
+    """
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+
+    def f(eout_internal):
+        return compute_dexs(
+            endf_dict, mt, zap, energies_in, eout_internal, to_lab,
+        )
+
+    return adaptive_convolve(
+        f, kernel, energies_out,
+        kernel_width=kernel_width,
+        **convolve_kwargs,
+    )
 
 
 def compute_ddx_discrete_broadened(

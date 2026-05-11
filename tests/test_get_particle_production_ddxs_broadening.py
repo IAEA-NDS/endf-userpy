@@ -66,6 +66,18 @@ def stub_quantities(monkeypatch):
         state['calls'].append(('plain', mt, None, None))
         return state['cont_return'][mt]
 
+    def fake_dxs_dE_broadened(endf_dict, mt, zap, einc, eouts,
+                              kernel, kernel_width):
+        state['calls'].append(('dexs_b', mt, id(kernel), kernel_width))
+        return state['dexs_return'][mt]
+
+    def fake_compute_dexs(endf_dict, mt, zap, einc, eouts):
+        state['calls'].append(('dexs_plain', mt, None, None))
+        return state['dexs_return'][mt]
+
+    # Keys default-populated only when used by a test.
+    state.setdefault('dexs_return', {})
+
     monkeypatch.setattr(
         quantities.quant_mt_zap, 'get_reaction_mt_numbers',
         fake_get_reaction_mts,
@@ -108,6 +120,12 @@ def stub_quantities(monkeypatch):
     )
     monkeypatch.setattr(
         quantities.quant_mt_zap, 'compute_ddxs', fake_compute_ddxs
+    )
+    monkeypatch.setattr(
+        quantities.ddxb, 'compute_dxs_dE_broadened', fake_dxs_dE_broadened
+    )
+    monkeypatch.setattr(
+        quantities.quant_mt_zap, 'compute_dexs', fake_compute_dexs
     )
     return state
 
@@ -279,3 +297,85 @@ def test_normalize_broadening_gaussian_is_unit_norm():
     x = np.linspace(-1.0e6, 1.0e6, 50001)
     integral = np.trapezoid(kernel(x), x)
     assert abs(integral - 1.0) < 1e-6
+
+
+# ============================================================
+# get_particle_production_dxs_dE dispatcher
+# ============================================================
+
+
+def test_dxs_dE_no_broadening_uses_plain_compute_dexs(stub_quantities):
+    """broadening=None routes to compute_dexs unchanged; no folder is
+    called."""
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1e6, 1.4e7, 5)
+    shape = (len(einc), len(eouts))
+    stub_quantities['mt_list'] = [16, 91]
+    stub_quantities['mt_kind'] = {16: 'cont', 91: 'cont'}
+    stub_quantities['dexs_return'] = {
+        16: np.full(shape, 1.0),
+        91: np.full(shape, 2.0),
+    }
+
+    result = quantities.get_particle_production_dxs_dE(
+        endf_dict=None, reaction='(n,total)', particle='n',
+        energies_in=einc, energies_out=eouts,
+        broadening=None,
+    )
+    np.testing.assert_array_equal(result, np.full(shape, 3.0))
+    kinds = sorted(c[0] for c in stub_quantities['calls'])
+    assert kinds == ['dexs_plain', 'dexs_plain']
+
+
+def test_dxs_dE_broadening_routes_through_folder(stub_quantities):
+    """A scalar broadening routes every admitted MT through the
+    1D folder rather than plain compute_dexs."""
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1e6, 1.4e7, 5)
+    shape = (len(einc), len(eouts))
+    stub_quantities['mt_list'] = [16, 51]
+    # The dxs/dE dispatcher does not split continuous vs discrete -
+    # compute_dexs handles both. Mark both as 'cont' so contains_zap
+    # admits them.
+    stub_quantities['mt_kind'] = {16: 'cont', 51: 'cont'}
+    stub_quantities['dexs_return'] = {
+        16: np.full(shape, 5.0),
+        51: np.full(shape, 1.5),
+    }
+
+    sigma = 2.0e5
+    result = quantities.get_particle_production_dxs_dE(
+        endf_dict=None, reaction='(n,total)', particle='n',
+        energies_in=einc, energies_out=eouts,
+        broadening=sigma,
+    )
+    np.testing.assert_array_equal(result, np.full(shape, 6.5))
+    folder_calls = [c for c in stub_quantities['calls'] if c[0] == 'dexs_b']
+    plain_calls = [c for c in stub_quantities['calls'] if c[0] == 'dexs_plain']
+    assert len(folder_calls) == 2 and not plain_calls
+    # Width is propagated.
+    for _, _, _, w in folder_calls:
+        assert w == sigma
+
+
+def test_dxs_dE_broadening_tuple_passes_kernel_through(stub_quantities):
+    """A (callable, width) tuple reaches the folder unchanged."""
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1e6, 1.4e7, 5)
+    shape = (len(einc), len(eouts))
+    stub_quantities['mt_list'] = [91]
+    stub_quantities['mt_kind'] = {91: 'cont'}
+    stub_quantities['dexs_return'] = {91: np.zeros(shape)}
+
+    user_kernel = lambda d: np.exp(-np.abs(d))  # noqa: E731
+    user_width = 3.0e4
+    quantities.get_particle_production_dxs_dE(
+        endf_dict=None, reaction='(n,total)', particle='n',
+        energies_in=einc, energies_out=eouts,
+        broadening=(user_kernel, user_width),
+    )
+    folder_calls = [c for c in stub_quantities['calls'] if c[0] == 'dexs_b']
+    assert len(folder_calls) == 1
+    _, _, kernel_id, width = folder_calls[0]
+    assert kernel_id == id(user_kernel)
+    assert width == user_width

@@ -238,17 +238,51 @@ def get_particle_production_xs(endf_dict, reaction, particle, energies_in):
 
 
 def get_particle_production_dxs_dE(
-    endf_dict, reaction, particle, energies_in, energies_out
+    endf_dict, reaction, particle, energies_in, energies_out,
+    broadening=None,
 ):
+    """Energy-differential cross section for particle production.
+
+    Parameters
+    ----------
+    endf_dict, reaction, particle, energies_in, energies_out
+        As before.
+    broadening : None or float or (callable, float), optional
+        If None (default), behaviour is unchanged: discrete-level
+        channels appear as the kinematic-box shape produced by the
+        Jacobian transformation in `compute_dexs`. If broadening is
+        supplied, the same kernel is applied to every admitted MT
+        along E_out, including discrete and continuum channels alike,
+        which smooths the box-edge singularities and lets the
+        spectrum be compared with finite-resolution measurements.
+
+        Same accepted forms as `get_particle_production_ddxs`.
+    """
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    return quant_mt_zap.compute_cumulative_quantity(
-        quant_mt_zap.compute_dexs,
-        lambda endf_dict, mt, zap, energies_in, energies_out: (
+    kernel, kernel_width = _normalize_broadening(broadening)
+
+    def select(endf_dict, mt, zap, einc, eouts):
+        return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
-        ),
-        endf_dict, zap, energies_in, energies_out
+        )
+
+    if kernel is None:
+        return quant_mt_zap.compute_cumulative_quantity(
+            quant_mt_zap.compute_dexs, select,
+            endf_dict, zap, energies_in, energies_out,
+        )
+
+    def broadened_compute(endf_dict, mt, zap, einc, eouts):
+        return ddxb.compute_dxs_dE_broadened(
+            endf_dict, mt, zap, einc, eouts,
+            kernel=kernel, kernel_width=kernel_width,
+        )
+
+    return quant_mt_zap.compute_cumulative_quantity(
+        broadened_compute, select,
+        endf_dict, zap, energies_in, energies_out,
     )
 
 
