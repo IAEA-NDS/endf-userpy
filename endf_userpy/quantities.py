@@ -7,6 +7,7 @@ from .primitives.helpers import unpack_za
 from .quantities_mt_zap import quantities as quant_mt_zap
 from .quantities_mt_zap import distribution1d as dist1d
 from .quantities_mt_zap import selectors
+from .quantities_mt_zap import ddx_broadening as ddxb
 import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
 from .mfsec_interpretation import mf6_interpretation as mf6interp
@@ -237,17 +238,51 @@ def get_particle_production_xs(endf_dict, reaction, particle, energies_in):
 
 
 def get_particle_production_dxs_dE(
-    endf_dict, reaction, particle, energies_in, energies_out
+    endf_dict, reaction, particle, energies_in, energies_out,
+    broadening=None,
 ):
+    """Energy-differential cross section for particle production.
+
+    Parameters
+    ----------
+    endf_dict, reaction, particle, energies_in, energies_out
+        As before.
+    broadening : None or float or (callable, float), optional
+        If None (default), behaviour is unchanged: discrete-level
+        channels appear as the kinematic-box shape produced by the
+        Jacobian transformation in `compute_dexs`. If broadening is
+        supplied, the same kernel is applied to every admitted MT
+        along E_out, including discrete and continuum channels alike,
+        which smooths the box-edge singularities and lets the
+        spectrum be compared with finite-resolution measurements.
+
+        Same accepted forms as `get_particle_production_ddxs`.
+    """
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    return quant_mt_zap.compute_cumulative_quantity(
-        quant_mt_zap.compute_dexs,
-        lambda endf_dict, mt, zap, energies_in, energies_out: (
+    kernel, kernel_width = _normalize_broadening(broadening)
+
+    def select(endf_dict, mt, zap, einc, eouts):
+        return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
-        ),
-        endf_dict, zap, energies_in, energies_out
+        )
+
+    if kernel is None:
+        return quant_mt_zap.compute_cumulative_quantity(
+            quant_mt_zap.compute_dexs, select,
+            endf_dict, zap, energies_in, energies_out,
+        )
+
+    def broadened_compute(endf_dict, mt, zap, einc, eouts):
+        return ddxb.compute_dxs_dE_broadened(
+            endf_dict, mt, zap, einc, eouts,
+            kernel=kernel, kernel_width=kernel_width,
+        )
+
+    return quant_mt_zap.compute_cumulative_quantity(
+        broadened_compute, select,
+        endf_dict, zap, energies_in, energies_out,
     )
 
 
@@ -267,16 +302,110 @@ def get_particle_production_dxs_dmu(
 
 
 def get_particle_production_ddxs(
-    endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out
+    endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out,
+    broadening=None,
 ):
+    """Double-differential cross section for particle production.
+
+    Parameters
+    ----------
+    endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out
+        As before.
+    broadening : None or float or (callable, float), optional
+        If None (default), behaviour is unchanged: only channels with
+        a true continuous (E_out, mu) distribution contribute, and
+        the result is the bare DDX. If broadening is provided, the
+        result instead sums (i) the continuous DDX folded with the
+        kernel along E_out, and (ii) the discrete two-body channels
+        (MT 2 elastic, MT 51..90 etc.) with the kinematic delta
+        replaced by the kernel.
+
+        Accepted forms:
+          - scalar `sigma` (eV) -> Gaussian kernel of that width.
+          - tuple `(kernel_callable, width)` -> custom kernel; the
+            callable is `kernel(delta_E)` and `width` is its
+            characteristic scale (passed to the FFT mesh control).
+    """
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    return quant_mt_zap.compute_cumulative_quantity(
-        quant_mt_zap.compute_ddxs,
-        lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
+
+    kernel, kernel_width = _normalize_broadening(broadening)
+    if kernel is None:
+        return quant_mt_zap.compute_cumulative_quantity(
+            quant_mt_zap.compute_ddxs,
+            lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
+                selectors.contains_zap(endf_dict, mt, zap) and
+                selectors.has_continuous_ddx(endf_dict, mt, zap) and
+                selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            ),
+            endf_dict, zap, energies_in, energies_out, angle_cosines_out
+        )
+
+    def cont_compute(endf_dict, mt, zap, einc, eouts, mus):
+        return ddxb.compute_ddx_continuous_broadened(
+            endf_dict, mt, zap, einc, eouts, mus,
+            kernel=kernel, kernel_width=kernel_width,
+        )
+
+    def cont_select(endf_dict, mt, zap, einc, eouts, mus):
+        return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_continuous_ddx(endf_dict, mt, zap) and
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
-        ),
-        endf_dict, zap, energies_in, energies_out, angle_cosines_out
+        )
+
+    def disc_compute(endf_dict, mt, zap, einc, eouts, mus):
+        return ddxb.compute_ddx_discrete_broadened(
+            endf_dict, mt, zap, einc, eouts, mus,
+            kernel=kernel,
+        )
+
+    def disc_select(endf_dict, mt, zap, einc, eouts, mus):
+        return (
+            selectors.contains_zap(endf_dict, mt, zap) and
+            selectors.has_discrete_two_body_ddx(endf_dict, mt, zap) and
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+        )
+
+    cont = quant_mt_zap.compute_cumulative_quantity(
+        cont_compute, cont_select,
+        endf_dict, zap, energies_in, energies_out, angle_cosines_out,
     )
+    disc = quant_mt_zap.compute_cumulative_quantity(
+        disc_compute, disc_select,
+        endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+    )
+    if cont is None:
+        return disc
+    if disc is None:
+        return cont
+    return cont + disc
+
+
+def _normalize_broadening(broadening):
+    """Translate a user broadening spec into (kernel, width) for the
+    low-level folders. None propagates as (None, None)."""
+    if broadening is None:
+        return None, None
+    if isinstance(broadening, (int, float, np.integer, np.floating)):
+        sigma = float(broadening)
+        if sigma <= 0:
+            raise ValueError("broadening sigma must be positive")
+        norm = 1.0 / (sigma * np.sqrt(2 * np.pi))
+
+        def gaussian_kernel(d):
+            return norm * np.exp(-0.5 * (d / sigma) ** 2)
+        return gaussian_kernel, sigma
+    try:
+        kernel, width = broadening
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "broadening must be None, a positive scalar sigma, or a "
+            "(kernel_callable, width) tuple"
+        ) from exc
+    if not callable(kernel):
+        raise ValueError("broadening tuple element 0 must be a callable kernel")
+    width = float(width)
+    if width <= 0:
+        raise ValueError("broadening tuple element 1 (width) must be positive")
+    return kernel, width
