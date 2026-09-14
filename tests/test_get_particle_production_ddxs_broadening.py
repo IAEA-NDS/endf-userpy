@@ -7,6 +7,8 @@ folders, summation logic, and pass-through of the (kernel, width)
 pair -- without needing real ENDF data.
 """
 import numpy as np
+import warnings
+
 import pytest
 
 import endf_userpy.quantities as quantities
@@ -30,6 +32,11 @@ def stub_quantities(monkeypatch):
         'mt_list': [],
         # Calls captured for inspection: (folder, mt, kernel_id, width).
         'calls': [],
+        # MTs the LAW=1 ND>0 detector should report as hits.
+        'law1_disc_mts': set(),
+        # Set of MTs the endf_dict pretends to have MF6 entries for
+        # (used only by the warning helper's `6 in endf_dict` check).
+        'mf6_mts': set(),
     }
 
     def fake_get_reaction_mts(endf_dict):
@@ -379,3 +386,136 @@ def test_dxs_dE_broadening_tuple_passes_kernel_through(stub_quantities):
     _, _, kernel_id, width = folder_calls[0]
     assert kernel_id == id(user_kernel)
     assert width == user_width
+
+
+# ============================================================
+# MF6/LAW=1 ND>0 warning (issue #27 preflight)
+# ============================================================
+
+
+def _endf_with_mf6(mts):
+    """Minimal endf-like dict with MF6 populated for the given MTs so
+    the warning helper's `6 in endf_dict` and iteration succeed."""
+    return {6: {mt: {} for mt in mts}}
+
+
+def test_law1_disc_warning_fires_for_ddx_when_broadening_on(stub_quantities, monkeypatch):
+    """When at least one admitted MT has MF6/LAW=1 ND>0 for the requested
+    ZAP and broadening is on, get_particle_production_ddxs must emit a
+    UserWarning listing those MTs."""
+    einc, eouts, mus = _einc_eouts_mus()
+    shape = (len(einc), len(eouts), len(mus))
+    stub_quantities['mt_list'] = [91]
+    stub_quantities['mt_kind'] = {91: 'cont'}
+    stub_quantities['cont_return'] = {91: np.zeros(shape)}
+
+    # Any MT admitted by contains_zap flags as LAW=1 ND>0.
+    monkeypatch.setattr(
+        quantities.selectors, 'has_mf6_law1_discrete_lines',
+        lambda d, mt, zap: True,
+    )
+
+    with pytest.warns(UserWarning, match=r"MF6/LAW=1 discrete-energy lines.*MT=\[91\]"):
+        quantities.get_particle_production_ddxs(
+            endf_dict=_endf_with_mf6([91]), reaction='(n,total)', particle='n',
+            energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+            broadening=1.0e5,
+        )
+
+
+def test_law1_disc_warning_silent_when_broadening_off(stub_quantities, monkeypatch):
+    """No warning when broadening=None, even if the file has MF6/LAW=1
+    ND>0. The unbroadened path has always had this gap; adding noise
+    to established behaviour would be unhelpful."""
+    einc, eouts, mus = _einc_eouts_mus()
+    shape = (len(einc), len(eouts), len(mus))
+    stub_quantities['mt_list'] = [91]
+    stub_quantities['mt_kind'] = {91: 'cont'}
+    stub_quantities['cont_return'] = {91: np.zeros(shape)}
+    monkeypatch.setattr(
+        quantities.selectors, 'has_mf6_law1_discrete_lines',
+        lambda d, mt, zap: True,
+    )
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter('always')
+        quantities.get_particle_production_ddxs(
+            endf_dict=_endf_with_mf6([91]), reaction='(n,total)', particle='n',
+            energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+            broadening=None,
+        )
+    law1 = [w for w in recorded if 'MF6/LAW=1' in str(w.message)]
+    assert law1 == []
+
+
+def test_law1_disc_warning_silent_when_no_such_mts(stub_quantities, monkeypatch):
+    """No warning when the file has no MF6/LAW=1 ND>0 subsections for
+    this ZAP, even with broadening on."""
+    einc, eouts, mus = _einc_eouts_mus()
+    shape = (len(einc), len(eouts), len(mus))
+    stub_quantities['mt_list'] = [91]
+    stub_quantities['mt_kind'] = {91: 'cont'}
+    stub_quantities['cont_return'] = {91: np.zeros(shape)}
+    monkeypatch.setattr(
+        quantities.selectors, 'has_mf6_law1_discrete_lines',
+        lambda d, mt, zap: False,
+    )
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter('always')
+        quantities.get_particle_production_ddxs(
+            endf_dict=_endf_with_mf6([91]), reaction='(n,total)', particle='n',
+            energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+            broadening=1.0e5,
+        )
+    law1 = [w for w in recorded if 'MF6/LAW=1' in str(w.message)]
+    assert law1 == []
+
+
+def test_law1_disc_warning_fires_for_dxs_dE_when_broadening_on(stub_quantities, monkeypatch):
+    """Same coverage for the 1D dispatcher: warning fires when
+    broadening is on and an admitted MT has MF6/LAW=1 ND>0."""
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1e6, 1.4e7, 5)
+    shape = (len(einc), len(eouts))
+    stub_quantities['mt_list'] = [16]
+    stub_quantities['mt_kind'] = {16: 'cont'}
+    stub_quantities['dexs_return'] = {16: np.zeros(shape)}
+    monkeypatch.setattr(
+        quantities.selectors, 'has_mf6_law1_discrete_lines',
+        lambda d, mt, zap: True,
+    )
+
+    with pytest.warns(UserWarning, match=r"MF6/LAW=1 discrete-energy lines.*MT=\[16\]"):
+        quantities.get_particle_production_dxs_dE(
+            endf_dict=_endf_with_mf6([16]), reaction='(n,total)', particle='n',
+            energies_in=einc, energies_out=eouts,
+            broadening=1.0e5,
+        )
+
+
+def test_law1_disc_warning_skips_mts_with_wrong_zap(stub_quantities, monkeypatch):
+    """MTs whose ZAP doesn't match the requested particle must not
+    trigger the warning even if they have LAW=1 ND>0. The check is
+    ZAP-gated via contains_zap."""
+    einc, eouts, mus = _einc_eouts_mus()
+    shape = (len(einc), len(eouts), len(mus))
+    stub_quantities['mt_list'] = [91, 701]
+    # 91 admits the requested zap; 701 does not (returns 'none').
+    stub_quantities['mt_kind'] = {91: 'cont'}
+    stub_quantities['cont_return'] = {91: np.zeros(shape)}
+    monkeypatch.setattr(
+        quantities.selectors, 'has_mf6_law1_discrete_lines',
+        lambda d, mt, zap: True,  # both MTs 'have' LAW=1 ND>0
+    )
+
+    with pytest.warns(UserWarning) as recorded:
+        quantities.get_particle_production_ddxs(
+            endf_dict=_endf_with_mf6([91, 701]), reaction='(n,total)', particle='n',
+            energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+            broadening=1.0e5,
+        )
+    msgs = [str(w.message) for w in recorded if 'MF6/LAW=1' in str(w.message)]
+    assert len(msgs) == 1
+    assert 'MT=[91]' in msgs[0]
+    assert '701' not in msgs[0]

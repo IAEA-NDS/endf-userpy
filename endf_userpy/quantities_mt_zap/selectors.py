@@ -32,6 +32,22 @@ def has_continuous_ddx(endf_dict, mt, zap):
     return False
 
 
+def has_mf6_law1_discrete_lines(endf_dict, mt, zap):
+    """Whether (MT, ZAP) carries MF6/LAW=1 discrete-energy lines (ND>0).
+
+    LAW=1 subsections can encode a fixed set of discrete outgoing
+    energies (Dirac peaks at the first ND tabulated E_out points)
+    in addition to a continuum. `compute_dist2d_values` currently
+    silently drops the discrete part (issue #27); the broadening
+    dispatchers use this predicate to warn users when the file
+    they're processing has content that will be missing from the
+    broadened result.
+    """
+    if not prop.has_mf6_mt(endf_dict, mt):
+        return False
+    return mf6help.has_disc_part(endf_dict, mt, zap)
+
+
 def has_discrete_two_body_ddx(endf_dict, mt, zap):
     """Whether (MT, ZAP) carries a 2-body kinematic-delta distribution.
 

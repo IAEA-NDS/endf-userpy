@@ -274,6 +274,8 @@ def get_particle_production_dxs_dE(
             endf_dict, zap, energies_in, energies_out,
         )
 
+    _warn_about_dropped_law1_discrete_lines(endf_dict, zap)
+
     def broadened_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_broadened(
             endf_dict, mt, zap, einc, eouts,
@@ -340,6 +342,8 @@ def get_particle_production_ddxs(
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out
         )
+
+    _warn_about_dropped_law1_discrete_lines(endf_dict, zap)
 
     def cont_compute(endf_dict, mt, zap, einc, eouts, mus):
         return ddxb.compute_ddx_continuous_broadened(
@@ -409,3 +413,29 @@ def _normalize_broadening(broadening):
     if width <= 0:
         raise ValueError("broadening tuple element 1 (width) must be positive")
     return kernel, width
+
+
+def _warn_about_dropped_law1_discrete_lines(endf_dict, zap):
+    """Emit a warning if the file contains MF6/LAW=1 subsections with
+    ND>0 discrete lines for the requested ZAP. Those lines are
+    silently dropped by compute_dist2d_values today (tracked as
+    issue #27), so they will be missing from the broadened result.
+    Fires only when broadening is on, since that's the case where a
+    user is most likely being misled by the silent gap."""
+    if endf_dict is None or 6 not in endf_dict:
+        return
+    affected = [
+        mt for mt in endf_dict[6]
+        if selectors.contains_zap(endf_dict, mt, zap)
+        and selectors.has_mf6_law1_discrete_lines(endf_dict, mt, zap)
+    ]
+    if not affected:
+        return
+    warnings.warn(
+        f"MF6/LAW=1 discrete-energy lines (ND>0) detected for "
+        f"MT={sorted(affected)} at ZAP={int(zap)}. These contributions "
+        f"are dropped by compute_dist2d_values today (issue #27) and "
+        f"will be missing from the broadened result.",
+        UserWarning,
+        stacklevel=3,
+    )
