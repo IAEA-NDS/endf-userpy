@@ -1,6 +1,6 @@
 """Broadening of secondary-distribution cross sections along E_out.
 
-Four per-(MT, ZAP) routines live here:
+Five per-(MT, ZAP) routines live here:
 
   - `compute_ddx_continuous_broadened`: 2D DDX continuum, convolved
     along E_out via `adaptive_convolve`.
@@ -14,10 +14,17 @@ Four per-(MT, ZAP) routines live here:
     peaks at file-tabulated eval-frame energies, mapped to LAB via
     `mf6cm2lab_disc`.
   - `compute_dxs_dE_broadened`: 1D dxs/dE, convolved along E_out via
-    `adaptive_convolve`. Continuous and discrete channels share this
-    path because the integration over mu already turns the 2-body
-    delta into a finite "kinematic box" with integrable singularities
-    at E_out_min, E_out_max.
+    `adaptive_convolve`. Continuous and 2-body discrete channels
+    share this path because the integration over mu already turns
+    the 2-body delta into a finite "kinematic box" with integrable
+    singularities at E_out_min, E_out_max.
+  - `compute_dxs_dE_law1_discrete_broadened`: 1D analogue of the
+    LAW=1 DDX folder: computes the DDX on an internal mu grid,
+    integrates over dOmega. For LCT=1 or gamma (light-ejectile)
+    channels the discrete position is mu-invariant and the internal
+    grid is essentially cosmetic; for heavy-ejectile LCT=2/3 cases
+    the mu sweep naturally produces a "kinematic box" smearing of
+    the discrete peak that the kernel then convolves.
 
 The dispatchers that combine these into the public API live in
 `endf_userpy.quantities`.
@@ -161,11 +168,23 @@ def compute_dxs_dE_broadened(
             endf_dict, mt, zap, energies_in, eout_internal, to_lab,
         )
 
-    return adaptive_convolve(
-        f, kernel, energies_out,
-        kernel_width=kernel_width,
-        **convolve_kwargs,
-    )
+    try:
+        return adaptive_convolve(
+            f, kernel, energies_out,
+            kernel_width=kernel_width,
+            **convolve_kwargs,
+        )
+    except IndexError:
+        # compute_dexs raises IndexError for (MT, ZAP) combinations
+        # with no continuum or LAW=2/3/4 angdist to reconstruct an
+        # energy spectrum from (e.g. MF6/LAW=1 ND>0 pure-discrete-line
+        # subsections such as Be-9 MT 701 gammas). Their contribution
+        # is instead handled by compute_dxs_dE_law1_discrete_broadened
+        # in the dispatcher; the cont path returns zeros so cumulative
+        # summation is well-defined.
+        return np.zeros(
+            (len(energies_in), len(energies_out)), dtype=float,
+        )
 
 
 def compute_ddx_discrete_broadened(
@@ -298,6 +317,53 @@ def compute_ddx_law1_discrete_broadened(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
     return ddx * yields * xs / (2 * np.pi)
+
+
+def compute_dxs_dE_law1_discrete_broadened(
+    endf_dict, mt, zap,
+    energies_in, energies_out,
+    kernel,
+    to_lab=True,
+    n_mu_internal=64,
+):
+    """1D analogue of `compute_ddx_law1_discrete_broadened`: DDX of
+    MF6/LAW=1 ND>0 discrete lines with the kinematic delta replaced
+    by `kernel`, then integrated over the outgoing solid angle.
+
+    The 1D projection reduces to
+      dxs/dE(E_in, E_out) =
+          xs * yield * integral_over_dOmega( kernel(E_out - ep_lab(mu))
+                                             * amp(mu) )
+    which we approximate by running the 2D DDX folder on an internal
+    mu grid and using np.trapezoid over dOmega = 2 pi dmu.
+
+    For LCT=1 subsections and for gamma emission (awp=0, so the
+    LCT=2/3 CM->LAB mapping degenerates to identity), the discrete
+    position ep_lab(mu) is mu-invariant and the projection is a
+    pointwise kernel evaluation weighted by the isotropic-projection
+    of the angular distribution. For LCT=2/3 with a heavy ejectile,
+    ep_lab(mu) sweeps a kinematic range as mu moves over [-1, +1]:
+    the integrand becomes a mu-parametrised curve and the projection
+    is a "kinematic box" smearing of the discrete peak, convolved
+    with the kernel. A modest internal mu grid captures both regimes.
+
+    Parameters match `compute_dxs_dE_broadened` except for the extra
+    `n_mu_internal` knob controlling the mu-quadrature density.
+
+    Returns
+    -------
+    dxs_dE : ndarray of shape (n_einc, n_eouts). Same units as
+    `compute_dexs`.
+    """
+    if n_mu_internal < 2:
+        raise ValueError('n_mu_internal must be >= 2')
+    mus = np.linspace(-1.0, 1.0, n_mu_internal)
+    ddx = compute_ddx_law1_discrete_broadened(
+        endf_dict, mt, zap,
+        energies_in, energies_out, mus,
+        kernel, to_lab=to_lab,
+    )
+    return np.trapezoid(ddx, mus, axis=-1) * (2 * np.pi)
 
 
 def _compute_discrete_angdist(

@@ -274,18 +274,40 @@ def get_particle_production_dxs_dE(
             endf_dict, zap, energies_in, energies_out,
         )
 
-    _warn_about_dropped_law1_discrete_lines(endf_dict, zap)
-
-    def broadened_compute(endf_dict, mt, zap, einc, eouts):
+    def cont_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, kernel_width=kernel_width,
         )
 
-    return quant_mt_zap.compute_cumulative_quantity(
-        broadened_compute, select,
+    def law1_disc_compute(endf_dict, mt, zap, einc, eouts):
+        return ddxb.compute_dxs_dE_law1_discrete_broadened(
+            endf_dict, mt, zap, einc, eouts,
+            kernel=kernel,
+        )
+
+    def law1_disc_select(endf_dict, mt, zap, einc, eouts):
+        return (
+            selectors.contains_zap(endf_dict, mt, zap) and
+            selectors.has_mf6_law1_discrete_lines(endf_dict, mt, zap) and
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+        )
+
+    cont = quant_mt_zap.compute_cumulative_quantity(
+        cont_compute, select,
         endf_dict, zap, energies_in, energies_out,
     )
+    law1_disc = quant_mt_zap.compute_cumulative_quantity(
+        law1_disc_compute, law1_disc_select,
+        endf_dict, zap, energies_in, energies_out,
+    )
+    parts = [p for p in (cont, law1_disc) if p is not None]
+    if not parts:
+        return None
+    total = parts[0]
+    for p in parts[1:]:
+        total = total + p
+    return total
 
 
 def get_particle_production_dxs_dmu(
@@ -432,36 +454,3 @@ def _normalize_broadening(broadening):
     return kernel, width
 
 
-def _warn_about_dropped_law1_discrete_lines(endf_dict, zap):
-    """Emit a warning if the file contains MF6/LAW=1 subsections with
-    ND>0 discrete lines for the requested ZAP.
-
-    The DDX broadening dispatcher now handles these lines via
-    `compute_ddx_law1_discrete_broadened`, but the 1D dxs/dE
-    dispatcher does not: `compute_dexs` still routes through
-    `compute_dist2d_values` for the discrete part, which drops the
-    ND>0 content. Callers of `get_particle_production_dxs_dE(..
-    broadening=...)` therefore see the same silent gap the DDX path
-    had before issue #27's fix, and this warning is what surfaces it.
-
-    Fires only when broadening is on and only when at least one
-    admitted MT actually has such content.
-    """
-    if endf_dict is None or 6 not in endf_dict:
-        return
-    affected = [
-        mt for mt in endf_dict[6]
-        if selectors.contains_zap(endf_dict, mt, zap)
-        and selectors.has_mf6_law1_discrete_lines(endf_dict, mt, zap)
-    ]
-    if not affected:
-        return
-    warnings.warn(
-        f"MF6/LAW=1 discrete-energy lines (ND>0) detected for "
-        f"MT={sorted(affected)} at ZAP={int(zap)}. `compute_dexs` "
-        f"drops these contributions today (issue #27 covers the DDX "
-        f"fix; the 1D dxs/dE analogue is not yet implemented), so "
-        f"the broadened 1D spectrum will be missing them.",
-        UserWarning,
-        stacklevel=3,
-    )

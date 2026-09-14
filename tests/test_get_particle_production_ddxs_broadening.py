@@ -89,9 +89,14 @@ def stub_quantities(monkeypatch):
         state['calls'].append(('dexs_plain', mt, None, None))
         return state['dexs_return'][mt]
 
+    def fake_dxs_dE_law1_disc_broadened(endf_dict, mt, zap, einc, eouts, kernel):
+        state['calls'].append(('dexs_law1_disc', mt, id(kernel), None))
+        return state['dexs_law1_disc_return'][mt]
+
     # Keys default-populated only when used by a test.
     state.setdefault('dexs_return', {})
     state.setdefault('law1_disc_return', {})
+    state.setdefault('dexs_law1_disc_return', {})
 
     monkeypatch.setattr(
         quantities.quant_mt_zap, 'get_reaction_mt_numbers',
@@ -149,6 +154,10 @@ def stub_quantities(monkeypatch):
     )
     monkeypatch.setattr(
         quantities.quant_mt_zap, 'compute_dexs', fake_compute_dexs
+    )
+    monkeypatch.setattr(
+        quantities.ddxb, 'compute_dxs_dE_law1_discrete_broadened',
+        fake_dxs_dE_law1_disc_broadened,
     )
     return state
 
@@ -405,129 +414,13 @@ def test_dxs_dE_broadening_tuple_passes_kernel_through(stub_quantities):
 
 
 # ============================================================
-# MF6/LAW=1 ND>0 warning (issue #27 preflight)
+# Dispatcher wiring for MF6/LAW=1 ND>0 folders
 # ============================================================
 
 
 def _endf_with_mf6(mts):
-    """Minimal endf-like dict with MF6 populated for the given MTs so
-    the warning helper's `6 in endf_dict` and iteration succeed."""
+    """Minimal endf-like dict with MF6 populated for the given MTs."""
     return {6: {mt: {} for mt in mts}}
-
-
-# The DDX dispatcher now folds MF6/LAW=1 ND>0 discrete lines via
-# compute_ddx_law1_discrete_broadened, so the safety warning that used
-# to fire from get_particle_production_ddxs is gone. The 1D dxs/dE
-# dispatcher does not yet have a LAW=1 folder, so the warning still
-# fires there. The tests below cover the surviving dxs/dE case plus
-# silence conditions.
-
-
-def test_law1_disc_warning_fires_for_dxs_dE_when_broadening_on(stub_quantities, monkeypatch):
-    """When at least one admitted MT has MF6/LAW=1 ND>0 for the requested
-    ZAP and broadening is on, get_particle_production_dxs_dE must emit
-    a UserWarning listing those MTs (the 1D path still drops the ND>0
-    lines pending a 1D analogue of the DDX folder)."""
-    einc = np.array([1.4e7])
-    eouts = np.linspace(1e6, 1.4e7, 5)
-    shape = (len(einc), len(eouts))
-    stub_quantities['mt_list'] = [16]
-    stub_quantities['mt_kind'] = {16: 'cont'}
-    stub_quantities['dexs_return'] = {16: np.zeros(shape)}
-    monkeypatch.setattr(
-        quantities.selectors, 'has_mf6_law1_discrete_lines',
-        lambda d, mt, zap: True,
-    )
-
-    with pytest.warns(UserWarning, match=r"MF6/LAW=1 discrete-energy lines.*MT=\[16\]"):
-        quantities.get_particle_production_dxs_dE(
-            endf_dict=_endf_with_mf6([16]), reaction='(n,total)', particle='n',
-            energies_in=einc, energies_out=eouts,
-            broadening=1.0e5,
-        )
-
-
-def test_law1_disc_warning_silent_for_dxs_dE_when_broadening_off(stub_quantities, monkeypatch):
-    """No warning when broadening=None even if the file has MF6/LAW=1
-    ND>0. Adding noise to established behaviour would be unhelpful."""
-    einc = np.array([1.4e7])
-    eouts = np.linspace(1e6, 1.4e7, 5)
-    shape = (len(einc), len(eouts))
-    stub_quantities['mt_list'] = [16]
-    stub_quantities['mt_kind'] = {16: 'cont'}
-    stub_quantities['dexs_return'] = {16: np.zeros(shape)}
-    monkeypatch.setattr(
-        quantities.selectors, 'has_mf6_law1_discrete_lines',
-        lambda d, mt, zap: True,
-    )
-
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter('always')
-        quantities.get_particle_production_dxs_dE(
-            endf_dict=_endf_with_mf6([16]), reaction='(n,total)', particle='n',
-            energies_in=einc, energies_out=eouts,
-            broadening=None,
-        )
-    law1 = [w for w in recorded if 'MF6/LAW=1' in str(w.message)]
-    assert law1 == []
-
-
-def test_law1_disc_warning_silent_for_dxs_dE_when_no_such_mts(stub_quantities, monkeypatch):
-    """No warning when the file has no MF6/LAW=1 ND>0 subsections for
-    this ZAP, even with broadening on."""
-    einc = np.array([1.4e7])
-    eouts = np.linspace(1e6, 1.4e7, 5)
-    shape = (len(einc), len(eouts))
-    stub_quantities['mt_list'] = [16]
-    stub_quantities['mt_kind'] = {16: 'cont'}
-    stub_quantities['dexs_return'] = {16: np.zeros(shape)}
-    monkeypatch.setattr(
-        quantities.selectors, 'has_mf6_law1_discrete_lines',
-        lambda d, mt, zap: False,
-    )
-
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter('always')
-        quantities.get_particle_production_dxs_dE(
-            endf_dict=_endf_with_mf6([16]), reaction='(n,total)', particle='n',
-            energies_in=einc, energies_out=eouts,
-            broadening=1.0e5,
-        )
-    law1 = [w for w in recorded if 'MF6/LAW=1' in str(w.message)]
-    assert law1 == []
-
-
-def test_law1_disc_warning_for_dxs_dE_skips_mts_with_wrong_zap(stub_quantities, monkeypatch):
-    """MTs whose ZAP doesn't match the requested particle must not
-    trigger the warning even if they have LAW=1 ND>0. The check is
-    ZAP-gated via contains_zap."""
-    einc = np.array([1.4e7])
-    eouts = np.linspace(1e6, 1.4e7, 5)
-    shape = (len(einc), len(eouts))
-    stub_quantities['mt_list'] = [16, 701]
-    # 16 admits the requested zap; 701 does not.
-    stub_quantities['mt_kind'] = {16: 'cont'}
-    stub_quantities['dexs_return'] = {16: np.zeros(shape)}
-    monkeypatch.setattr(
-        quantities.selectors, 'has_mf6_law1_discrete_lines',
-        lambda d, mt, zap: True,
-    )
-
-    with pytest.warns(UserWarning) as recorded:
-        quantities.get_particle_production_dxs_dE(
-            endf_dict=_endf_with_mf6([16, 701]), reaction='(n,total)', particle='n',
-            energies_in=einc, energies_out=eouts,
-            broadening=1.0e5,
-        )
-    msgs = [str(w.message) for w in recorded if 'MF6/LAW=1' in str(w.message)]
-    assert len(msgs) == 1
-    assert 'MT=[16]' in msgs[0]
-    assert '701' not in msgs[0]
-
-
-# ============================================================
-# DDX dispatcher wiring for the LAW=1 ND>0 folder
-# ============================================================
 
 
 def test_ddx_broadening_sums_all_three_paths(stub_quantities):
@@ -583,6 +476,78 @@ def test_ddx_broadening_no_warning_when_law1_handled(stub_quantities, monkeypatc
         quantities.get_particle_production_ddxs(
             endf_dict=_endf_with_mf6([702]), reaction='(n,total)', particle='n',
             energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+            broadening=1.0e5,
+        )
+    law1 = [w for w in recorded if 'MF6/LAW=1' in str(w.message)]
+    assert law1 == []
+
+
+def test_dxs_dE_broadening_sums_cont_and_law1_disc(stub_quantities):
+    """The 1D dispatcher, with broadening on, runs the continuous
+    folder AND the LAW=1 discrete folder over their respective
+    admitted MTs and sums the results.
+
+    Note: the cont path runs on every admitted MT (including
+    law1_disc-only ones); in production compute_dxs_dE_broadened
+    catches the IndexError from compute_dexs and returns zeros. The
+    stub emulates that by returning zeros for law1_disc MTs."""
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1e6, 1.4e7, 5)
+    shape = (len(einc), len(eouts))
+    stub_quantities['mt_list'] = [16, 702]
+    stub_quantities['mt_kind'] = {16: 'cont', 702: 'law1_disc'}
+    stub_quantities['dexs_return'] = {
+        16: np.full(shape, 5.0),
+        702: np.zeros(shape),  # emulates the IndexError-swallow path
+    }
+    stub_quantities['dexs_law1_disc_return'] = {702: np.full(shape, 0.25)}
+
+    result = quantities.get_particle_production_dxs_dE(
+        endf_dict=None, reaction='(n,total)', particle='n',
+        energies_in=einc, energies_out=eouts,
+        broadening=1.0e5,
+    )
+    np.testing.assert_allclose(result, np.full(shape, 5.25))
+    folder_kinds = sorted(c[0] for c in stub_quantities['calls'])
+    assert 'dexs_law1_disc' in folder_kinds
+    assert folder_kinds.count('dexs_b') == 2  # once per admitted MT
+
+
+def test_dxs_dE_broadening_law1_only_returns_law1_alone(stub_quantities):
+    """If only LAW=1 discrete MTs are admitted, the 1D result comes
+    entirely from that folder (the cont path returns zeros)."""
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1e6, 1.4e7, 5)
+    shape = (len(einc), len(eouts))
+    stub_quantities['mt_list'] = [702]
+    stub_quantities['mt_kind'] = {702: 'law1_disc'}
+    stub_quantities['dexs_return'] = {702: np.zeros(shape)}  # cont path zeros
+    stub_quantities['dexs_law1_disc_return'] = {702: np.full(shape, 2.5)}
+
+    result = quantities.get_particle_production_dxs_dE(
+        endf_dict=None, reaction='(n,total)', particle='n',
+        energies_in=einc, energies_out=eouts,
+        broadening=1.0e5,
+    )
+    np.testing.assert_array_equal(result, np.full(shape, 2.5))
+
+
+def test_dxs_dE_broadening_no_warning_when_law1_handled(stub_quantities):
+    """The dxs/dE dispatcher no longer emits the LAW=1 gap warning
+    because the folder now handles those channels."""
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1e6, 1.4e7, 5)
+    shape = (len(einc), len(eouts))
+    stub_quantities['mt_list'] = [702]
+    stub_quantities['mt_kind'] = {702: 'law1_disc'}
+    stub_quantities['dexs_return'] = {702: np.zeros(shape)}
+    stub_quantities['dexs_law1_disc_return'] = {702: np.zeros(shape)}
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter('always')
+        quantities.get_particle_production_dxs_dE(
+            endf_dict=_endf_with_mf6([702]), reaction='(n,total)', particle='n',
+            energies_in=einc, energies_out=eouts,
             broadening=1.0e5,
         )
     law1 = [w for w in recorded if 'MF6/LAW=1' in str(w.message)]
