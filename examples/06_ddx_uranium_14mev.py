@@ -6,22 +6,30 @@ Double-differential cross section (DDX) of secondary neutron emission.
 
 ``get_particle_production_ddxs(endf_dict, reaction, particle, eincs,
 eouts, mus)`` returns d^2-sigma/dE/dOmega summed over all reaction
-channels matching ``reaction`` that emit ``particle`` with a true
-continuous distribution. Channels whose emission is a kinematic delta
-(elastic, discrete-level inelastic) are skipped because they cannot be
-represented on a continuous Eout grid.
+channels matching ``reaction`` that emit ``particle``.
 
-The example plots 14 MeV n+U-238 from JENDL-5 as a 2D heatmap of
-emission energy versus emission angle cosine in the LAB frame. The
-smooth contributions visible in the heatmap come from:
+By default only channels with a true continuous distribution contribute:
+fission, (n,2n), (n,3n), continuum inelastic and similar smooth sources.
+Channels whose secondary emission is a kinematic delta (elastic
+scattering MT 2, discrete-level inelastic MT 51..90) live on a 1D curve
+in (E_out, mu) space and cannot be represented on a finite heatmap; they
+are silently excluded.
 
-  - prompt fission spectrum (MT=18): isotropic, dominant at low Eout
-  - (n,2n), (n,3n) (MT=16, 17): mildly forward-peaked, mid Eout
-  - (n,n_c) continuum inelastic (MT=91): forward-peaked, high Eout
+Passing ``broadening=sigma`` enables the discrete-channel contribution
+to be plotted as well: the kinematic delta is replaced by a Gaussian
+of width ``sigma`` (in eV) along E_out, and the continuum is folded
+with the same kernel for visual consistency. The result is comparable
+to what an experiment with that energy resolution would measure.
 
-The kinematic features visible in the 1D energy spectrum
-(elastic peak ~14 MeV, discrete-level peaks ~13-14 MeV) are
-deliberately absent in the DDX, by design.
+This example plots both versions side by side for n+U-238 at 14 MeV
+from JENDL-5. In the broadened panel you should see:
+
+  - the elastic ridge tracing E_out_kin(mu) from ~13.77 MeV at mu = -1
+    up to ~14.00 MeV at mu = +1, sharply forward-peaked
+  - discrete-inelastic bands at the kinematically allowed E_out values
+    of MT 51..76 levels
+  - the smooth fission spectrum (peaks near 1 MeV) and (n,2n) / (n,n_c)
+    contributions, now slightly smoothed by the 200 keV kernel.
 
 Download the data file once with:
 
@@ -44,6 +52,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 ENDF_FILE = Path("/tmp/n_092-U-238_9237.dat")
+SIGMA = 200.0e3  # Gaussian kernel width along E_out, in eV
 
 if not ENDF_FILE.exists():
     raise SystemExit(
@@ -59,23 +68,39 @@ einc = np.array([1.4e7])
 eouts = np.linspace(1e3, 1.4e7, 200)
 mus = np.linspace(-1, 1, 100)
 
-ddx = get_particle_production_ddxs(
+ddx_unbroadened = get_particle_production_ddxs(
     endf_dict, "(n,total)", "n", einc, eouts, mus,
 )
-# shape is (n_einc=1, n_eout, n_mu)
+ddx_broadened = get_particle_production_ddxs(
+    endf_dict, "(n,total)", "n", einc, eouts, mus,
+    broadening=SIGMA,
+)
+# shape (n_einc=1, n_eout, n_mu) for both
 
 
-fig, ax = plt.subplots(figsize=(7.5, 5))
-mesh = ax.pcolormesh(
-    mus, eouts / 1e6, ddx[0],
-    norm=LogNorm(vmin=ddx[ddx > 0].min(), vmax=ddx.max()),
-    shading="auto", cmap="viridis",
-)
-fig.colorbar(mesh, ax=ax, label=r"d$^2\sigma$/dE/d$\Omega$ [b/eV/sr]")
-ax.set_xlabel(r"emission angle cosine $\mu$ (LAB)")
-ax.set_ylabel("emission energy [MeV]")
-ax.set_title(
-    f"{ENDF_FILE.name} neutron DDX at $E_n = 14$ MeV"
-)
-fig.tight_layout()
+# Use a shared color scale so the two panels are directly comparable.
+positive = np.concatenate([
+    ddx_unbroadened[ddx_unbroadened > 0],
+    ddx_broadened[ddx_broadened > 0],
+])
+vmin = positive.min()
+vmax = max(ddx_unbroadened.max(), ddx_broadened.max())
+norm = LogNorm(vmin=vmin, vmax=vmax)
+
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), sharey=True)
+for ax, ddx, title in (
+    (axes[0], ddx_unbroadened, "broadening=None"),
+    (axes[1], ddx_broadened, f"broadening={SIGMA/1e3:.0f} keV (Gaussian)"),
+):
+    mesh = ax.pcolormesh(
+        mus, eouts / 1e6, ddx[0],
+        norm=norm, shading="auto", cmap="viridis",
+    )
+    ax.set_xlabel(r"emission angle cosine $\mu$ (LAB)")
+    ax.set_title(title)
+
+axes[0].set_ylabel("emission energy [MeV]")
+fig.colorbar(mesh, ax=axes, label=r"d$^2\sigma$/dE/d$\Omega$ [b/eV/sr]")
+fig.suptitle(f"{ENDF_FILE.name} neutron DDX at $E_n = 14$ MeV")
 plt.show()

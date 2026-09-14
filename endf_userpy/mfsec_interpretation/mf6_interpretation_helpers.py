@@ -122,10 +122,11 @@ def get_zaps_for_all_mts(endf_dict, dist2d_only=False):
 def has_disc_part(endf_dict, mt, zap):
     subsecs = get_subsecs(endf_dict, mt, zap)
     for subsec in subsecs:
+        law = subsec['LAW']
         if law == 1:
             nd_arr = np.array(list(subsec['ND'].values()))
-            nep_arr = np.array(list(subsec['NEP'].values()))
-            return bool(np.any(nd_arr > 0))
+            if bool(np.any(nd_arr > 0)):
+                return True
     return False
 
 
