@@ -1,13 +1,18 @@
 """Broadening of secondary-distribution cross sections along E_out.
 
-Three per-(MT, ZAP) routines live here:
+Four per-(MT, ZAP) routines live here:
 
   - `compute_ddx_continuous_broadened`: 2D DDX continuum, convolved
     along E_out via `adaptive_convolve`.
   - `compute_ddx_discrete_broadened`: 2D DDX for 2-body discrete-
-    level channels, where the kernel replaces the kinematic delta
-    pointwise (no convolution needed because the distribution is a
-    Dirac line, not a continuum).
+    level channels (MF6/LAW=2 or MF4-only), where the kernel replaces
+    the kinematic delta pointwise on the 1D curve E_out = E_out_kin(mu).
+  - `compute_ddx_law1_discrete_broadened`: 2D DDX for MF6/LAW=1
+    subsections with ND>0, whose discrete-line positions depend on
+    mu through the eval-frame -> LAB inverse map rather than through
+    2-body kinematics. Each user (E_in, mu) sees a set of Dirac
+    peaks at file-tabulated eval-frame energies, mapped to LAB via
+    `mf6cm2lab_disc`.
   - `compute_dxs_dE_broadened`: 1D dxs/dE, convolved along E_out via
     `adaptive_convolve`. Continuous and discrete channels share this
     path because the integration over mu already turns the 2-body
@@ -223,6 +228,76 @@ def compute_ddx_discrete_broadened(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
     return kernel_vals * angdist_b * xs * yields / (2 * np.pi)
+
+
+def compute_ddx_law1_discrete_broadened(
+    endf_dict, mt, zap,
+    energies_in, energies_out, angle_cosines_out,
+    kernel,
+    to_lab=True,
+):
+    """DDX contribution from MF6/LAW=1 discrete-energy lines (ND>0),
+    with the kinematic delta at each line replaced by `kernel`.
+
+    The line positions ep_disc_lab(E_in, mu) and eval-frame-weighted
+    amplitudes amp(E_in, mu) come from
+    `mf6_interp.compute_law1_discrete_lines`, which reports them per
+    subsection carrying this ZAP and concatenates along the last axis.
+    Each user grid cell (E_in, E_out, mu) accumulates
+    `kernel(E_out - ep_disc_lab) * amp * xs * yield / (2 pi)` summed
+    over lines. Cells where the CM->LAB inverse map has no physical
+    solution are marked by amp == 0 in the wrapper output and
+    contribute nothing.
+
+    yield uses `compute_yields(include_discrete=True)`, i.e. the full
+    MF6 yield attributed to this ZAP. Since `compute_yields` treats
+    the ND>0 and continuum portions of a LAW=1 subsection as one
+    lump, this same full yield also flows into the continuous folder
+    (with `include_discrete=False` there, which is a no-op for LAW=1
+    subsections). The b(k) amplitude carried inside amp partitions
+    the distribution across discrete lines vs continuum, so the two
+    folders together sum to the full production distribution without
+    double-counting.
+
+    Callers must gate on `has_mf6_law1_discrete_lines` for the
+    channel; calling on a MT/ZAP with no LAW=1 ND>0 content returns
+    a zero DDX.
+
+    Returns
+    -------
+    ddx : ndarray of shape (n_einc, n_eouts, n_mus).
+    """
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+
+    ep_disc_lab, amp_disc = mf6_interp.compute_law1_discrete_lines(
+        endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+    )
+    # Shapes: (n_einc, n_mus, K)
+    ddx = np.zeros(
+        (len(energies_in), len(energies_out), len(angle_cosines_out)),
+        dtype=float,
+    )
+    if ep_disc_lab.shape[-1] == 0:
+        return ddx
+
+    # (1, n_eouts, 1) - (n_einc, 1, n_mus) -> (n_einc, n_eouts, n_mus)
+    for k in range(ep_disc_lab.shape[-1]):
+        pos = ep_disc_lab[:, np.newaxis, :, k]  # (n_einc, 1, n_mus)
+        amp = amp_disc[:, np.newaxis, :, k]     # same shape
+        # Cells where the map failed have amp == 0; the kernel value
+        # at whatever pos happens to be there is multiplied by zero.
+        delta = energies_out[np.newaxis, :, np.newaxis] - pos
+        ddx += np.asarray(kernel(delta)) * amp
+
+    yields = compute_yields(
+        endf_dict, mt, zap, energies_in, include_discrete=True,
+    ).reshape(-1, 1, 1)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+    ).reshape(-1, 1, 1)
+    return ddx * yields * xs / (2 * np.pi)
 
 
 def _compute_discrete_angdist(

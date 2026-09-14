@@ -2,6 +2,7 @@ import numpy as np
 from ..primitives.interpolation import interp_tab1
 from ..fortran.endf6 import (
     mf6_get_law1,
+    mf6_get_law1_disc_lines,
     mf6_get_law2,
     mf6_get_law6,
     mf6_get_law7,
@@ -109,6 +110,101 @@ def get_dist2d_from_subsec_law1(
         cont_result_arr[i:i+1,:,:] = cur_cont_res
 
     return cont_result_arr
+
+
+def get_law1_discrete_lines_from_subsec(
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab=True,
+):
+    """Discrete-line positions and amplitudes for one MF6/LAW=1
+    subsection.
+
+    Returns (ep_disc_lab, amp_disc), both of shape (n_einc, n_mus,
+    nd_common) where nd_common = min(ND across all panels bracketed
+    by any einc). Entries where the CM->LAB inverse map has no
+    physical solution (below-threshold cases) are zero; callers
+    should treat them as "no contribution at this cell".
+
+    to_lab must be True; setting it False raises. The underlying
+    Fortran uses the section's LCT, and this wrapper does not model
+    an "evaluation frame" the caller can pick.
+    """
+    if to_lab is not True:
+        raise ValueError(
+            'get_law1_discrete_lines_from_subsec requires `to_lab=True`'
+        )
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    if subsec['LAW'] != 1:
+        raise ValueError(
+            f'MT={mt} subsec_num={subsec_num} is LAW={subsec["LAW"]}, '
+            'not LAW=1'
+        )
+    eu = np.asfortranarray(np.asarray(energies_in, dtype=float))
+    uu = np.asfortranarray(np.asarray(angle_cosines_out, dtype=float))
+    neu = len(eu)
+    nuu = len(uu)
+
+    awr = get_AWR(endf_dict)
+    awi = get_AWI(endf_dict)
+    za = get_ZA(endf_dict)
+    zai = get_ZAI(endf_dict)
+    lct = sec['LCT']
+    zap = subsec['ZAP']
+    awp = subsec['AWP']
+    lang = subsec['LANG']
+    lep = subsec['LEP']
+    ei_mesh = dict2array(subsec['E'], dtype=float)
+    int_arr = np.array(subsec['INT'], dtype=int)
+    nbt_arr = np.array(subsec['NBT'], dtype=int)
+    ei_interp = convert_interp_repr(int_arr, nbt_arr)
+    nd_arr = dict2array(subsec['ND'], dtype=int)
+    na_arr = dict2array(subsec['NA'], dtype=int)
+
+    idcs = find_interval(ei_mesh, energies_in)
+
+    nd_max = int(nd_arr.max()) if nd_arr.size else 0
+    ep_disc_lab = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
+    amp_disc = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
+    if nd_max == 0:
+        return ep_disc_lab, amp_disc
+
+    # The Fortran routine processes one incident-energy panel bracket
+    # (e1, e2) at a time. Group user einc by the panel they land in
+    # so we make one Fortran call per bracket.
+    for panel_idx in np.unique(idcs):
+        mask = (idcs == panel_idx)
+        if not np.any(mask):
+            continue
+        cur_eu = np.asfortranarray(eu[mask])
+        e1 = ei_mesh[panel_idx].item()
+        e2 = ei_mesh[panel_idx + 1].item()
+        nd1 = nd_arr[panel_idx].item()
+        na1 = na_arr[panel_idx].item()
+        ep1 = dict2array(subsec['Ep'][panel_idx + 1], dtype=float, order='F')
+        b1 = dict2array(subsec['b'][panel_idx + 1], dtype=float, order='F')
+        nd2 = nd_arr[panel_idx + 1].item()
+        na2 = na_arr[panel_idx + 1].item()
+        ep2 = dict2array(subsec['Ep'][panel_idx + 2], dtype=float, order='F')
+        b2 = dict2array(subsec['b'][panel_idx + 2], dtype=float, order='F')
+        lei = ei_interp[panel_idx].item()
+
+        cur_ep = np.zeros(
+            (cur_eu.size, nuu, nd_max), dtype=float, order='F',
+        )
+        cur_amp = np.zeros(
+            (cur_eu.size, nuu, nd_max), dtype=float, order='F',
+        )
+        mf6_get_law1_disc_lines(
+            cur_eu, uu,
+            awr, awi, awp, za, zai, zap, lct, lang, lep, lei,
+            e1, nd1, na1, ep1, b1,
+            e2, nd2, na2, ep2, b2,
+            nd_max, cur_ep, cur_amp,
+        )
+        ep_disc_lab[mask, :, :] = cur_ep
+        amp_disc[mask, :, :] = cur_amp
+
+    return ep_disc_lab, amp_disc
 
 
 @pad_outside_angdist_values

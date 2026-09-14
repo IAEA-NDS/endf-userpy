@@ -4,6 +4,7 @@ The tests monkeypatch the dist2d / angdist / mass / yield / xs
 primitives so the broadening wrappers can be checked against
 closed-form references without depending on any real ENDF data.
 """
+from pathlib import Path
 import numpy as np
 import pytest
 
@@ -35,7 +36,16 @@ def patched_environment(monkeypatch):
         'projectile': 'n',
         'multiplicity': 1.0,
         'dexs': lambda einc, eouts: np.zeros((len(einc), len(eouts))),
+        # Callable returning (ep_disc_lab, amp_disc), each of shape
+        # (n_einc, n_mus, K). Consumed by the LAW=1 discrete folder.
+        'law1_lines': lambda einc, mus: (
+            np.zeros((len(einc), len(mus), 0)),
+            np.zeros((len(einc), len(mus), 0)),
+        ),
     }
+
+    def fake_law1_lines(endf_dict, mt, zap, einc, mus, to_lab=True):
+        return state['law1_lines'](einc, mus)
 
     def fake_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True):
         return state['dexs'](einc, eouts)
@@ -60,6 +70,9 @@ def patched_environment(monkeypatch):
     monkeypatch.setattr(ddxb, 'compute_dist2d_values', fake_dist2d)
     monkeypatch.setattr(ddxb, 'compute_dexs', fake_dexs)
     monkeypatch.setattr(ddxb, 'compute_yields', fake_yields)
+    monkeypatch.setattr(
+        ddxb.mf6_interp, 'compute_law1_discrete_lines', fake_law1_lines
+    )
     monkeypatch.setattr(ddxb.mf3_interp, 'compute_cross_section', fake_xs)
     monkeypatch.setattr(
         ddxb.mf4_interp, 'compute_angdist_values', fake_angdist_mf4
@@ -531,3 +544,199 @@ def test_dxs_dE_integral_preserved(patched_environment):
     # support; the eouts grid spans +/- 7.5 sigma_f so truncation is
     # negligible.
     assert abs(integral - amplitude) / amplitude < 1e-3
+
+
+# ============================================================
+# MF6/LAW=1 ND>0 folder tests
+# ============================================================
+
+
+def test_law1_disc_single_line_places_kernel_at_reported_position(
+    patched_environment,
+):
+    """One discrete line at a fixed LAB position with unit amplitude:
+    the folder must produce kernel(E_out - pos) at every (E_in, mu)
+    times xs * yield / (2 pi)."""
+    line_e = 4.77e5
+    line_amp = 0.5
+
+    def law1_lines(einc, mus):
+        ep = np.full((len(einc), len(mus), 1), line_e)
+        amp = np.full((len(einc), len(mus), 1), line_amp)
+        return ep, amp
+
+    patched_environment(
+        law1_lines=law1_lines,
+        xs=lambda einc: np.full(len(einc), 2.0),
+        yields_all=lambda einc: np.full(len(einc), 3.0),
+    )
+
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1.0e5, 8.0e5, 401)
+    mus = np.array([-1.0, 0.0, 1.0])
+    sigma = 3.0e4
+    result = ddxb.compute_ddx_law1_discrete_broadened(
+        endf_dict=None, mt=0, zap=0,
+        energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+        kernel=lambda d: _gaussian(d, sigma),
+    )
+    assert result.shape == (1, len(eouts), len(mus))
+
+    # Peak location: kernel is centred at line_e, isotropic in mu.
+    for j in range(len(mus)):
+        ipeak = np.argmax(result[0, :, j])
+        assert abs(eouts[ipeak] - line_e) < 3 * sigma / len(eouts) * (eouts[-1] - eouts[0])
+
+    # Peak height: gaussian max (1 / (sigma * sqrt(2pi))) times
+    # amp * xs * yield / (2 pi).
+    expected_peak = (
+        _gaussian(0.0, sigma) * line_amp * 2.0 * 3.0 / (2 * np.pi)
+    )
+    peak = result[0, :, 0].max()
+    assert abs(peak - expected_peak) / expected_peak < 1e-3
+
+
+def test_law1_disc_multiple_lines_sum(patched_environment):
+    """Two discrete lines at different positions with different
+    amplitudes: the folder must produce the sum of two kernel-shifted
+    contributions."""
+    e1_, e2_ = 3.0e5, 6.0e5
+    amp1_, amp2_ = 0.4, 0.6
+
+    def law1_lines(einc, mus):
+        ep = np.zeros((len(einc), len(mus), 2))
+        amp = np.zeros((len(einc), len(mus), 2))
+        ep[..., 0] = e1_
+        ep[..., 1] = e2_
+        amp[..., 0] = amp1_
+        amp[..., 1] = amp2_
+        return ep, amp
+
+    patched_environment(
+        law1_lines=law1_lines,
+        xs=lambda einc: np.ones(len(einc)),
+        yields_all=lambda einc: np.ones(len(einc)),
+    )
+
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1.0e5, 8.0e5, 801)
+    mus = np.array([0.0])
+    sigma = 2.0e4
+    result = ddxb.compute_ddx_law1_discrete_broadened(
+        endf_dict=None, mt=0, zap=0,
+        energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+        kernel=lambda d: _gaussian(d, sigma),
+    )
+
+    expected = (
+        amp1_ * _gaussian(eouts, sigma, mu=e1_)
+        + amp2_ * _gaussian(eouts, sigma, mu=e2_)
+    ) / (2 * np.pi)
+    np.testing.assert_allclose(result[0, :, 0], expected, rtol=1e-5, atol=1e-15)
+
+
+def test_law1_disc_no_lines_returns_zero(patched_environment):
+    """If the aggregator reports no LAW=1 ND>0 lines for this
+    (mt, zap), the folder returns a zero DDX (not None, not an
+    error)."""
+    patched_environment(
+        law1_lines=lambda einc, mus: (
+            np.zeros((len(einc), len(mus), 0)),
+            np.zeros((len(einc), len(mus), 0)),
+        ),
+        xs=lambda einc: np.ones(len(einc)),
+        yields_all=lambda einc: np.ones(len(einc)),
+    )
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1e5, 1e6, 21)
+    mus = np.array([0.0])
+    result = ddxb.compute_ddx_law1_discrete_broadened(
+        endf_dict=None, mt=0, zap=0,
+        energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+        kernel=lambda d: _gaussian(d, 1e4),
+    )
+    np.testing.assert_array_equal(result, np.zeros((1, len(eouts), 1)))
+
+
+def test_law1_disc_zero_amp_cells_skip_kernel(patched_environment):
+    """Cells the wrapper marked as no-physical-solution (amp=0) must
+    contribute nothing regardless of the position value at that cell."""
+    def law1_lines(einc, mus):
+        ep = np.zeros((len(einc), len(mus), 1))
+        amp = np.zeros((len(einc), len(mus), 1))
+        # Only middle-mu cell has a real line; edge cells are dead.
+        ep[:, 1, 0] = 5.0e5
+        amp[:, 1, 0] = 1.0
+        return ep, amp
+
+    patched_environment(
+        law1_lines=law1_lines,
+        xs=lambda einc: np.ones(len(einc)),
+        yields_all=lambda einc: np.ones(len(einc)),
+    )
+    einc = np.array([1.4e7])
+    eouts = np.linspace(4e5, 6e5, 201)
+    mus = np.array([-1.0, 0.0, 1.0])
+    result = ddxb.compute_ddx_law1_discrete_broadened(
+        endf_dict=None, mt=0, zap=0,
+        energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+        kernel=lambda d: _gaussian(d, 2e4),
+    )
+    # Edge mu cells: zero everywhere.
+    np.testing.assert_array_equal(result[0, :, 0], 0.0)
+    np.testing.assert_array_equal(result[0, :, 2], 0.0)
+    # Middle mu cell: peak at 5e5, non-zero.
+    assert result[0, :, 1].max() > 0
+
+
+# ============================================================
+# Real-data integration test for the LAW=1 folder
+# ============================================================
+
+
+DATA_DIR = Path(__file__).resolve().parent / 'data'
+
+
+def test_law1_disc_real_be9_gamma_line():
+    """End-to-end on tests/data/n-004_Be_009.endf MT 701 subsec 3
+    (LAW=1, ND=1, ZAP=0 gamma line at 477 keV, isotropic, LCT=2).
+    The broadened DDX must peak at 477 keV at every mu (gamma AWP=0
+    kills the CM->LAB frame shift) and integrate to the reference
+    (n,X-g) production cross section."""
+    endf_file = DATA_DIR / 'n-004_Be_009.endf'
+    if not endf_file.exists():
+        pytest.skip(f'{endf_file} not present')
+
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.mfsec_interpretation import mf3_interpretation as mf3
+    from endf_userpy.quantities_mt_zap.quantities import compute_yields
+
+    parser = EndfParserCpp(
+        ignore_missing_tpid=True, ignore_zero_mismatch=True, accept_spaces=True,
+    )
+    endf = parser.parsefile(str(endf_file))
+
+    einc = np.array([1.4e7])
+    eouts = np.linspace(2.0e5, 8.0e5, 401)
+    mus = np.linspace(-1.0, 1.0, 21)
+    sigma = 3.0e4
+
+    result = ddxb.compute_ddx_law1_discrete_broadened(
+        endf, mt=701, zap=0.0,
+        energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+        kernel=lambda d: _gaussian(d, sigma),
+    )
+    assert not np.any(np.isnan(result))
+    assert not np.any(result < 0)
+
+    # Peak at 477 keV at every mu (isotropic + gamma == no frame shift).
+    ipeaks = np.argmax(result[0], axis=0)
+    for j in range(len(mus)):
+        assert abs(eouts[ipeaks[j]] - 4.77e5) < 2 * (eouts[1] - eouts[0])
+
+    # Integrated production xs = xs(mt=701) * yield(zap=0).
+    inner = np.trapezoid(result[0], eouts, axis=0)
+    integ = np.trapezoid(inner, mus) * 2 * np.pi
+    xs = mf3.compute_cross_section(endf, 701, einc)[0]
+    yld = compute_yields(endf, 701, 0.0, einc, include_discrete=True)[0]
+    assert abs(integ - xs * yld) / (xs * yld) < 1e-3
