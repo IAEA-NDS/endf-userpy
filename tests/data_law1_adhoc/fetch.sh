@@ -30,6 +30,14 @@ files=(
   # for MT 51..79 carry the (n,n_i) de-excitation photons that were
   # silently dropped by the pre-PR#35 gamma production dispatcher.
   "jeff40_n_Cu-63.endf   JEFF-4.0       n_029-Cu-63_2925  7831a5bab6cac44d56d019f775062112cb38741287cca9745d9cb132413ebafb"
+  # Cu-63 from JENDL-5: MT 51..90 put the (n,n_i) de-excitation
+  # photons in MF6/LAW=1 as pure-discrete ND=1 subsections (rather
+  # than MF12+MF14 as every other library). Motivating file for the
+  # MF6/LAW=1 gamma-angular support (issue #55): before that fix,
+  # the entire JENDL-5 (n,n_i) gamma angular structure was silently
+  # dropped from dxs/dmu / DDX because `has_angdist_part` only
+  # recognised LAW=2/3/4.
+  "jendl5_n_Cu-63.endf   JENDL-5        n_029-Cu-63_2925  cf81b57249cd33cc787c197f21ce560cda4f711b6fd77141710ce90f1fcf6a7f"
 )
 
 ua='Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)'

@@ -8,7 +8,7 @@ collection and lists these files explicitly.
 
 ## Fetching the data files
 
-The files are **not committed to the repo** (6 files, ~18 MB total).
+The files are **not committed to the repo** (7 files, ~35 MB total).
 Run the fetch script once to populate this directory from
 nds.iaea.org:
 
@@ -34,6 +34,7 @@ changed.
 | `tendl21_n_Fe-56.endf` | TENDL-2021 | `n_026-Fe-56_2631.zip` | 26 | Mid-mass MIXED subsecs (both ND>0 AND continuum in the same LAW=1 subsection). LCT=3 (the light-ejectile branch of the frame conversion, which for gammas degenerates to identity). Panel count reaches 42 for MT 16, so panel interpolation is exercised. ND up to 87 lines per subsec. Different evaluator style from ENDF-B: TALYS-based. |
 | `tendl21_n_U-235.endf` | TENDL-2021 | `n_092-U-235_9228.zip` | 12 | Actinide MIXED subsecs. LCT=2 and LCT=3 both appear across subsections in the same file. |
 | `jeff40_n_Cu-63.endf` | JEFF-4.0 | `n_029-Cu-63_2925.zip` | 0 | Added for issue #29. Not a LAW=1 discrete-line file; MF6 carries only the scattered neutron for MT 51..79 while MF12 (LO=2 transition probabilities) carries the de-excitation photons. Reproduces the exact "gamma production XS misses (n,n_i) contribution" symptom from Pablo's four-library plot: the pre-PR#35 gamma dispatcher silently dropped every MT 51..79 photon contribution because MF6 declared no gamma subsection and the reaction-string fallback lists zero gammas for inelastic MTs. |
+| `jendl5_n_Cu-63.endf` | JENDL-5 | `n_029-Cu-63_2925.zip` | 40 | Added for issue #55. Complement to the JEFF-4.0 file: MT 51..90 put the (n,n_i) de-excitation photons in MF6/LAW=1 as pure-discrete ND=1 subsections (each MT is a single gamma line) rather than in MF12+MF14. Before issue #55's fix, the entire JENDL-5 (n,n_i) gamma angular structure was silently dropped from `dxs/dmu` / DDX because `mf6_help.has_angdist_part` only recognised LAW=2/3/4. Exercises the MF6/LAW=1-with-nonzero-b(k) case that the TENDL Σb=0.5 quirk masks in the other corpus files. |
 
 ## Provenance
 
