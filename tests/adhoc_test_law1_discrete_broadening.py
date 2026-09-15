@@ -52,22 +52,24 @@ DATA_DIR = Path(__file__).resolve().parent / 'data_law1_adhoc'
 GAMMA_ZAP = 0.0
 
 # Per-file settings. E_in picks the target incident energy; the eouts
-# window and internal mu density are set so the peaks (which may span
-# the file's ND-line spectrum from ~keV to E_in scale) are resolved.
-# rtol is the acceptable fractional error on the integrated production
-# xs vs the reference; loose for MT-heavy files where a few weak
-# discrete lines can sit at the edge of the eouts window.
+# window and internal mu density are set so the peaks (which for
+# gamma cascades span ~10 keV to a few MeV) are resolved. `eout_min`
+# has to be well below the lowest discrete line in the file, or a
+# kernel-width fraction of the low-energy peak's mass falls out of
+# the integration window and shows up as a systematic shortfall.
+# rtol is the fractional-error tolerance on the integrated
+# production xs vs the reference.
 FILE_CFG = {
-    'endfb81_n_Be-9.endf':   dict(e_in=1.4e7, eout_min=1e5, eout_max=8e5,
+    'endfb81_n_Be-9.endf':   dict(e_in=1.4e7, eout_min=1e3, eout_max=8e5,
                                   n_eouts=401, n_mus=21, sigma=3e4, rtol=5e-3),
-    'endfb81_n_B-11.endf':   dict(e_in=1.4e7, eout_min=1e5, eout_max=2e7,
-                                  n_eouts=801, n_mus=21, sigma=1e5, rtol=5e-2),
-    'endfb81_n_Al-27.endf':  dict(e_in=1.4e7, eout_min=1e5, eout_max=1.4e7,
-                                  n_eouts=1401, n_mus=21, sigma=8e4, rtol=1e-1),
-    'tendl21_n_Fe-56.endf':  dict(e_in=1.4e7, eout_min=1e5, eout_max=1.5e7,
-                                  n_eouts=1401, n_mus=21, sigma=1e5, rtol=1e-1),
-    'tendl21_n_U-235.endf':  dict(e_in=1.4e7, eout_min=1e5, eout_max=1.5e7,
-                                  n_eouts=1401, n_mus=21, sigma=1e5, rtol=1e-1),
+    'endfb81_n_B-11.endf':   dict(e_in=1.4e7, eout_min=1e3, eout_max=2e7,
+                                  n_eouts=1001, n_mus=21, sigma=1e5, rtol=5e-2),
+    'endfb81_n_Al-27.endf':  dict(e_in=1.4e7, eout_min=1e3, eout_max=1.4e7,
+                                  n_eouts=1501, n_mus=21, sigma=8e4, rtol=1e-1),
+    'tendl21_n_Fe-56.endf':  dict(e_in=1.4e7, eout_min=1e3, eout_max=1.5e7,
+                                  n_eouts=1501, n_mus=21, sigma=1e5, rtol=1e-1),
+    'tendl21_n_U-235.endf':  dict(e_in=1.4e7, eout_min=1e3, eout_max=1.5e7,
+                                  n_eouts=1501, n_mus=21, sigma=1e5, rtol=1e-1),
 }
 
 

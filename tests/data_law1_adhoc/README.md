@@ -91,34 +91,48 @@ python tests/adhoc_test_law1_discrete_broadening.py
 
 Running the ad-hoc pytest module against the 5 files at 14 MeV with
 per-file kernel widths and tolerances (see `FILE_CFG` in the script)
-gives, as of the initial exploration:
+gives, after initial diagnosis and config adjustment:
 
-- **Be-9, B-11**: DDX and 1D dxs/dE integral checks pass. Baseline
-  case: pure-discrete gamma lines, integral matches xs * yield within
-  the file tolerance.
-- **Al-27**: DDX + 1D integrals for MTs 51..79 (inelastic-level
-  cascades) and MTs 601..748 (charged-particle emission cascades)
-  pass tolerance. The higher-MT alpha-emission cascades (MTs 802,
-  808..819) come in ~11..27% below xs * yield. Not immediately
-  diagnosed. Worth probing whether the eout window / kernel width /
-  mu grid picks these up correctly, or whether the aggregator misses
-  a subsection.
-- **Fe-56**: several MTs (28, 91, 102..107) show rel err 10..50% in
-  either the DDX or 1D check, and the cont folder occasionally
-  returns tiny negative values (FFT numerical noise beyond the
-  1e-10-of-peak tolerance in a few cases). These MTs are all mixed
-  cont+disc subsecs. Discrepancies likely reflect the interaction
-  between the LAW=1 discrete folder and the continuous folder when
-  they share yield in the way LAW=1 stores it -- worth digging in
-  to confirm the split is correct.
-- **U-235**: MTs 16, 17, 22, 28 come in 30..70% below xs * yield.
-  Large mixed subsecs on an actinide; probably related to the Fe-56
-  finding.
-- **Public API smoke test** (`get_particle_production_ddxs(broadening=)`
-  on gamma production) runs to completion on all 5 files.
+- **Be-9, B-11, Al-27**: all three tests per file pass (DDX +
+  1D dxs/dE integral checks + public API smoke test). Pure-discrete
+  subsecs, no continuum interaction. Integral matches xs * yield
+  within tolerance for every admitted MT (Al-27's 106-MT sweep
+  included).
+- **Fe-56**: 5 MTs (102, 105, 106, 111, 112) fail the integral
+  check with the discrete + continuum folders summed, coming in
+  19..46% below xs * yield. All are mixed subsecs (LAW=1 ND>0
+  co-existing with continuum in the same subsection). Most of the
+  originally-observed shortfall for other MTs went away after
+  widening `eout_min` from 100 keV to 1 keV (some gamma cascade
+  lines sit below 100 keV), but the residual for these five MTs
+  persists and looks like a real folder-interaction issue rather
+  than a grid-config artefact. The public API smoke test passes.
+- **U-235**: 6 MTs (17, 22, 28, 41, 91, 102) fail with 10..21%
+  rel err. Same pattern as Fe-56 (mixed subsecs, actinide,
+  cont+disc summed still undershoots). Public API smoke test
+  passes.
 
-The intent is that these findings inform whether each file is worth
-promoting into the main suite. Files where the tolerances just need
-loosening (or the eouts window widening) are easy promotions; files
-where a discrepancy points at a real folder bug are more valuable as
-regression fixtures once the bug is understood and fixed.
+The pure-discrete files (Be-9, B-11, Al-27) look ripe for promotion
+into the main test suite as regression fixtures for the LAW=1 folder.
+The mixed-subsec files (Fe-56, U-235) surface a real coupling bug
+between the LAW=1 discrete folder and the continuum folder that needs
+investigation before those files are worth promoting; see the linked
+follow-up issue.
+
+### Diagnosis history
+
+Findings from the initial exploration have already led to two fixes:
+
+1. **`eout_min` sensitivity**: the original config had
+   `eout_min=100 keV`, which cut off gamma-cascade lines below 100 keV
+   (found in Al-27 MT 802/808/815/819 and many Fe-56/U-235 MTs). The
+   config now uses `eout_min=1 keV`; the ad-hoc-test findings for those
+   MTs dropped from 11..46% rel err to well under 5% purely by
+   widening the window. Kernel-truncation-of-tails at the low end
+   was the culprit.
+2. **`get_law1_discrete_lines_from_subsec` out-of-range einc**:
+   originally raised IndexError from `find_interval` when the user's
+   einc fell outside a subsection's panel-mesh range (surfaced by
+   Fe-56 MT 11). The wrapper now pre-filters einc against the mesh
+   and zero-pads out-of-range rows, mirroring the intent of
+   `pad_outside_dist2d_values` on the continuum wrapper.
