@@ -34,10 +34,14 @@ from ..mfsec_interpretation import mf3_interpretation as mf3_interp
 from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
+from ..mfsec_interpretation import mf12_interpretation as mf12_interp
 from ..primitives import conversion_relativistic as conv_relat
 from ..primitives import reactions as reactions
 from ..primitives.convolution import adaptive_convolve
-from ..primitives.physical_constants import get_particle_mass_for_zap
+from ..primitives.physical_constants import (
+    get_particle_mass_for_zap,
+    get_zap_for_particle,
+)
 from ..primitives.properties import (
     get_projectile,
     get_projectile_mass,
@@ -46,6 +50,7 @@ from ..primitives.properties import (
     has_mf4_mt,
     has_mf5_mt,
     has_mf6_mt,
+    has_mf12_mt,
 )
 from .distribution2d import compute_dist2d_values
 from .quantities import compute_yields, compute_dexs
@@ -332,6 +337,92 @@ def compute_ddx_law1_discrete_broadened(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
     return ddx * yields * xs / (2 * np.pi)
+
+
+def compute_dxs_dE_mf12_discrete_broadened(
+    endf_dict, mt, zap, energies_in, energies_out, kernel,
+):
+    """1D dxs/dE contribution from discrete photon lines declared in
+    MF12, with each Dirac peak at Eg_i replaced by ``kernel``.
+
+    For gamma-only, ZAP-checked by the caller via the
+    ``has_mf12_discrete_lines`` selector. The photon-line positions
+    ``Eg_i`` are read from ``mf12_interp.get_photon_energies`` and the
+    per-line yields ``y_i(Ein)`` from ``mf12_interp.compute_photon_yields``.
+    A photon energy of 0 in MF12 is the continuum-spectrum placeholder
+    (its shape lives in MF15) and is excluded here; the continuum
+    contribution flows through the ordinary continuous folder via
+    ``compute_dexs`` / ``compute_energydist_values``.
+
+    Returns
+    -------
+    dxs_dE : ndarray of shape ``(n_einc, n_eouts)``. Units match
+    ``compute_dexs``: barn / eV, without the ``1/(2pi)`` factor that
+    the DDX folders apply.
+
+    The full formula for the folded contribution is::
+
+        dxs_dE(Ein, Eout) = sigma(Ein) * sum_i y_i(Ein)
+                                * kernel(Eout - Eg_i)
+
+    where ``sigma(Ein)`` is the MF3 cross section for this MT.
+
+    Notes
+    -----
+    MF13 (per-line photon production cross section) is not yet
+    handled here. Files that carry gamma yields only in MF13 will
+    contribute zero from this folder; support can be added by
+    substituting ``mf13_interp.compute_photon_production_xs`` for
+    ``sigma * y_i`` line by line.
+    """
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF12 discrete-line broadening is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    result = np.zeros(
+        (len(energies_in), len(energies_out)), dtype=float,
+    )
+    if not has_mf12_mt(endf_dict, mt):
+        return result
+
+    photon_energies = mf12_interp.get_photon_energies(endf_dict, mt)
+    if photon_energies is None:
+        return result
+    photon_energies = np.asarray(photon_energies, dtype=float)
+    disc_mask = photon_energies > 0.0
+    if not np.any(disc_mask):
+        return result
+
+    # compute_photon_yields returns shape (n_einc, n_photen). We
+    # request the full set (including any Eg=0 placeholder) so the
+    # underlying reader keeps a consistent index; we then slice out
+    # the discrete rows.
+    yields_all = mf12_interp.compute_photon_yields(
+        endf_dict, mt, energies_in, photon_energies,
+    )
+    Eg_disc = photon_energies[disc_mask]
+    yields_disc = yields_all[:, disc_mask]  # (n_einc, n_disc_lines)
+
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+    )  # (n_einc,)
+    weight = (yields_disc * xs[:, np.newaxis])  # (n_einc, n_disc_lines)
+
+    # Per-line kernel folding. Loop over the K discrete lines rather
+    # than materialising a (n_einc, n_eouts, K) tensor -- K is small
+    # for LO=2 partial channels (typically 1..a few) and moderate for
+    # LO=1 capture files (~300 for Al-27) but the loop stays flat
+    # anyway and keeps memory linear in n_eouts.
+    for k in range(len(Eg_disc)):
+        delta = energies_out - Eg_disc[k]  # (n_eouts,)
+        result += (
+            np.asarray(kernel(delta))[np.newaxis, :]
+            * weight[:, k].reshape(-1, 1)
+        )
+    return np.clip(result, 0.0, None)
 
 
 def compute_dxs_dE_law1_discrete_broadened(
