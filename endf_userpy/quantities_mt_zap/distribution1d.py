@@ -58,6 +58,21 @@ def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, t
             angdist += mf6_interp.compute_angdist_values(
                 endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
             )
+        # LAW=1 discrete-line angular content (issue #55). The
+        # angular info lives inside the LAW=1 subsection itself
+        # (through the LANG parameter and the b(k) amplitude
+        # coefficients), so has_angdist_part above -- which only
+        # recognises LAW=2/3/4 -- does not admit it. Read via
+        # mf6_interp.compute_law1_discrete_lines and sum the
+        # per-line amp_disc(mu, k) over k. amp_disc has the per-
+        # line yield weight embedded so the sum has the correct
+        # (y_disc / Y_total) normalisation relative to compute_daxs.
+        if mf6_help.has_disc_part(endf_dict, mt, zap):
+            module_logger.debug('--> found LAW=1 discrete-line angular in MF6')
+            found_angdist = True
+            angdist += _compute_mf6_law1_disc_angdist(
+                endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+            )
         if found_angdist:
             return angdist
 
@@ -83,6 +98,39 @@ def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, t
         f'ZAP={zap}; returning zeros'
     )
     return np.zeros((len(energies_in), len(angle_cosines_out)), dtype=float)
+
+
+def _compute_mf6_law1_disc_angdist(
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+):
+    """Angular projection of MF6/LAW=1 discrete-line content
+    (issue #55).
+
+    Returns ``f_disc(mu | Ein)`` shape ``(n_einc, n_mus)``. The per-
+    line ``amp_disc(einc, mu, k)`` from
+    ``mf6_interp.compute_law1_discrete_lines`` already has the per-
+    line yield weight embedded (the b(k) amplitudes carry the split
+    between discrete and continuum), so the sum over k directly
+    gives the discrete-only contribution to the total angular
+    distribution with the correct normalisation relative to
+    ``compute_daxs``: for a subsection whose LAW=1 yield is entirely
+    in discrete lines and whose per-line angular distribution is
+    isotropic, ``sum_k amp_disc`` integrates to 1 over mu (the full
+    normalisation); for mixed discrete + continuum subsections it
+    integrates to ``y_disc / Y_total``, and the sibling continuum
+    branch of `compute_angdist_values` (integrate_mf6_dist2d_over_eout)
+    contributes the complementary ``y_cont / Y_total``.
+
+    Cases where the b(k) amplitudes are all zero -- a TENDL/JEFF
+    file quirk noted in the LAW=1 discrete-line diagnosis history
+    -- return an all-zero angular distribution; the continuum
+    branch above handles those files' actual gamma content.
+    """
+    _, amp_disc = mf6_interp.compute_law1_discrete_lines(
+        endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+    )
+    # amp_disc shape (n_einc, n_mus, K).
+    return amp_disc.sum(axis=-1)
 
 
 def _compute_mf14_gamma_angdist(
