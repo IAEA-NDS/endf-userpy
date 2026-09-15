@@ -32,7 +32,7 @@ def compute_yields(endf_dict, mt, zap, energies_in):
         # exclude continuum
         photon_energies = photon_energies[photon_energies != 0]
         prodxs = mf13_interp.compute_photon_production_xs(
-            endf_dict, mt, energies_in, discrete_energies_out
+            endf_dict, mt, energies_in, photon_energies
         )
         xs = mf3_interp.compute_cross_section(
             endf_dict, mt, energies_in

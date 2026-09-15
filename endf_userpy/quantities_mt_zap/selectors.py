@@ -69,6 +69,17 @@ def has_discrete_two_body_ddx(endf_dict, mt, zap):
 def contains_zap(endf_dict, mt, zap):
     if mt in (18, 19, 20, 21, 38):
         return zap == physconst.PARTICLE_ZAP['n']
+    # Photons for partial channels (typically inelastic MTs 51..90 and
+    # capture-related MTs) are declared in MF12 (yields) or MF13
+    # (production cross sections) in most modern libraries (ENDF/B-VIII.1,
+    # JEFF-4.0, TENDL), independent of MF6 which usually carries only
+    # the scattered neutron. Trust MF12/MF13 as authoritative for gamma
+    # so those partial channels are admitted into the gamma production
+    # sum (issue #29). JENDL-5-style files that put gamma yields in MF6
+    # still take the MF6 branch below when no MF12/MF13 is present.
+    if zap == physconst.PARTICLE_ZAP['g']:
+        if prop.has_mf12_mt(endf_dict, mt) or prop.has_mf13_mt(endf_dict, mt):
+            return True
     if prop.has_mf6_mt(endf_dict, mt):
         return mf6help.contains_zap(endf_dict, mt, zap)
     if not reac.is_known_reaction_mt(mt) or reac.is_x_particle_production_mt(mt):

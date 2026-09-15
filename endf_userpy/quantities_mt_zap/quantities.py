@@ -16,6 +16,7 @@ from .distribution1d import (
 )
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from .distribution2d import compute_dist2d_values
+from . import discrete_quantities as discrete_quant
 import logging
 
 
@@ -46,10 +47,31 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
         # if MT=18 (n,f), we assume user wants to know prompt neutron yields
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF1/MT456')
         yields = mf1_interp.compute_yields(endf_dict, 456, energies_in)
-    elif properties.has_mf6_mt(endf_dict, mt):
+    elif (properties.has_mf6_mt(endf_dict, mt)
+          and mf6_help.contains_zap(endf_dict, mt, zap)):
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF6/MT{mt}')
         yields = mf6_interp.compute_yields(
             endf_dict, mt, zap, energies_in, include_discrete, level
+        )
+    elif (zap == get_zap_for_particle('g')
+          and (properties.has_mf12_mt(endf_dict, mt)
+               or properties.has_mf13_mt(endf_dict, mt))):
+        # Photons for many partial channels (e.g. inelastic MTs 51..90
+        # in ENDF/B-VIII.1, JEFF-4.0, TENDL) are stored in MF12 (yields)
+        # or MF13 (production cross sections) rather than MF6, which
+        # carries only the scattered neutron. Without this branch these
+        # gamma contributions were silently omitted from the gamma
+        # production cross section (issue #29).
+        if level is not None:
+            raise ValueError(
+                f'`level` argument not supported for MF12/MF13 gamma yields '
+                f'(MT={mt}).'
+            )
+        module_logger.debug(
+            f'--> getting photon yields for MT={mt} from MF12/MF13'
+        )
+        yields = discrete_quant.compute_yields(
+            endf_dict, mt, zap, energies_in
         )
     else:
         if level is not None:
