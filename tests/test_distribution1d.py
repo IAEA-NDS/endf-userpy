@@ -112,3 +112,58 @@ def test_kinematic_conversion_round_trip_unchanged(al27_endf_dict):
     e_out = compute_Ekin_from_cos_phi(cos_in, e_in, m_i, m_t, m_e, m_r)
     cos_back = compute_cos_phi_from_Ekin(e_out, e_in, m_i, m_t, m_e, m_r)
     assert np.allclose(cos_in, cos_back, atol=1e-6)
+
+
+# ============================================================
+# Issue #31: compute_energydist_values returns zeros for MTs with
+# only MF6/LAW=1 ND>0 content (used to raise IndexError, forcing
+# every caller to try/except).
+# ============================================================
+
+
+def test_energydist_returns_zeros_for_pure_mf6_law1_nd_be9_gamma():
+    """Be-9 MT 701 subsec 3 is pure MF6/LAW=1 ND=1 NEP=1 (a single
+    477 keV gamma line, no continuum). compute_energydist_values must
+    now return a zero array of the requested shape rather than raise
+    IndexError. The discrete-line contribution belongs to a separate
+    path (LAW=1 discrete-line folder for the broadened case; MF12/14
+    for gamma cascades in general)."""
+    endf_file = DATA_DIR / 'n-004_Be_009.endf'
+    if not endf_file.exists():
+        pytest.skip(f'{endf_file} missing')
+    parser = EndfParserCpp(ignore_missing_tpid=True)
+    endf_dict = parser.parsefile(endf_file)
+
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1.0e5, 8.0e5, 11)
+    result = d1d.compute_energydist_values(
+        endf_dict, mt=701, zap=0.0,
+        energies_in=einc, energies_out=eouts,
+    )
+    assert result.shape == (len(einc), len(eouts))
+    np.testing.assert_array_equal(result, 0.0)
+
+
+def test_get_particle_production_dxs_dE_no_longer_crashes_on_pure_nd_gamma():
+    """End-to-end: unbroadened dxs/dE for gamma production on Be-9
+    (which contains MT 701's pure-ND gamma subsec) used to crash with
+    IndexError inside compute_energydist_values. Now returns a
+    well-defined array; the pure-discrete-line MT contributes zero
+    but does not break the cumulative sum."""
+    from endf_userpy.quantities import get_particle_production_dxs_dE
+    endf_file = DATA_DIR / 'n-004_Be_009.endf'
+    if not endf_file.exists():
+        pytest.skip(f'{endf_file} missing')
+    parser = EndfParserCpp(ignore_missing_tpid=True)
+    endf_dict = parser.parsefile(endf_file)
+
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1.0e5, 8.0e5, 21)
+    result = get_particle_production_dxs_dE(
+        endf_dict, '(n,total)', 'g', einc, eouts, broadening=None,
+    )
+    # Result may be None if no MT admits gammas, but must not raise.
+    if result is not None:
+        assert result.shape == (len(einc), len(eouts))
+        assert not np.any(np.isnan(result))
+        assert not np.any(result < 0)

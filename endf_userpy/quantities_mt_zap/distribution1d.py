@@ -112,7 +112,16 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
             endf_dict, mt, energies_in, energies_out
         )
 
-    raise IndexError(
-        f'Required data to reconstruct energy spectrum '
-        f'for MT={mt} not available.'
+    # No representable continuous energy spectrum for this (MT, ZAP):
+    # either MF6 with only LAW=1 ND>0 discrete-line content (handled
+    # separately by the LAW=1 discrete-line folder in the broadening
+    # pipeline, and by MF12/14 for the unbroadened case), MF15 without
+    # gamma ZAP, or no relevant MF section at all. Return zeros so
+    # cumulative summation over MTs is well-defined; used to raise
+    # IndexError, which forced defensive try/except workarounds in
+    # downstream callers (issue #31).
+    module_logger.debug(
+        f'no continuum or angdist energy spectrum reconstructable for '
+        f'MT={mt}, ZAP={zap}; returning zeros'
     )
+    return np.zeros((len(energies_in), len(energies_out)), dtype=float)
