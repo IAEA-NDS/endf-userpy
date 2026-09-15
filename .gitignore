@@ -1,0 +1,35 @@
+# Mirrors the "must never ship" block in MANIFEST.in. Keep the two in
+# sync when adding new build outputs.
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Packaging outputs
+build/
+dist/
+*.egg-info/
+
+# Fortran extension build artifacts. The .o files and the generated
+# endf6module_active.c land in the source tree (see CLAUDE.md); the
+# checked-in sources are endf6.f90, endf6-f2pywrappers.f and
+# endf6module.c.
+*.o
+*.so
+*.pyd
+*.pyf
+endf_userpy/fortran/endf6module_active.c
+
+# Rendered documentation (docs/source is tracked)
+docs/build/
+
+# Local environments and editor/OS noise
+testenv/
+.venv/
+venv/
+.DS_Store
+
+# Claude Code worktrees created inside the repository
+.claude/worktrees/
