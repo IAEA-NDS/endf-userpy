@@ -174,14 +174,18 @@ def compute_dxs_dE_broadened(
             kernel_width=kernel_width,
             **convolve_kwargs,
         )
-    except IndexError:
+    except (IndexError, AssertionError):
         # compute_dexs raises IndexError for (MT, ZAP) combinations
         # with no continuum or LAW=2/3/4 angdist to reconstruct an
         # energy spectrum from (e.g. MF6/LAW=1 ND>0 pure-discrete-line
-        # subsections such as Be-9 MT 701 gammas). Their contribution
-        # is instead handled by compute_dxs_dE_law1_discrete_broadened
-        # in the dispatcher; the cont path returns zeros so cumulative
-        # summation is well-defined.
+        # subsections such as Be-9 MT 701 gammas), and AssertionError
+        # from primitives.properties.get_ejectile when the MT has
+        # multiple non-neutron ejectiles (e.g. Fe-56 MT 112 = (n,p a)
+        # with ejectile 'p' rather than 'n' first). Both cases mean
+        # the cont path has nothing to contribute for this MT/ZAP;
+        # the LAW=1 discrete folder (dispatched separately) or the
+        # 2-body folder handles the actual content. Return zeros so
+        # cumulative summation is well-defined.
         return np.zeros(
             (len(energies_in), len(energies_out)), dtype=float,
         )

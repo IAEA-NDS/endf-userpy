@@ -192,13 +192,27 @@ def get_law1_discrete_lines_from_subsec(
         e2 = ei_mesh[panel_idx + 1].item()
         nd1 = nd_arr[panel_idx].item()
         na1 = na_arr[panel_idx].item()
-        ep1 = dict2array(subsec['Ep'][panel_idx + 1], dtype=float, order='F')
-        b1 = dict2array(subsec['b'][panel_idx + 1], dtype=float, order='F')
+        ep1_full = dict2array(subsec['Ep'][panel_idx + 1], dtype=float)
+        b1_full = dict2array(subsec['b'][panel_idx + 1], dtype=float)
         nd2 = nd_arr[panel_idx + 1].item()
         na2 = na_arr[panel_idx + 1].item()
-        ep2 = dict2array(subsec['Ep'][panel_idx + 2], dtype=float, order='F')
-        b2 = dict2array(subsec['b'][panel_idx + 2], dtype=float, order='F')
+        ep2_full = dict2array(subsec['Ep'][panel_idx + 2], dtype=float)
+        b2_full = dict2array(subsec['b'][panel_idx + 2], dtype=float)
         lei = ei_interp[panel_idx].item()
+
+        # Deduplicate coincident discrete Ep values in each panel:
+        # the downstream Fortran f6law1_dis uses imatch which returns
+        # only the first index of a repeated ep, so any additional
+        # rows with the same ep would be silently dropped and their
+        # b weight lost. Physically identical to summing them (both
+        # sit at the same LAB position after broadening), so pre-sum
+        # here and pass unique-ep arrays to the Fortran routine.
+        ep1_disc, b1_disc, nd1_ded = _dedup_discrete_lines(ep1_full, b1_full, nd1)
+        ep2_disc, b2_disc, nd2_ded = _dedup_discrete_lines(ep2_full, b2_full, nd2)
+        ep1 = np.asfortranarray(np.concatenate([ep1_disc, ep1_full[nd1:]]))
+        b1 = np.asfortranarray(np.concatenate([b1_disc, b1_full[nd1:]], axis=0))
+        ep2 = np.asfortranarray(np.concatenate([ep2_disc, ep2_full[nd2:]]))
+        b2 = np.asfortranarray(np.concatenate([b2_disc, b2_full[nd2:]], axis=0))
 
         cur_ep = np.zeros(
             (cur_eu.size, nuu, nd_max), dtype=float, order='F',
@@ -209,14 +223,42 @@ def get_law1_discrete_lines_from_subsec(
         mf6_get_law1_disc_lines(
             cur_eu, uu,
             awr, awi, awp, za, zai, zap, lct, lang, lep, lei,
-            e1, nd1, na1, ep1, b1,
-            e2, nd2, na2, ep2, b2,
+            e1, nd1_ded, na1, ep1, b1,
+            e2, nd2_ded, na2, ep2, b2,
             nd_max, cur_ep, cur_amp,
         )
         ep_disc_lab[dst_rows, :, :] = cur_ep
         amp_disc[dst_rows, :, :] = cur_amp
 
     return ep_disc_lab, amp_disc
+
+
+def _dedup_discrete_lines(ep, b, nd):
+    """Sum b rows at coincident ep values in the first ND entries of
+    the panel arrays. Returns (ep_ded, b_ded, nd_ded); shapes are
+    reduced to ND_unique rows, still row-major over (row, angular).
+    """
+    if nd <= 0:
+        return ep[:0], b[:0], 0
+    ep_disc = ep[:nd]
+    b_disc = b[:nd, :]
+    # Group by ep value; preserve order of first occurrence.
+    seen = {}
+    for i, val in enumerate(ep_disc):
+        key = float(val)
+        if key in seen:
+            seen[key] = seen[key] + [i]
+        else:
+            seen[key] = [i]
+    if len(seen) == nd:
+        # No duplicates; keep the original arrays unchanged.
+        return ep_disc, b_disc, nd
+    ep_ded = np.empty(len(seen), dtype=float)
+    b_ded = np.empty((len(seen), b.shape[1]), dtype=float)
+    for out_i, (key, rows) in enumerate(seen.items()):
+        ep_ded[out_i] = key
+        b_ded[out_i, :] = b_disc[rows, :].sum(axis=0)
+    return ep_ded, b_ded, len(seen)
 
 
 @pad_outside_angdist_values

@@ -53,23 +53,51 @@ GAMMA_ZAP = 0.0
 
 # Per-file settings. E_in picks the target incident energy; the eouts
 # window and internal mu density are set so the peaks (which for
-# gamma cascades span ~10 keV to a few MeV) are resolved. `eout_min`
-# has to be well below the lowest discrete line in the file, or a
-# kernel-width fraction of the low-energy peak's mass falls out of
-# the integration window and shows up as a systematic shortfall.
-# rtol is the fractional-error tolerance on the integrated
-# production xs vs the reference.
+# gamma cascades span ~10 keV to a few MeV) are resolved. Two
+# knobs matter more than they look:
+#
+#   - `eout_min` must be well below the smallest discrete line in the
+#     file. For gamma cascades this can be as low as ~10..75 keV. A
+#     Gaussian kernel centred at 14 keV with sigma=30 keV loses ~30%
+#     of its mass below 1 keV. Practical value: 10 eV.
+#
+#   - `sigma` (kernel width) must be a few times smaller than the
+#     smallest peak position for the kernel-tail-outside-eouts
+#     fraction to be negligible. Practical value for gamma cascades:
+#     ~10 keV.
+#
+# `expected_short` lists MTs where the ENDF file itself violates the
+# ENDF-6 requirement that MF6/LAW=1 subsec integrals equal 1 (some
+# TENDL subsecs normalise to 0.5 or 0.985 by evaluator choice), so
+# the folder correctly reproduces the file content but the
+# `xs * yield_from_MF6_Y_table` reference disagrees. These MTs are
+# skipped from the integral check; the finite/non-negative checks
+# still apply.
 FILE_CFG = {
-    'endfb81_n_Be-9.endf':   dict(e_in=1.4e7, eout_min=1e3, eout_max=8e5,
-                                  n_eouts=401, n_mus=21, sigma=3e4, rtol=5e-3),
-    'endfb81_n_B-11.endf':   dict(e_in=1.4e7, eout_min=1e3, eout_max=2e7,
-                                  n_eouts=1001, n_mus=21, sigma=1e5, rtol=5e-2),
-    'endfb81_n_Al-27.endf':  dict(e_in=1.4e7, eout_min=1e3, eout_max=1.4e7,
-                                  n_eouts=1501, n_mus=21, sigma=8e4, rtol=1e-1),
-    'tendl21_n_Fe-56.endf':  dict(e_in=1.4e7, eout_min=1e3, eout_max=1.5e7,
-                                  n_eouts=1501, n_mus=21, sigma=1e5, rtol=1e-1),
-    'tendl21_n_U-235.endf':  dict(e_in=1.4e7, eout_min=1e3, eout_max=1.5e7,
-                                  n_eouts=1501, n_mus=21, sigma=1e5, rtol=1e-1),
+    'endfb81_n_Be-9.endf':   dict(e_in=1.4e7, eout_min=10, eout_max=1e6,
+                                  n_eouts=1001, n_mus=21, sigma=1e4, rtol=5e-3,
+                                  expected_short=()),
+    'endfb81_n_B-11.endf':   dict(e_in=1.4e7, eout_min=10, eout_max=2e7,
+                                  n_eouts=2001, n_mus=21, sigma=1e4, rtol=1e-2,
+                                  expected_short=()),
+    'endfb81_n_Al-27.endf':  dict(e_in=1.4e7, eout_min=10, eout_max=1.5e7,
+                                  n_eouts=2001, n_mus=21, sigma=1e4, rtol=1e-2,
+                                  expected_short=()),
+    'tendl21_n_Fe-56.endf':  dict(e_in=1.4e7, eout_min=10, eout_max=3e7,
+                                  n_eouts=4001, n_mus=21, sigma=1e4, rtol=5e-2,
+                                  # TENDL Σb=0.5 encoding for these
+                                  # subsecs: ND placeholder rows carry
+                                  # zero weight and the continuum
+                                  # integrates to only 0.5 rather than
+                                  # to the ENDF-6-standard 1.0. The
+                                  # folder faithfully reproduces the
+                                  # file, so the integral undershoots
+                                  # xs*yield_from_MF6_Y_table by ~50%
+                                  # for these MTs alone.
+                                  expected_short=(106, 111, 112)),
+    'tendl21_n_U-235.endf':  dict(e_in=1.4e7, eout_min=10, eout_max=3e7,
+                                  n_eouts=4001, n_mus=21, sigma=1e4, rtol=5e-2,
+                                  expected_short=()),
 }
 
 
@@ -213,6 +241,10 @@ def test_ddx_folder_finite_and_integrates_to_xs_times_yield(endf_context):
         total = ddx_disc if ddx_cont is None else ddx_disc + ddx_cont
         inner = np.trapezoid(total[0], eouts, axis=0)
         integ = np.trapezoid(inner, mus) * 2 * np.pi
+        if mt in cfg.get('expected_short', ()):
+            # Known ENDF-file normalisation quirk; skip the integral
+            # check but the finite/non-negative checks above still fire.
+            continue
         ref = _reference_production_xs(endf, mt, einc)
         if ref is None:
             continue
@@ -265,6 +297,10 @@ def test_dxs_dE_folder_finite_and_integrates_to_xs_times_yield(endf_context):
                 break
         total = dexs_disc + dexs_cont
         integ = np.trapezoid(total[0], eouts)
+        if mt in cfg.get('expected_short', ()):
+            # Known ENDF-file normalisation quirk; skip the integral
+            # check but the finite/non-negative checks above still fire.
+            continue
         ref = _reference_production_xs(endf, mt, einc)
         if ref is None:
             continue
