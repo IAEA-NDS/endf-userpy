@@ -1,0 +1,3 @@
+# The .endf files are fetched on demand via fetch.sh (see README.md).
+# Do not commit them.
+*.endf

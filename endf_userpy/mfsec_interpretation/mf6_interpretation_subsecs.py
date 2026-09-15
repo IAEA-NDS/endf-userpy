@@ -139,9 +139,9 @@ def get_law1_discrete_lines_from_subsec(
             f'MT={mt} subsec_num={subsec_num} is LAW={subsec["LAW"]}, '
             'not LAW=1'
         )
-    eu = np.asfortranarray(np.asarray(energies_in, dtype=float))
+    eu_full = np.asfortranarray(np.asarray(energies_in, dtype=float))
     uu = np.asfortranarray(np.asarray(angle_cosines_out, dtype=float))
-    neu = len(eu)
+    neu = len(eu_full)
     nuu = len(uu)
 
     awr = get_AWR(endf_dict)
@@ -160,22 +160,34 @@ def get_law1_discrete_lines_from_subsec(
     nd_arr = dict2array(subsec['ND'], dtype=int)
     na_arr = dict2array(subsec['NA'], dtype=int)
 
-    idcs = find_interval(ei_mesh, energies_in)
-
     nd_max = int(nd_arr.max()) if nd_arr.size else 0
     ep_disc_lab = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
     amp_disc = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
     if nd_max == 0:
         return ep_disc_lab, amp_disc
 
+    # Zero-pad einc entries that fall outside this subsection's
+    # panel-mesh range: below-threshold or above-max einc get no
+    # contribution from this subsection (mirroring what
+    # pad_outside_dist2d_values does for the continuum wrapper).
+    inside = (eu_full >= ei_mesh.min()) & (eu_full <= ei_mesh.max())
+    if not np.any(inside):
+        return ep_disc_lab, amp_disc
+    eu_inside = eu_full[inside]
+    idcs = find_interval(ei_mesh, eu_inside)
+    inside_pos = np.flatnonzero(inside)
+
     # The Fortran routine processes one incident-energy panel bracket
     # (e1, e2) at a time. Group user einc by the panel they land in
     # so we make one Fortran call per bracket.
     for panel_idx in np.unique(idcs):
-        mask = (idcs == panel_idx)
-        if not np.any(mask):
+        mask_inside = (idcs == panel_idx)
+        if not np.any(mask_inside):
             continue
-        cur_eu = np.asfortranarray(eu[mask])
+        cur_eu = np.asfortranarray(eu_inside[mask_inside])
+        # Map back to positions in the full einc array so we can
+        # write results into the right slots.
+        dst_rows = inside_pos[mask_inside]
         e1 = ei_mesh[panel_idx].item()
         e2 = ei_mesh[panel_idx + 1].item()
         nd1 = nd_arr[panel_idx].item()
@@ -201,8 +213,8 @@ def get_law1_discrete_lines_from_subsec(
             e2, nd2, na2, ep2, b2,
             nd_max, cur_ep, cur_amp,
         )
-        ep_disc_lab[mask, :, :] = cur_ep
-        amp_disc[mask, :, :] = cur_amp
+        ep_disc_lab[dst_rows, :, :] = cur_ep
+        amp_disc[dst_rows, :, :] = cur_amp
 
     return ep_disc_lab, amp_disc
 
