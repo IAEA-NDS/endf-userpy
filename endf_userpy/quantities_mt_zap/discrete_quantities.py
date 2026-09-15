@@ -4,12 +4,9 @@ from ..mfsec_interpretation import mf3_interpretation as mf3_interp
 from ..mfsec_interpretation import mf12_interpretation as mf12_interp
 from ..mfsec_interpretation import mf13_interpretation as mf13_interp
 from ..primitives.properties import (
-    has_mf6_mt,
     has_mf12_mt,
     has_mf13_mt,
-    has_mf14_mt,
 )
-from .discrete_distribution1d import get_outgoing_energies 
 
 
 def compute_yields(endf_dict, mt, zap, energies_in):

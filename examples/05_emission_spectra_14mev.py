@@ -92,7 +92,7 @@ spec_broadened = get_particle_production_dxs_dE(
 # the reference (n,X-n) production cross section.
 int_unbroadened = np.trapezoid(spec_unbroadened[0], eouts)
 int_broadened = np.trapezoid(spec_broadened[0], eouts)
-print(f"integrated emission spectrum at 14 MeV:")
+print("integrated emission spectrum at 14 MeV:")
 print(f"  unbroadened:               {int_unbroadened:.2f} barn")
 print(f"  broadened (sigma=200 keV): {int_broadened:.2f} barn")
 

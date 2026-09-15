@@ -1,5 +1,4 @@
 import types
-from collections.abc import Sequence
 from .physical_constants import (
     get_particle_for_zap,
     get_zap_for_particle,

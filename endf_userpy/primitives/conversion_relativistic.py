@@ -163,20 +163,3 @@ def compute_dcos_phi_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
         x5**2)/x1**(3/2)
     )
     return dcos_phi_dEkin_result
-
-
-def convert_energydist_to_angdist(
-    dist_vals, Ekin, Ekin_i, m_i, m_t, m_e, m_r  
-):
-    # p(Ekin) dEkin = p(mu) dmu
-    # p(Ekin) = p(mu) dmu/dEkin
-    cos_phi_vals = compute_cos_phi_from_Ekin(
-        Ekin, Ekin_i, m_i, m_t, m_e, m_r
-    )  
-    funcdet_vals = compute_dcos_phi_dEkin(
-        Ekin, Ekin_i, m_i, m_t, m_e, m_r
-    )
-    new_dist_vals * np.abs(funcdet_vals) 
-    return new_dist_vals
-
-

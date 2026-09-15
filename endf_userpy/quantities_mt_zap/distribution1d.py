@@ -187,7 +187,6 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
 
     elif has_mf6_mt(endf_dict, mt):
         found_energydist = False
-        mtsec = endf_dict[6][mt]
         energydist = 0.0  # will be broadcasted to correct 2d shape
         if mf6_help.has_cont_part(endf_dict, mt, zap):
             module_logger.debug('--> integrate MF6')

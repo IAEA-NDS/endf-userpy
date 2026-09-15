@@ -1,8 +1,6 @@
 import numpy as np
 from ..primitives.interpolation import (
     evaluate_interp_legendre_polynomials,
-    interp,
-    endf_interp1d,
     interp_tab2,
 )
 from ..primitives.conversion import (
@@ -11,14 +9,11 @@ from ..primitives.conversion import (
     convert_angdist_to_labsys,
 )
 from ..primitives.helpers import (
-    deg2rad,
     dict2array,
-    find_interval,
-    convert_interp_repr,
 )
 from ..primitives.properties import (
     get_AWR, get_AWI, get_AWP,
-    get_QM, get_QI, get_LR,
+    get_QI,
 )
 from .mf4_interpretation_helpers import pad_outside_angdist_values
 
@@ -53,7 +48,6 @@ def _convert_legendre_to_numpy_array(coeffs_dict):
 
 
 def compute_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines):
-    mf4sec = endf_dict[4][mt]
     mu = angle_cosines
     mu = mu.reshape(1,-1) if mu.ndim == 1 else mu
     m = len(energies)

@@ -23,7 +23,7 @@ def compute_yields_from_mt452(endf_dict, energies_in):
         return endf_interp1d(
             ein, ep, nup, int_arr, nbt_arr, outside_value=0.0
         )
-    raise ValueError('Invalid value LNU={lnu}')
+    raise ValueError(f'Invalid value LNU={lnu}')
 
 
 def compute_yields_from_mt455(endf_dict, energies_in):
@@ -42,7 +42,7 @@ def compute_yields_from_mt455(endf_dict, energies_in):
         return endf_interp1d(
             ein, ep, nup, int_arr, nbt_arr, outside_value=0.0
         )
-    raise ValueError('Invalid value LNU={lnu}')
+    raise ValueError(f'Invalid value LNU={lnu}')
 
 
 def compute_yields_from_mt456(endf_dict, energies_in):
@@ -60,7 +60,7 @@ def compute_yields_from_mt456(endf_dict, energies_in):
         return endf_interp1d(
             ein, ep, nup, int_arr, nbt_arr, outside_value=0.0
         )
-    raise ValueError('Invalid value LNU={lnu}')
+    raise ValueError(f'Invalid value LNU={lnu}')
 
 
 def compute_yields(endf_dict, mt, energies_in):

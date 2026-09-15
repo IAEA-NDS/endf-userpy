@@ -52,8 +52,8 @@ def compute_angdist_values(
         )
 
     raise IndexError(
-        f'Required data to reconstruct angular distribution '
-        'from discrete outgoing energy spectrum for MT={mt} not available.')
+        'Required data to reconstruct angular distribution '
+        f'from discrete outgoing energy spectrum for MT={mt} not available.')
 
 
 def compute_energydist_values(
@@ -86,6 +86,6 @@ def compute_energydist_values(
         return energy_dist_values
 
     raise IndexError(
-        f'Required data to reconstruct discrete emission '
-        'energy distribution for MT={mt} not available.'
+        'Required data to reconstruct discrete emission '
+        f'energy distribution for MT={mt} not available.'
     )

@@ -34,7 +34,11 @@ def get_dist2d_from_subsec_law1(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
 ):
     sec = endf_dict[6][mt]
-    sec['subsection'][subsec_num]['LAW'] == 1
+    if sec['subsection'][subsec_num]['LAW'] != 1:
+        raise ValueError(
+            f'MT={mt} subsec_num={subsec_num} is '
+            f'LAW={sec["subsection"][subsec_num]["LAW"]}, not LAW=1'
+        )
     eu = energies_in
     neu = len(eu)
     epu = energies_out
@@ -58,7 +62,6 @@ def get_dist2d_from_subsec_law1(
     ei_interp = convert_interp_repr(int_arr, nbt_arr)
     nd_arr = dict2array(subsec['ND'], dtype=int)
     na_arr = dict2array(subsec['NA'], dtype=int)
-    nep_arr = dict2array(subsec['NEP'], dtype=int)
 
     # determine effective LCT based on emitted particle (CM or LAB)
     if lct in (1, 2):
@@ -84,14 +87,12 @@ def get_dist2d_from_subsec_law1(
         nd1 = nd_arr[curidx].item()
         na1 = na_arr[curidx].item()
         ep1 = dict2array(subsec['Ep'][curidx+1], dtype=float, order='F')
-        nep1 = len(ep1)  # also nep_arr[curidx]
         b1 = dict2array(subsec['b'][curidx+1], dtype=float, order='F')
 
         e2 = ei_mesh[curidx+1].item()
         nd2 = nd_arr[curidx+1].item()
         na2 = na_arr[curidx+1].item()
         ep2 = dict2array(subsec['Ep'][curidx+2], dtype=float, order='F')
-        nep2 = len(ep2)
         b2 = dict2array(subsec['b'][curidx+2], dtype=float, order='F')
 
         cur_disc_res = np.zeros((1, nepu, nuu), dtype=float, order='F')
@@ -321,7 +322,7 @@ def get_angdist_from_subsec_law2(
 
         # remove `ne` (=1) because automatically inferred
         mf6_get_law2(
-            awr, awi, awp, q, lct, lang,
+            awr, awi, awp, q, eff_lct, lang,
             e1, a1, nl1, e2, a2, nl2,
             ilaw,cur_eu, xmu,nmu, cur_result
         )
@@ -489,23 +490,6 @@ def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
     )
     module_logger.debug(interp_yields)
     return interp_yields
-
-
-def compute_angdist_from_subsec(
-    endf_dict, mt, subsec_num,
-    energies_in, angle_cosines_out, to_lab=True
-):
-    sec = endf_dict[6][mt]
-    subsec = sec['subsection'][subsec_num]
-    law = subsec['LAW']
-    if law == 2:
-        return get_dist1d_from_subsec_law2(
-            endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
-        )
-    else:
-        raise NotImplementedError(
-            f'Angular distribution interpretation for LAW={law} not implemented.'
-        )
 
 
 def compute_dist2d_from_subsec(

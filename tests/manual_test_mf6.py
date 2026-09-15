@@ -5,10 +5,8 @@ from endf_parserpy import EndfParserCpp
 from endf_userpy.mf6_interpretation_helpers import (
     get_zaps_for_all_mts,
     find_subsec_num,
-    get_subsec,
     contains_subsec_dist2d,
     has_disc_part,
-    has_cont_part,
 )
 from endf_userpy.mf6_interpretation import (
     get_incident_energies,

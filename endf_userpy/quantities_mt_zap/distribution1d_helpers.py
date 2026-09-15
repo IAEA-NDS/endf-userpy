@@ -1,7 +1,5 @@
 import numpy as np
 from scipy.integrate import quad
-from ..mfsec_interpretation import mf4_interpretation as mf4_interp
-from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf6_interpretation_integrals as mf6_integral
 from ..primitives import conversion_relativistic as conv_relat 

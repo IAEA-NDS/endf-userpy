@@ -5,7 +5,6 @@ from endf_parserpy import EndfParserCpp
 import endf_userpy.mfsec_interpretation.mf4_interpretation as mf4py
 import endf_userpy.mfsec_interpretation.mf4_interpretation_fort as mf4fort
 from endf_userpy.primitives.helpers import deg2rad
-from endf_userpy.primitives.reactions import is_binary_reaction
 
 
 @pytest.fixture(scope="module")
@@ -63,7 +62,6 @@ def test_mf4_python_fortran_equivalence(endf_file, myEndfParser):
         curens = energies
         if not mf4py.has_isotropic_angdist_repr(endf_dict, mt):
             en_range = mf4py.get_incident_energy_range(endf_dict, mt)
-            en_diff = np.diff(en_range)
             curens = np.linspace(en_range[0], en_range[1], 5)
         res_py = mf4py.compute_angdist_values(endf_dict, mt, curens, angcos)
         res_fort = mf4fort.compute_angdist_values(endf_dict, mt, curens, angcos)

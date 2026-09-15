@@ -1,8 +1,6 @@
 from pathlib import Path
 import os
-import pytest
 import sys
-from pathlib import Path
 import numpy as np
 from endf_parserpy import EndfParserCpp
 from endf_userpy.mfsec_interpretation.mf6_interpretation_subsecs import (
@@ -10,14 +8,12 @@ from endf_userpy.mfsec_interpretation.mf6_interpretation_subsecs import (
     compute_angdist_from_subsec,
 )
 from endf_userpy.primitives.helpers import deg2rad
-from endf_parserpy.utils.user_tools import show_content
 
 import subprocess
 import re
 import shutil
 import tempfile
 from endf_parserpy.utils.user_tools import locate, get_endf_values
-from endf_parserpy import EndfPath
 
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -100,7 +96,7 @@ def call_fortran_test(fortran_test_exe, endf_file, include=None):
             str(mat),
             ""
         ])
-        result = subprocess.run(['./runtest'], input=test_inp, text=True)
+        subprocess.run(['./runtest'], input=test_inp, text=True)
         with open('output', 'r') as f:
             cont = f.readlines()
         os.chdir(orig_cwd)
@@ -151,7 +147,7 @@ def test_dist1d_law2_interface():
     endf_dict = parser.parsefile(endf_file)
     Einc = np.array([50000, 70000], dtype=float)
     mu = np.cos(deg2rad([30, 50, 70]))
-    cont_arr = compute_angdist_from_subsec(
+    compute_angdist_from_subsec(
         endf_dict, 102, 1, Einc, mu
     )
 
@@ -162,8 +158,8 @@ def test_dist2d_law6_interface():
     endf_dict = parser.parsefile(endf_file)
     Einc = np.array([50000, 70000])
     mu = np.cos(deg2rad([30, 50, 70]))
-    Eout = np.linspace(10000, 70000, 5) 
-    cont_arr = compute_dist2d_from_subsec(
+    Eout = np.linspace(10000, 70000, 5)
+    compute_dist2d_from_subsec(
         endf_dict, 16, 1, Einc, Eout, mu
     )
 

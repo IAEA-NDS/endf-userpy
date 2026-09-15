@@ -39,7 +39,7 @@ def get_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines, to_lab):
     for i in range(result_dim[0]):
         cur_res_arr = np.zeros((1, result_dim[1]) , dtype=float)
         energy_out = energies[i]
-        cur_res = mf4_get_leg(
+        mf4_get_leg(
             awr, awi, awp, q, lct,
             en1, coeffs1, num_coeffs1,
             en2, coeffs2, num_coeffs2,
@@ -101,7 +101,7 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines, to_lab):
         # call the fortran routine
         # NOTE: num_energies comment out because f2py
         #       derives ne argument from shape of f4
-        cur_res = mf4_get_leg(
+        mf4_get_leg(
             awr, awi, awp, q, lct,
             en1, coeffs1, num_coeffs1,
             en2, coeffs2, num_coeffs2,
@@ -118,7 +118,6 @@ def get_angdist_from_legendre(endf_dict, mt, energies, angle_cosines, to_lab):
 
 @pad_outside_angdist_values
 def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines, to_lab):
-    num_energies = len(energies)
     num_angle_cosines = len(angle_cosines)
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
@@ -181,7 +180,6 @@ def get_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines, to_lab):
 def get_angdist_from_mixed(endf_dict, mt, energies, angle_cosines, to_lab):
     mu = angle_cosines
     mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
-    num_energies = len(energies)
     num_angle_cosines = mu.shape[1]
     mf4sec = endf_dict[4][mt]
     awi = get_AWI(endf_dict)
@@ -195,7 +193,6 @@ def get_angdist_from_mixed(endf_dict, mt, energies, angle_cosines, to_lab):
     # get the energy mesh and interpolation info
     en_mesh = dict2array(mf4sec['E'])
     num_ens1 = mf4sec['NE1']
-    num_ens2 = mf4sec['NE2']
     break_energy = en_mesh[num_ens1-1]
     nbt_arr_leg = np.array(mf4sec['leg_int']['NBT'])
     int_arr_leg = np.array(mf4sec['leg_int']['INT'])
