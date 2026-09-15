@@ -13,7 +13,6 @@ later subsections for the same (MT, ZAP).
 than one subsection (same ZAP with different LIP, for instance)
 that must be summed, so this is a real corpus shape.
 """
-import numpy as np
 
 from endf_userpy.mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 
