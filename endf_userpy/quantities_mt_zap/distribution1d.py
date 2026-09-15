@@ -206,9 +206,49 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
 
     elif has_mf15_mt(endf_dict, mt) and zap == get_zap_for_particle('g'):
         module_logger.debug('--> found continuous gamma energy spectrum in MF15')
-        return mf15_interp.compute_spectrum(
+        spec = mf15_interp.compute_spectrum(
             endf_dict, mt, energies_in, energies_out
         )
+        # Weight the MF15 continuum shape by the continuum yield
+        # fraction from MF12 (issue #54). `compute_dexs` multiplies
+        # what we return here by `compute_yields`, which sums ALL
+        # photon yields declared in MF12 (discrete lines + Eg=0
+        # continuum placeholder). Without this weighting the MF15
+        # spectrum is multiplied by Y_total instead of y_cont, and
+        # at incident energies where the MF12 discrete lines carry
+        # nonzero weight but the Eg=0 placeholder does not (Al-27
+        # MT 102 below ~10 keV is the corpus example: Y_disc ~ 2.17,
+        # Y_cont = 0) the current form injects a spurious continuum
+        # contribution proportional to the discrete-line yield.
+        # Above the discrete/continuum crossover (~10 keV for Al-27)
+        # Y_disc drops to zero and the two forms are identical; the
+        # fix is a no-op there.
+        if has_mf12_mt(endf_dict, mt):
+            pes = np.asarray(
+                mf12_interp.get_photon_energies(endf_dict, mt),
+                dtype=float,
+            )
+            cont_mask = pes == 0.0
+            if np.any(cont_mask):
+                yields_all = mf12_interp.compute_photon_yields(
+                    endf_dict, mt, energies_in, pes,
+                )
+                y_cont = yields_all[:, cont_mask].sum(axis=1)
+                y_total = yields_all.sum(axis=1)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    frac = np.where(y_total > 0, y_cont / y_total, 0.0)
+                spec = spec * frac.reshape(-1, 1)
+            else:
+                # MF12 declares no Eg=0 continuum placeholder, so
+                # the file's own convention says there is no
+                # continuum for this MT. Any MF15 content here is
+                # inconsistent with MF12; drop it rather than let
+                # it inflate the sum.
+                spec = np.zeros_like(spec)
+        # No MF12 at all: MF15 stands alone, keep unweighted
+        # behaviour so the reaction-string yield fallback (mult=1
+        # for (n,g)) times MF15 still integrates to sigma.
+        return spec
 
     # No representable continuous energy spectrum for this (MT, ZAP):
     # either MF6 with only LAW=1 ND>0 discrete-line content (handled
