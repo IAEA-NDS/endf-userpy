@@ -70,8 +70,12 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
         module_logger.debug(
             f'--> getting photon yields for MT={mt} from MF12/MF13'
         )
-        yields = discrete_quant.compute_yields(
-            endf_dict, mt, zap, energies_in
+        # Total (discrete lines + continuum placeholder) so files that
+        # split MT 102 into a low-energy discrete cascade and a high-
+        # energy continuum spectrum in MF15 do not silently produce a
+        # zero yield for the continuum-dominant region.
+        yields = discrete_quant.compute_total_gamma_yields(
+            endf_dict, mt, energies_in
         )
     else:
         if level is not None:

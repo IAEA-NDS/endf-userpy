@@ -47,3 +47,46 @@ def compute_yields(endf_dict, mt, zap, energies_in):
 
     yields_sum = np.sum(yields, axis=1)
     return yields_sum
+
+
+def compute_total_gamma_yields(endf_dict, mt, energies_in):
+    """Sum of photon yields for all lines declared for (MT, gamma).
+
+    Unlike ``compute_yields`` above, this sum INCLUDES any continuum
+    placeholder line (Eg=0 in MF12 LO=1, or the continuum entry in
+    MF13). The continuum placeholder carries most of the yield above
+    a few tens of keV in typical capture files (e.g. Al-27 MT 102),
+    so excluding it -- as ``compute_yields`` does, correctly, for its
+    discrete-line angular-distribution purpose -- would drive the
+    gamma production cross section to nearly zero for those files.
+    Used from ``quantities_mt_zap.quantities.compute_yields`` when
+    dispatching gamma production to MF12/MF13.
+
+    For MF12 LO=2 (transition-probability representation) there is no
+    continuum placeholder and this equals ``compute_yields`` above.
+    """
+    if has_mf12_mt(endf_dict, mt):
+        photon_energies = mf12_interp.get_photon_energies(endf_dict, mt)
+        yields = mf12_interp.compute_photon_yields(
+            endf_dict, mt, energies_in, photon_energies
+        )
+        return np.sum(yields, axis=1)
+
+    if has_mf13_mt(endf_dict, mt):
+        prodxs = mf13_interp.compute_total_photon_production_xs(
+            endf_dict, mt, energies_in
+        )
+        xs = mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in
+        )
+        # Where MF3 xs is zero the yield is undefined; return 0 so
+        # the caller multiplication (yield * MF3 xs) stays 0 rather
+        # than nan.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            yields = np.where(xs > 0, prodxs / xs, 0.0)
+        return yields
+
+    raise IndexError(
+        f'Neither MF12/MT{mt} nor MF13/MT{mt} available for '
+        f'total photon-yield summation.'
+    )
