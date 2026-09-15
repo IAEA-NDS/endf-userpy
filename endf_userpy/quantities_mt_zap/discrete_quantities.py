@@ -9,7 +9,6 @@ from ..primitives.properties import (
     has_mf13_mt,
     has_mf14_mt,
 )
-from .discrete_distribution1d import get_outgoing_energies 
 
 
 def compute_yields(endf_dict, mt, zap, energies_in):

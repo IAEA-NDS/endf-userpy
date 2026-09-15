@@ -82,7 +82,12 @@ def compute_energydist_values(
         )
         yields = prodxs / xs.reshape(-1, 1)
         yields_sum = np.sum(yields, axis=1)
-        energy_dist_values = yields / yields_sum.reshape(1, -1)
+        # yields_sum has shape (n_einc,), so it must be reshaped to
+        # (n_einc, 1) to divide each row of yields by its own sum.
+        # The old (1, -1) reshape either raised a broadcast error when
+        # n_lines != n_einc or, if the two happened to be equal,
+        # silently normalised by the wrong row (issue #44).
+        energy_dist_values = yields / yields_sum.reshape(-1, 1)
         return energy_dist_values
 
     raise IndexError(
