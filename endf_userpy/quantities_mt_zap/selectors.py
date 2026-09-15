@@ -229,12 +229,27 @@ def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
         return True
 
     # if detailed distribution info is available for current mt
-    # or there is no known parent mt, we select it
+    # or there is no known parent mt, we select it. MF12 and MF13
+    # count as "detailed distribution info" for the purpose of this
+    # check: they carry per-photon yields (MF12) or per-photon
+    # production cross sections (MF13) that reconstruct the gamma
+    # differential quantities, and dropping their MT from a sum
+    # query (like `(n,total)` gamma) silently under-counts the file
+    # (issue #53). MF14 and MF15 are companion sections that only
+    # accompany MF12/MF13, so admitting on MF12/MF13 alone is
+    # sufficient. The gate is zap-independent -- `contains_zap`
+    # upstream still filters (mt, zap) pairs, so admitting on MF12
+    # here cannot over-include a neutron/proton/etc. query on an
+    # MT that only produces gammas.
     mt_in_mf4 = mt in endf_dict.get(4, {})
     mt_in_mf5 = mt in endf_dict.get(5, {})
     mt_in_mf6 = mt in endf_dict.get(6, {})
+    mt_in_mf12 = mt in endf_dict.get(12, {})
+    mt_in_mf13 = mt in endf_dict.get(13, {})
     has_ancestor = reac.any_ancestor_in_mts(mt, endf_dict.get(3, {}))
-    if mt_in_mf4 or mt_in_mf5 or mt_in_mf6 or not has_ancestor:
+    if (mt_in_mf4 or mt_in_mf5 or mt_in_mf6
+            or mt_in_mf12 or mt_in_mf13
+            or not has_ancestor):
         module_logger.debug(
             f'selecting MT={mt} because distribution available '
             'or it has no ancestor'
