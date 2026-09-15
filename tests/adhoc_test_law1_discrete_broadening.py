@@ -233,9 +233,7 @@ def test_ddx_folder_finite_and_integrates_to_xs_times_yield(endf_context):
             if np.any(np.isnan(arr)):
                 failures.append(f'MT={mt}: NaN in {label} DDX')
                 break
-            # Tolerate FFT numerical noise (~1e-15 relative to peak).
-            peak = float(np.abs(arr).max())
-            if np.any(arr < -1e-10 * peak - 1e-30):
+            if np.any(arr < 0):
                 failures.append(f'MT={mt}: negative value in {label} DDX')
                 break
         total = ddx_disc if ddx_cont is None else ddx_disc + ddx_cont
@@ -291,8 +289,7 @@ def test_dxs_dE_folder_finite_and_integrates_to_xs_times_yield(endf_context):
             if np.any(np.isnan(arr)):
                 failures.append(f'MT={mt}: NaN in {label} dxs/dE')
                 break
-            peak = float(np.abs(arr).max())
-            if np.any(arr < -1e-10 * peak - 1e-30):
+            if np.any(arr < 0):
                 failures.append(f'MT={mt}: negative value in {label} dxs/dE')
                 break
         total = dexs_disc + dexs_cont
@@ -348,10 +345,7 @@ def test_public_ddx_dispatcher_runs_end_to_end(endf_context):
             pytest.fail(f'public API raised: {type(exc).__name__}: {exc}')
     assert result is not None, 'no MTs admitted for gamma production'
     assert not np.any(np.isnan(result)), 'NaN in dispatcher result'
-    peak = float(np.abs(result).max())
-    assert not np.any(result < -1e-10 * peak - 1e-30), (
-        'negative in dispatcher result (beyond FFT noise tolerance)'
-    )
+    assert not np.any(result < 0), 'negative in dispatcher result'
     law1 = [w for w in recorded if 'MF6/LAW=1' in str(w.message)]
     assert not law1, f'unexpected LAW=1 warning: {law1[0].message}'
 

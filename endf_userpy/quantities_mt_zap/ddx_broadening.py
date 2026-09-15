@@ -122,7 +122,11 @@ def compute_ddx_continuous_broadened(
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
-    return ddx * yields * xs / (2 * np.pi)
+    # DDX of a physical distribution is non-negative; FFT roundoff in
+    # adaptive_convolve can produce sub-eps negatives at the tails,
+    # which trip users who assert non-negativity or plot on log axes.
+    # Clip them here rather than in the generic primitive.
+    return np.clip(ddx * yields * xs / (2 * np.pi), 0.0, None)
 
 
 def compute_dxs_dE_broadened(
@@ -169,11 +173,14 @@ def compute_dxs_dE_broadened(
         )
 
     try:
-        return adaptive_convolve(
+        # dxs/dE of a physical spectrum is non-negative; clip sub-eps
+        # FFT-noise negatives from adaptive_convolve for the same
+        # reason as in compute_ddx_continuous_broadened.
+        return np.clip(adaptive_convolve(
             f, kernel, energies_out,
             kernel_width=kernel_width,
             **convolve_kwargs,
-        )
+        ), 0.0, None)
     except (IndexError, AssertionError):
         # compute_dexs raises IndexError for (MT, ZAP) combinations
         # with no continuum or LAW=2/3/4 angdist to reconstruct an

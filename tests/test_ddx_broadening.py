@@ -883,3 +883,84 @@ def test_dxs_dE_broadened_returns_zeros_on_compute_dexs_indexerror(
     )
     assert result.shape == (1, 5)
     np.testing.assert_array_equal(result, 0.0)
+
+
+def test_dxs_dE_broadened_returns_zeros_on_get_ejectile_assertionerror(
+    patched_environment, monkeypatch,
+):
+    """compute_dexs -> ...properties.get_ejectile can raise
+    AssertionError on multi-non-neutron-ejectile MTs (e.g. Fe-56
+    (n,pα) 112 with ejectiles [(1,'p'), (1,'a')]). The folder must
+    swallow and return zeros so cumulative summation still works."""
+    def raising_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True):
+        raise AssertionError()
+    monkeypatch.setattr(ddxb, 'compute_dexs', raising_dexs)
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1.0e5, 8.0e5, 5)
+    sigma = 3.0e4
+    result = ddxb.compute_dxs_dE_broadened(
+        endf_dict=None, mt=0, zap=0,
+        energies_in=einc, energies_out=eouts,
+        kernel=lambda d: _gaussian(d, sigma),
+        kernel_width=sigma,
+    )
+    assert result.shape == (1, 5)
+    np.testing.assert_array_equal(result, 0.0)
+
+
+# ============================================================
+# FFT-noise clipping in the continuous folders
+# ============================================================
+
+
+def test_ddx_continuous_broadened_clips_fft_noise_negatives(
+    patched_environment,
+):
+    """The continuous DDX folder clips tiny negative FFT noise to 0.
+    A physical distribution and non-negative kernel produce a
+    non-negative convolution mathematically; FFT roundoff can
+    introduce sub-eps negatives that would trip users asserting
+    non-negativity or plotting on log axes."""
+    def dist2d(einc, eouts, mus):
+        # Sharp peak that will produce ringing in the tails from FFT
+        spec = _gaussian(eouts, 1.0e4, mu=5.0e5)
+        return np.broadcast_to(spec[None, :, None],
+                                (len(einc), len(eouts), len(mus))).copy()
+
+    patched_environment(
+        dist2d=dist2d,
+        xs=lambda einc: np.ones(len(einc)),
+        yields_cont=lambda einc: np.ones(len(einc)),
+    )
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1.0e5, 1.0e6, 401)
+    mus = np.array([0.0])
+    result = ddxb.compute_ddx_continuous_broadened(
+        endf_dict=None, mt=0, zap=1,
+        energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
+        kernel=lambda d: _gaussian(d, 5.0e4),
+        kernel_width=5.0e4,
+        rtol=1e-6,
+    )
+    assert not np.any(result < 0), 'clipped output must be strictly >= 0'
+
+
+def test_dxs_dE_broadened_clips_fft_noise_negatives(
+    patched_environment,
+):
+    """Same clip in the 1D folder."""
+    def dexs(einc, eouts):
+        spec = _gaussian(eouts, 1.0e4, mu=5.0e5)
+        return np.broadcast_to(spec, (len(einc), len(eouts))).copy()
+
+    patched_environment(dexs=dexs)
+    einc = np.array([1.4e7])
+    eouts = np.linspace(1.0e5, 1.0e6, 401)
+    result = ddxb.compute_dxs_dE_broadened(
+        endf_dict=None, mt=0, zap=1,
+        energies_in=einc, energies_out=eouts,
+        kernel=lambda d: _gaussian(d, 5.0e4),
+        kernel_width=5.0e4,
+        rtol=1e-6,
+    )
+    assert not np.any(result < 0), 'clipped output must be strictly >= 0'
