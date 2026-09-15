@@ -168,7 +168,7 @@ def has_mf12_mt(endf_dict, mt):
 
 
 def has_mf13_mt(endf_dict, mt):
-    return 12 in endf_dict and mt in endf_dict[12]
+    return 13 in endf_dict and mt in endf_dict[13]
 
 
 def has_mf14_mt(endf_dict, mt):

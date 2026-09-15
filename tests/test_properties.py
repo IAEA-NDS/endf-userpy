@@ -19,6 +19,8 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives.properties import (
     get_ejectile, get_ZAP, is_zap_consistent,
+    has_mf4_mt, has_mf5_mt, has_mf6_mt,
+    has_mf12_mt, has_mf13_mt, has_mf14_mt, has_mf15_mt,
 )
 from endf_userpy.primitives.physical_constants import PARTICLE_ZAP
 
@@ -116,3 +118,70 @@ def test_is_zap_consistent_unknown_mt_is_permissive(fe56_endf_dict):
     # MT number instead to ensure "unknown" behaviour.
     unknown_mt = 995
     assert is_zap_consistent(fe56_endf_dict, unknown_mt, PARTICLE_ZAP['n']) is True
+
+
+# ============================================================
+# has_mf<N>_mt predicates.
+#
+# Pinned by an external code review that flagged a typo in
+# `has_mf13_mt`: it was checking `12 in endf_dict and mt in
+# endf_dict[12]` instead of MF13, so files with gamma yields only in
+# MF13 (no MF12 for the MT) got a silent zero yield in
+# `selectors.contains_zap` and `quantities_mt_zap.quantities.compute_yields`,
+# and files with MF12 but no MF13 wrongly reported MF13 present.
+# These synthetic-dict tests catch that class of typo across every
+# `has_mf*_mt` predicate.
+# ============================================================
+
+
+def test_has_mf4_mt_checks_mf4():
+    assert has_mf4_mt({4: {2: {}}}, 2) is True
+    assert has_mf4_mt({4: {2: {}}}, 51) is False
+    assert has_mf4_mt({6: {2: {}}}, 2) is False
+    assert has_mf4_mt({}, 2) is False
+
+
+def test_has_mf5_mt_checks_mf5():
+    assert has_mf5_mt({5: {18: {}}}, 18) is True
+    assert has_mf5_mt({5: {18: {}}}, 91) is False
+    assert has_mf5_mt({4: {18: {}}}, 18) is False
+    assert has_mf5_mt({}, 18) is False
+
+
+def test_has_mf6_mt_checks_mf6():
+    assert has_mf6_mt({6: {51: {}}}, 51) is True
+    assert has_mf6_mt({6: {51: {}}}, 52) is False
+    assert has_mf6_mt({5: {51: {}}}, 51) is False
+    assert has_mf6_mt({}, 51) is False
+
+
+def test_has_mf12_mt_checks_mf12():
+    assert has_mf12_mt({12: {102: {}}}, 102) is True
+    assert has_mf12_mt({12: {102: {}}}, 51) is False
+    assert has_mf12_mt({13: {102: {}}}, 102) is False
+    assert has_mf12_mt({}, 102) is False
+
+
+def test_has_mf13_mt_checks_mf13_not_mf12():
+    """The bug this test pins: the predicate used to look up MF12
+    instead of MF13. On a synthetic dict with MF13 only, it must
+    return True; on a synthetic dict with MF12 only it must return
+    False."""
+    assert has_mf13_mt({13: {102: {}}}, 102) is True
+    assert has_mf13_mt({13: {102: {}}}, 51) is False
+    assert has_mf13_mt({12: {51: {}}}, 51) is False
+    assert has_mf13_mt({}, 102) is False
+
+
+def test_has_mf14_mt_checks_mf14():
+    assert has_mf14_mt({14: {51: {}}}, 51) is True
+    assert has_mf14_mt({14: {51: {}}}, 52) is False
+    assert has_mf14_mt({12: {51: {}}}, 51) is False
+    assert has_mf14_mt({}, 51) is False
+
+
+def test_has_mf15_mt_checks_mf15():
+    assert has_mf15_mt({15: {102: {}}}, 102) is True
+    assert has_mf15_mt({15: {102: {}}}, 18) is False
+    assert has_mf15_mt({12: {102: {}}}, 102) is False
+    assert has_mf15_mt({}, 102) is False
