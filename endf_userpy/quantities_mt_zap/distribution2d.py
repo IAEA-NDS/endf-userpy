@@ -42,16 +42,45 @@ def compute_dist2d_values_from_mf6(
 def compute_dist2d_values(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True
 ):
+    n_zap = get_zap_for_particle('n')
     if has_mf6_mt(endf_dict, mt):
-        func = compute_dist2d_values_from_mf6
         if mt == 18 and endf_dict[6][mt]['JP'] > 0:
+            # Fission neutrons via the MT18 fallback: MF4+MF5.
+            if zap != n_zap:
+                return np.zeros(
+                    (len(energies_in), len(energies_out), len(angle_cosines_out)),
+                    dtype=float,
+                )
             func = compute_dist2d_values_from_mf4_mf5
+        else:
+            # MF6 branch: return zeros if MF6 does not declare this zap
+            # (typical for gamma on inelastic MTs 51..90 where the
+            # neutron is in MF6 and the gamma's distribution is in
+            # MF12/MF14, not yet wired here -- tracked in issue #36).
+            from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
+            if not mf6_help.contains_zap(endf_dict, mt, zap):
+                return np.zeros(
+                    (len(energies_in), len(energies_out), len(angle_cosines_out)),
+                    dtype=float,
+                )
+            func = compute_dist2d_values_from_mf6
     elif has_mf4_mt(endf_dict, mt) and has_mf5_mt(endf_dict, mt):
+        # MF4+MF5 is a neutron-only representation by convention. For
+        # any other ejectile (typical: gamma) fall through to zeros
+        # rather than trying to reconstruct with a wrong kinematic
+        # ejectile mass.
+        if zap != n_zap:
+            return np.zeros(
+                (len(energies_in), len(energies_out), len(angle_cosines_out)),
+                dtype=float,
+            )
         func = compute_dist2d_values_from_mf4_mf5
     else:
-        raise ValueError(
-            f"Cannot reconstruct double-differential distribution for MT={mt} "
-            "because the required data is not available."
+        # No representable double-differential distribution for this
+        # (MT, ZAP): return zeros so cumulative sums stay well-defined.
+        return np.zeros(
+            (len(energies_in), len(energies_out), len(angle_cosines_out)),
+            dtype=float,
         )
 
     return func(

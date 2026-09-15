@@ -120,6 +120,8 @@ def get_zaps_for_all_mts(endf_dict, dist2d_only=False):
 
 
 def has_disc_part(endf_dict, mt, zap):
+    if not contains_zap(endf_dict, mt, zap):
+        return False
     subsecs = get_subsecs(endf_dict, mt, zap)
     for subsec in subsecs:
         law = subsec['LAW']
@@ -131,6 +133,8 @@ def has_disc_part(endf_dict, mt, zap):
 
 
 def has_cont_part(endf_dict, mt, zap):
+    if not contains_zap(endf_dict, mt, zap):
+        return False
     subsecs = get_subsecs(endf_dict, mt, zap)
     for subsec in subsecs:
         law = subsec['LAW']
@@ -144,6 +148,8 @@ def has_cont_part(endf_dict, mt, zap):
 
 
 def has_angdist_part(endf_dict, mt, zap):
+    if not contains_zap(endf_dict, mt, zap):
+        return False
     subsecs = get_subsecs(endf_dict, mt, zap)
     for subsec in subsecs:
         law = subsec['LAW']

@@ -4,6 +4,7 @@ from ..mfsec_interpretation import mf5_interpretation as mf5_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf15_interpretation as mf15_interp
+from ..primitives.physical_constants import get_zap_for_particle
 from ..primitives.properties import (
     is_zap_consistent,
     has_mf4_mt,
@@ -11,6 +12,9 @@ from ..primitives.properties import (
     has_mf6_mt,
     has_mf15_mt,
 )
+
+
+_N_ZAP = get_zap_for_particle('n')
 from .distribution1d_helpers import (
     integrate_mf6_dist2d_over_eout,
     integrate_mf6_dist2d_over_mu,
@@ -28,7 +32,7 @@ def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, t
 
     module_logger.debug(f'determine angular distribution for MT: {mt}')
 
-    if has_mf4_mt(endf_dict, mt):
+    if has_mf4_mt(endf_dict, mt) and zap == _N_ZAP:
         module_logger.debug('--> found discrete LAW in MF4')
         return mf4_interp.compute_angdist_values(
             endf_dict, mt, energies_in, angle_cosines_out, to_lab
@@ -52,10 +56,20 @@ def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, t
         if found_angdist:
             return angdist
 
-    raise IndexError(
-        f'Required data to reconstruct angular distribution '
-        f'for MT={mt} not available.'
+    # No representable angular distribution for this (MT, ZAP): either
+    # MF6 exists but has no subsection for this ZAP (typical for gamma
+    # on inelastic MTs 51..90 where the neutron is in MF6 and the
+    # gamma's angular distribution is in MF14, not yet wired here --
+    # tracked in issue #36), or no relevant MF section at all. Return
+    # zeros so cumulative summation over MTs is well-defined; used to
+    # raise IndexError, which crashed get_particle_production_dxs_dmu
+    # for common gamma-production files after PR #35 admitted these
+    # MTs into the sum.
+    module_logger.debug(
+        f'no angular distribution reconstructable for MT={mt}, '
+        f'ZAP={zap}; returning zeros'
     )
+    return np.zeros((len(energies_in), len(angle_cosines_out)), dtype=float)
 
 
 def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
@@ -64,7 +78,7 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
 
     module_logger.debug(f'determine energy distribution for MT: {mt}')
 
-    if has_mf5_mt(endf_dict, mt):
+    if has_mf5_mt(endf_dict, mt) and zap == _N_ZAP:
         if to_lab is not True:
             raise ValueError(
                 f"Energy spectrum for MT={mt}, ZAP={zap} reconstruction "
@@ -75,7 +89,7 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
             endf_dict, mt, energies_in, energies_out
         )
 
-    elif has_mf4_mt(endf_dict, mt):
+    elif has_mf4_mt(endf_dict, mt) and zap == _N_ZAP:
         module_logger.debug('--> found discrete angdist in MF4')
         return convert_angdist_to_energydist(
             lambda endf_dict, mt, _, energies_in, energies_out, to_lab: (
