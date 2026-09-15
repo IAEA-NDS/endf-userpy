@@ -13,6 +13,7 @@ from .mf6_interpretation_subsecs import (
     compute_dist2d_from_subsec,
     compute_angdist_from_subsec,
     compute_yields_from_subsec,
+    get_law1_discrete_lines_from_subsec,
 )
 from . import mf8_interpretation as mf8_interp
 import logging
@@ -108,6 +109,56 @@ def compute_dist2d_values(
             f'an angular distribution is given (LAW={skipped_law})'
         )
     return dist2d
+
+
+def compute_law1_discrete_lines(
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True,
+):
+    """Aggregate MF6/LAW=1 discrete-line positions and amplitudes for
+    (MT, ZAP) across every LAW=1 subsection carrying this ZAP.
+
+    Returns (ep_disc_lab, amp_disc) both of shape (n_einc, n_mus, K),
+    where K is the total number of discrete-line slots across all
+    contributing subsections (each subsection contributes its own
+    nd_max slots; zero-amplitude / zero-position entries are kept so
+    downstream broadening can treat them uniformly). LAW!=1 and
+    LAW=1 with ND=0 subsections are skipped silently.
+
+    Raises ValueError if `to_lab` is False (frame choice is fixed by
+    the section's LCT, not the caller).
+    """
+    if to_lab is not True:
+        raise ValueError('compute_law1_discrete_lines requires to_lab=True')
+    check_mf6_exists(endf_dict)
+    check_mt_exists_in_mf6(endf_dict, mt)
+    zap = zap if zap is not None else get_ZAP(endf_dict, mt)
+    subsec_nums = find_subsec_nums(endf_dict, mt, zap)
+    if not subsec_nums:
+        raise ValueError(f'No MF6/MT{mt} subsection contains ZAP={zap}')
+
+    energies_in = np.asarray(energies_in, dtype=float)
+    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    ep_slabs = []
+    amp_slabs = []
+    for subsec_num in subsec_nums:
+        subsec = endf_dict[6][mt]['subsection'][subsec_num]
+        if subsec['LAW'] != 1:
+            continue
+        if not any(nd > 0 for nd in subsec['ND'].values()):
+            continue
+        ep_s, amp_s = get_law1_discrete_lines_from_subsec(
+            endf_dict, mt, subsec_num,
+            energies_in, angle_cosines_out, to_lab,
+        )
+        ep_slabs.append(ep_s)
+        amp_slabs.append(amp_s)
+
+    if not ep_slabs:
+        empty = np.zeros(
+            (len(energies_in), len(angle_cosines_out), 0), dtype=float,
+        )
+        return empty, empty.copy()
+    return np.concatenate(ep_slabs, axis=-1), np.concatenate(amp_slabs, axis=-1)
 
 
 def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level=None):

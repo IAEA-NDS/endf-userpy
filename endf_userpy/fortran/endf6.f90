@@ -187,6 +187,154 @@
   return
   end
 ! ------------------------------------------------------------------------------------------------------------------------------
+  subroutine mf6_get_law1_disc_lines(eu,neu,uu,nuu, &
+                                     awr,awi,awp,za,zai,zap,lct,lang,lep,lei, &
+                                     e1,nd1,na1,nep1,ep1,b1, &
+                                     e2,nd2,na2,nep2,ep2,b2, &
+                                     nd_max,ep_disc_lab,amp_disc)
+!
+! Description:
+! For each user (E_in, mu_LAB) and each discrete line k = 1..min(nd1,nd2,nd_max),
+! compute the LAB-frame outgoing energy where the discrete line appears
+! and the angular-weighted amplitude (with the eval->LAB Jacobian
+! folded in). This is the discrete-line analogue of mf6_get_law1: it
+! reports positions of the delta peaks rather than sampling the delta
+! at a user-supplied E_out grid.
+!
+! Input arguments match mf6_get_law1 except for the E_out grid, which
+! is replaced by nd_max (capacity for output discrete-line arrays).
+!
+! Output:
+! ep_disc_lab(neu,nuu,nd_max): LAB E_out at which the k-th discrete line
+!   appears at (E_in_ie, mu_ju). Entries beyond min(nd1,nd2,nd_max) and
+!   entries with no physical solution (below kinematic threshold or
+!   below/above panel bracket) are set to 0.
+! amp_disc(neu,nuu,nd_max): eval-frame angular-weighted amplitude at
+!   the corresponding line, multiplied by dinv from mf6cm2lab_disc so
+!   that summing kernel(user_eout - ep_disc_lab) * amp_disc gives the
+!   broadened LAB density.
+!
+  implicit real*8 (a-h, o-z)
+  dimension eu(*),uu(*),ep1(*),b1(nep1,*),ep2(*),b2(nep2,*)
+  dimension ep_disc_lab(neu,nuu,*),amp_disc(neu,nuu,*)
+  nd_used = min(nd1,nd2,nd_max)
+  ! zero the output arrays
+  do k = 1,nd_max
+    do ju = 1,nuu
+      do ie = 1,neu
+        ep_disc_lab(ie,ju,k) = 0.0d0
+        amp_disc(ie,ju,k) = 0.0d0
+      enddo
+    enddo
+  enddo
+  if (nd_used.le.0) return
+  law = mod(lei,10)
+  do ie = 1,neu
+    e = eu(ie)
+    if (e.lt.e1.or.e.gt.e2) cycle
+    do ju = 1,nuu
+      u = uu(ju)
+      do k = 1,nd_used
+        ! Panel-interpolated discrete eval-frame energy at user's E_in.
+        ! For genuine level-decay lines ep1(k)==ep2(k), so this is
+        ! usually a no-op; interpolation covers the odd case where the
+        ! evaluator tabulated slightly shifted positions across panels.
+        tp = yintp(e1,ep1(k),e2,ep2(k),law,e)
+        ! Inverse frame map (tp, u_LAB) -> (ep_LAB, w_eval, dinv).
+        call mf6cm2lab_disc(awr,awi,awp,lct,e,tp,u,ep_lab,w,dinv)
+        if (dinv.le.0.0d0) cycle
+        ! Angular-weighted amplitude at each panel, evaluated at the
+        ! panel's own tabulated discrete energy so imatch fires.
+        f1 = f6law1_dis(e1,ep1(k),w,za,zai,zap,lang,nd1,na1,nep1,ep1,b1)
+        f2 = f6law1_dis(e2,ep2(k),w,za,zai,zap,lang,nd2,na2,nep2,ep2,b2)
+        amp_interp = yintp(e1,f1,e2,f2,law,e)
+        ep_disc_lab(ie,ju,k) = ep_lab
+        amp_disc(ie,ju,k) = amp_interp*dinv
+      enddo
+    enddo
+  enddo
+  return
+  end
+! ------------------------------------------------------------------------------------------------------------------------------
+  subroutine mf6cm2lab_disc(awr,awi,awp,lct,e,tp,u,ep,w,dinv)
+!
+! Description:
+! Inverse of mf6lab2cm for a discrete-line configuration: given a
+! fixed eval-frame outgoing energy tp (a discrete peak position in
+! the file's evaluation frame) and a user LAB cosine u, solve for
+! the LAB outgoing energy ep at which the peak is observed, the
+! corresponding eval-frame cosine w, and the Jacobian dinv such that
+! density_LAB(ep, u) = density_eval(tp, w) * dinv.
+!
+! LCT=1 (LAB) and the light-ejectile branch of LCT=3 return the
+! identity mapping. LCT=2 and the heavy-ejectile branch of LCT=3
+! solve the classical CM-to-LAB quadratic
+!
+!   y^2 - 2 c0 sqrt(e) u y + (c0^2 e - tp) = 0,  y = sqrt(ep)
+!
+! with c0 = sqrt(awi awp)/(awi+awr). The forward-branch (+) root
+! is chosen; if the discriminant is negative or the root is
+! non-positive, the mapping has no physical solution at this (tp, u)
+! and dinv is set to 0.0 as the sentinel.
+!
+! Input:
+!   awr, awi, awp: mass numbers (target, incident, ejectile)
+!   lct: reference-frame flag from the MT section
+!   e:   incident energy in the LAB frame
+!   tp:  discrete eval-frame outgoing energy (fixed)
+!   u:   user LAB cosine
+! Output:
+!   ep:  LAB outgoing energy at which the discrete line appears
+!   w:   eval-frame cosine at (ep, u)
+!   dinv: eval->LAB density Jacobian; 0.0 means no physical solution
+!
+  implicit real*8 (a-h, o-z)
+  parameter (d2min=1.0d-38, cmin=1.0d-19)
+  if ((lct.eq.2.or.(lct.eq.3.and.awp.lt.4.0d0)).and.e*tp.gt.0.0d0) then
+    c0 = sqrt(awi*awp)/(awi+awr)
+    bcoef = c0*sqrt(e)*u
+    ccoef = c0*c0*e - tp
+    disc  = bcoef*bcoef - ccoef
+    if (disc.lt.0.0d0) then
+      ep = 0.0d0
+      w = 0.0d0
+      dinv = 0.0d0
+      return
+    endif
+    root = sqrt(disc)
+    y = bcoef + root
+    if (y.le.0.0d0) then
+      y = bcoef - root
+      if (y.le.0.0d0) then
+        ep = 0.0d0
+        w = 0.0d0
+        dinv = 0.0d0
+        return
+      endif
+    endif
+    ep = y*y
+    ! Recover w and dinv via the forward LAB->eval formulas.
+    c = c0*sqrt(e/ep)
+    d2 = 1.0d0 + c*c - 2.0d0*c*u
+    if (d2.lt.d2min) then
+      d2 = d2min
+      c = u - cmin
+    endif
+    dinv = 1.0d0/sqrt(d2)
+    w = dinv*(u-c)
+    if (w.gt.1.0d0) then
+      w = 1.0d0
+    elseif (w.lt.-1.0d0) then
+      w = -1.0d0
+    endif
+  else
+    ep = tp
+    w = u
+    dinv = 1.0d0
+  endif
+  return
+  end
+! ------------------------------------------------------------------------------------------------------------------------------
   subroutine mf6_get_law2(awr,awi,awp,q,lct,lang,e1,a1,nl1,e2,a2,nl2,ilaw,e,ne,xmu,nmu,f6)
 !
 ! Description:

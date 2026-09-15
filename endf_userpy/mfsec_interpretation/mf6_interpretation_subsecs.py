@@ -2,6 +2,7 @@ import numpy as np
 from ..primitives.interpolation import interp_tab1
 from ..fortran.endf6 import (
     mf6_get_law1,
+    mf6_get_law1_disc_lines,
     mf6_get_law2,
     mf6_get_law6,
     mf6_get_law7,
@@ -109,6 +110,155 @@ def get_dist2d_from_subsec_law1(
         cont_result_arr[i:i+1,:,:] = cur_cont_res
 
     return cont_result_arr
+
+
+def get_law1_discrete_lines_from_subsec(
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab=True,
+):
+    """Discrete-line positions and amplitudes for one MF6/LAW=1
+    subsection.
+
+    Returns (ep_disc_lab, amp_disc), both of shape (n_einc, n_mus,
+    nd_common) where nd_common = min(ND across all panels bracketed
+    by any einc). Entries where the CM->LAB inverse map has no
+    physical solution (below-threshold cases) are zero; callers
+    should treat them as "no contribution at this cell".
+
+    to_lab must be True; setting it False raises. The underlying
+    Fortran uses the section's LCT, and this wrapper does not model
+    an "evaluation frame" the caller can pick.
+    """
+    if to_lab is not True:
+        raise ValueError(
+            'get_law1_discrete_lines_from_subsec requires `to_lab=True`'
+        )
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    if subsec['LAW'] != 1:
+        raise ValueError(
+            f'MT={mt} subsec_num={subsec_num} is LAW={subsec["LAW"]}, '
+            'not LAW=1'
+        )
+    eu_full = np.asfortranarray(np.asarray(energies_in, dtype=float))
+    uu = np.asfortranarray(np.asarray(angle_cosines_out, dtype=float))
+    neu = len(eu_full)
+    nuu = len(uu)
+
+    awr = get_AWR(endf_dict)
+    awi = get_AWI(endf_dict)
+    za = get_ZA(endf_dict)
+    zai = get_ZAI(endf_dict)
+    lct = sec['LCT']
+    zap = subsec['ZAP']
+    awp = subsec['AWP']
+    lang = subsec['LANG']
+    lep = subsec['LEP']
+    ei_mesh = dict2array(subsec['E'], dtype=float)
+    int_arr = np.array(subsec['INT'], dtype=int)
+    nbt_arr = np.array(subsec['NBT'], dtype=int)
+    ei_interp = convert_interp_repr(int_arr, nbt_arr)
+    nd_arr = dict2array(subsec['ND'], dtype=int)
+    na_arr = dict2array(subsec['NA'], dtype=int)
+
+    nd_max = int(nd_arr.max()) if nd_arr.size else 0
+    ep_disc_lab = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
+    amp_disc = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
+    if nd_max == 0:
+        return ep_disc_lab, amp_disc
+
+    # Zero-pad einc entries that fall outside this subsection's
+    # panel-mesh range: below-threshold or above-max einc get no
+    # contribution from this subsection (mirroring what
+    # pad_outside_dist2d_values does for the continuum wrapper).
+    inside = (eu_full >= ei_mesh.min()) & (eu_full <= ei_mesh.max())
+    if not np.any(inside):
+        return ep_disc_lab, amp_disc
+    eu_inside = eu_full[inside]
+    idcs = find_interval(ei_mesh, eu_inside)
+    inside_pos = np.flatnonzero(inside)
+
+    # The Fortran routine processes one incident-energy panel bracket
+    # (e1, e2) at a time. Group user einc by the panel they land in
+    # so we make one Fortran call per bracket.
+    for panel_idx in np.unique(idcs):
+        mask_inside = (idcs == panel_idx)
+        if not np.any(mask_inside):
+            continue
+        cur_eu = np.asfortranarray(eu_inside[mask_inside])
+        # Map back to positions in the full einc array so we can
+        # write results into the right slots.
+        dst_rows = inside_pos[mask_inside]
+        e1 = ei_mesh[panel_idx].item()
+        e2 = ei_mesh[panel_idx + 1].item()
+        nd1 = nd_arr[panel_idx].item()
+        na1 = na_arr[panel_idx].item()
+        ep1_full = dict2array(subsec['Ep'][panel_idx + 1], dtype=float)
+        b1_full = dict2array(subsec['b'][panel_idx + 1], dtype=float)
+        nd2 = nd_arr[panel_idx + 1].item()
+        na2 = na_arr[panel_idx + 1].item()
+        ep2_full = dict2array(subsec['Ep'][panel_idx + 2], dtype=float)
+        b2_full = dict2array(subsec['b'][panel_idx + 2], dtype=float)
+        lei = ei_interp[panel_idx].item()
+
+        # Deduplicate coincident discrete Ep values in each panel:
+        # the downstream Fortran f6law1_dis uses imatch which returns
+        # only the first index of a repeated ep, so any additional
+        # rows with the same ep would be silently dropped and their
+        # b weight lost. Physically identical to summing them (both
+        # sit at the same LAB position after broadening), so pre-sum
+        # here and pass unique-ep arrays to the Fortran routine.
+        ep1_disc, b1_disc, nd1_ded = _dedup_discrete_lines(ep1_full, b1_full, nd1)
+        ep2_disc, b2_disc, nd2_ded = _dedup_discrete_lines(ep2_full, b2_full, nd2)
+        ep1 = np.asfortranarray(np.concatenate([ep1_disc, ep1_full[nd1:]]))
+        b1 = np.asfortranarray(np.concatenate([b1_disc, b1_full[nd1:]], axis=0))
+        ep2 = np.asfortranarray(np.concatenate([ep2_disc, ep2_full[nd2:]]))
+        b2 = np.asfortranarray(np.concatenate([b2_disc, b2_full[nd2:]], axis=0))
+
+        cur_ep = np.zeros(
+            (cur_eu.size, nuu, nd_max), dtype=float, order='F',
+        )
+        cur_amp = np.zeros(
+            (cur_eu.size, nuu, nd_max), dtype=float, order='F',
+        )
+        mf6_get_law1_disc_lines(
+            cur_eu, uu,
+            awr, awi, awp, za, zai, zap, lct, lang, lep, lei,
+            e1, nd1_ded, na1, ep1, b1,
+            e2, nd2_ded, na2, ep2, b2,
+            nd_max, cur_ep, cur_amp,
+        )
+        ep_disc_lab[dst_rows, :, :] = cur_ep
+        amp_disc[dst_rows, :, :] = cur_amp
+
+    return ep_disc_lab, amp_disc
+
+
+def _dedup_discrete_lines(ep, b, nd):
+    """Sum b rows at coincident ep values in the first ND entries of
+    the panel arrays. Returns (ep_ded, b_ded, nd_ded); shapes are
+    reduced to ND_unique rows, still row-major over (row, angular).
+    """
+    if nd <= 0:
+        return ep[:0], b[:0], 0
+    ep_disc = ep[:nd]
+    b_disc = b[:nd, :]
+    # Group by ep value; preserve order of first occurrence.
+    seen = {}
+    for i, val in enumerate(ep_disc):
+        key = float(val)
+        if key in seen:
+            seen[key] = seen[key] + [i]
+        else:
+            seen[key] = [i]
+    if len(seen) == nd:
+        # No duplicates; keep the original arrays unchanged.
+        return ep_disc, b_disc, nd
+    ep_ded = np.empty(len(seen), dtype=float)
+    b_ded = np.empty((len(seen), b.shape[1]), dtype=float)
+    for out_i, (key, rows) in enumerate(seen.items()):
+        ep_ded[out_i] = key
+        b_ded[out_i, :] = b_disc[rows, :].sum(axis=0)
+    return ep_ded, b_ded, len(seen)
 
 
 @pad_outside_angdist_values
