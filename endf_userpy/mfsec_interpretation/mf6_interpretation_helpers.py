@@ -141,9 +141,17 @@ def has_cont_part(endf_dict, mt, zap):
         if law in (6, 7):
             return True
         if law == 1:
+            # daniel_notes.txt notes that a (MT, ZAP) can have more
+            # than one subsection (e.g. same ZAP with different LIP)
+            # that must be summed. Continue past a discrete-only
+            # LAW=1 subsec here rather than returning False, so a
+            # continuum-carrying subsec later in the list is not
+            # silently masked. Mirrors the structure of has_disc_part
+            # a few lines up.
             nd_arr = np.array(list(subsec['ND'].values()))
             nep_arr = np.array(list(subsec['NEP'].values()))
-            return bool(np.any(nep_arr > nd_arr))
+            if bool(np.any(nep_arr > nd_arr)):
+                return True
     return False
 
 

@@ -421,6 +421,19 @@ def get_particle_production_ddxs(
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         )
 
+    def mf12_disc_compute(endf_dict, mt, zap, einc, eouts, mus):
+        return ddxb.compute_ddx_mf12_discrete_broadened(
+            endf_dict, mt, zap, einc, eouts, mus,
+            kernel=kernel,
+        )
+
+    def mf12_disc_select(endf_dict, mt, zap, einc, eouts, mus):
+        return (
+            selectors.contains_zap(endf_dict, mt, zap) and
+            selectors.has_mf12_discrete_lines(endf_dict, mt, zap) and
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+        )
+
     cont = quant_mt_zap.compute_cumulative_quantity(
         cont_compute, cont_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
@@ -433,7 +446,11 @@ def get_particle_production_ddxs(
         law1_disc_compute, law1_disc_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
     )
-    parts = [p for p in (cont, disc, law1_disc) if p is not None]
+    mf12_disc = quant_mt_zap.compute_cumulative_quantity(
+        mf12_disc_compute, mf12_disc_select,
+        endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+    )
+    parts = [p for p in (cont, disc, law1_disc, mf12_disc) if p is not None]
     if not parts:
         return None
     total = parts[0]

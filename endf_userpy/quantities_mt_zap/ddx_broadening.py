@@ -35,6 +35,7 @@ from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf12_interpretation as mf12_interp
+from ..mfsec_interpretation import mf14_interpretation as mf14_interp
 from ..primitives import conversion_relativistic as conv_relat
 from ..primitives import reactions as reactions
 from ..primitives.convolution import adaptive_convolve
@@ -51,6 +52,7 @@ from ..primitives.properties import (
     has_mf5_mt,
     has_mf6_mt,
     has_mf12_mt,
+    has_mf14_mt,
 )
 from .distribution2d import compute_dist2d_values
 from .quantities import compute_yields, compute_dexs
@@ -337,6 +339,111 @@ def compute_ddx_law1_discrete_broadened(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
     return ddx * yields * xs / (2 * np.pi)
+
+
+def compute_ddx_mf12_discrete_broadened(
+    endf_dict, mt, zap,
+    energies_in, energies_out, angle_cosines_out,
+    kernel,
+):
+    """DDX contribution from MF12 discrete photon lines with the MF14
+    angular distribution factored in, and each Dirac peak at Eg_i
+    replaced by ``kernel`` along E_out.
+
+    For each discrete photon line ``i`` at energy ``Eg_i`` in MF12,
+    adds::
+
+        sigma(Ein) * y_i(Ein) * kernel(Eout - Eg_i)
+                * f_i(mu | Ein) / (2 pi)
+
+    to the result, where ``f_i(mu | Ein)`` is the per-line angular
+    distribution (integrating to 1 over mu) taken from MF14 when
+    present, or isotropic 0.5 as the neutral fallback when MF14 is
+    absent. The overall ``1/(2 pi)`` matches the convention of the
+    other DDX folders here (``compute_ddx_law1_discrete_broadened``,
+    ``compute_ddx_continuous_broadened``).
+
+    Layouts:
+
+    - MF14 LI=1 (fully isotropic; the common case): ``f_i(mu) = 0.5``
+      independent of line index. The DDX is the D1 discrete-line
+      folder times ``0.5 / (2 pi) = 1 / (4 pi)``.
+    - MF14 LI=0 with Legendre coefficients: ``f_i(mu)`` varies per
+      line and is looked up in MF14 for each ``Eg_i > 0``. The MF12
+      Eg=0 continuum placeholder is dropped from this folder (its
+      contribution belongs to the continuous DDX folder combined
+      with MF15 / MF14, tracked as a further follow-up).
+    - No MF14 for this MT (unusual for a gamma-emitting MT): treat
+      as isotropic.
+
+    Callers must gate on ``has_mf12_discrete_lines(mt, zap)`` for the
+    channel; calling on a MT/ZAP with no MF12 discrete lines returns
+    a zero DDX.
+
+    Returns
+    -------
+    ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``.
+    """
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF12 discrete-line broadening is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    n_mus = len(angle_cosines_out)
+    result = np.zeros((n_einc, n_eouts, n_mus), dtype=float)
+    if not has_mf12_mt(endf_dict, mt):
+        return result
+
+    photon_energies = mf12_interp.get_photon_energies(endf_dict, mt)
+    if photon_energies is None:
+        return result
+    photon_energies = np.asarray(photon_energies, dtype=float)
+    disc_mask = photon_energies > 0.0
+    if not np.any(disc_mask):
+        return result
+
+    yields_all = mf12_interp.compute_photon_yields(
+        endf_dict, mt, energies_in, photon_energies,
+    )
+    Eg_disc = photon_energies[disc_mask]
+    yields_disc = yields_all[:, disc_mask]  # (n_einc, n_disc)
+
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+    )  # (n_einc,)
+    weight_E = yields_disc * xs[:, np.newaxis]  # (n_einc, n_disc)
+
+    # Per-line angular distribution f_i(mu | Ein), shape
+    # (n_einc, n_disc, n_mus).
+    if has_mf14_mt(endf_dict, mt):
+        mtsec14 = endf_dict[14][mt]
+        if mtsec14['LI'] == 1:
+            per_line_angdist = np.full(
+                (n_einc, len(Eg_disc), n_mus), 0.5, dtype=float,
+            )
+        else:
+            per_line_angdist = mf14_interp.compute_angdist_values(
+                endf_dict, mt, energies_in, Eg_disc, angle_cosines_out,
+            )
+    else:
+        per_line_angdist = np.full(
+            (n_einc, len(Eg_disc), n_mus), 0.5, dtype=float,
+        )
+
+    for k in range(len(Eg_disc)):
+        e_kernel = np.asarray(kernel(energies_out - Eg_disc[k]))
+        # (n_einc, 1, 1) * (1, n_eouts, 1) * (n_einc, 1, n_mus)
+        result += (
+            weight_E[:, k].reshape(-1, 1, 1)
+            * e_kernel.reshape(1, -1, 1)
+            * per_line_angdist[:, k, :].reshape(n_einc, 1, n_mus)
+        )
+    return np.clip(result / (2 * np.pi), 0.0, None)
 
 
 def compute_dxs_dE_mf12_discrete_broadened(
