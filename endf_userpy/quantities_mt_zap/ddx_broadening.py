@@ -182,17 +182,21 @@ def compute_dxs_dE_broadened(
             **convolve_kwargs,
         ), 0.0, None)
     except (IndexError, AssertionError):
-        # compute_dexs raises IndexError for (MT, ZAP) combinations
-        # with no continuum or LAW=2/3/4 angdist to reconstruct an
-        # energy spectrum from (e.g. MF6/LAW=1 ND>0 pure-discrete-line
-        # subsections such as Be-9 MT 701 gammas), and AssertionError
-        # from primitives.properties.get_ejectile when the MT has
-        # multiple non-neutron ejectiles (e.g. Fe-56 MT 112 = (n,p a)
-        # with ejectile 'p' rather than 'n' first). Both cases mean
-        # the cont path has nothing to contribute for this MT/ZAP;
-        # the LAW=1 discrete folder (dispatched separately) or the
-        # 2-body folder handles the actual content. Return zeros so
-        # cumulative summation is well-defined.
+        # Defensive: earlier revisions caught IndexError from
+        # compute_energydist_values falling through with only MF6/
+        # LAW=1 ND>0 content (issue #31 has since been fixed and it
+        # now returns zeros directly, so this specific case no longer
+        # reaches us). The catch is still needed because
+        #   * compute_yields (mf6_interpretation.compute_yields) can
+        #     raise IndexError for MT/ZAP combinations where MF6 has
+        #     no subsection carrying that ZAP;
+        #   * primitives.properties.get_ejectile asserts on multi-
+        #     ejectile MTs where the first ejectile is not a neutron
+        #     (issue #32; e.g. Fe-56 MT 112 = (n,p a) with 'p' first).
+        # Both mean the cont path has nothing to contribute for this
+        # MT/ZAP; the LAW=1 discrete folder (dispatched separately)
+        # or the 2-body folder handles the actual content. Return
+        # zeros so cumulative summation is well-defined.
         return np.zeros(
             (len(energies_in), len(energies_out)), dtype=float,
         )
