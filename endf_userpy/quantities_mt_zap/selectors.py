@@ -48,6 +48,31 @@ def has_mf6_law1_discrete_lines(endf_dict, mt, zap):
     return mf6help.has_disc_part(endf_dict, mt, zap)
 
 
+def has_mf12_discrete_lines(endf_dict, mt, zap):
+    """Whether (MT, ZAP) carries discrete photon lines in MF12.
+
+    True if MF12 declares at least one photon at Eg > 0 for this MT
+    (the Eg=0 entry, when present, is the continuum-spectrum
+    placeholder handled separately via MF15). Gamma-only: the
+    predicate returns False for any non-gamma ZAP.
+
+    Used by the broadening dispatcher for gamma dxs/dE (and later
+    DDX) to admit MF12-declaring MTs into an additional sum term
+    that folds each discrete photon line with the kernel, mirroring
+    the MF6/LAW=1 discrete-line path.
+    """
+    if zap != physconst.PARTICLE_ZAP['g']:
+        return False
+    if not prop.has_mf12_mt(endf_dict, mt):
+        return False
+    from ..mfsec_interpretation import mf12_interpretation as mf12_interp
+    pes = mf12_interp.get_photon_energies(endf_dict, mt)
+    if pes is None:
+        return False
+    import numpy as _np
+    return bool(_np.any(_np.asarray(pes) > 0.0))
+
+
 def has_discrete_two_body_ddx(endf_dict, mt, zap):
     """Whether (MT, ZAP) carries a 2-body kinematic-delta distribution.
 
