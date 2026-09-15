@@ -109,10 +109,12 @@ def test_mf6_help_has_disc_part_unchanged_for_present_zap(cu63_jeff40):
 # ============================================================
 
 
-def test_compute_angdist_returns_zeros_for_gamma_on_mf6_neutron_only(cu63_jeff40):
-    """MT 51 in JEFF-4.0 Cu-63 has MF6 gamma-less and no MF4.
-    compute_angdist_values used to raise IndexError; it now returns
-    a zero-shaped array so the cumulative sum in
+def test_compute_angdist_returns_finite_for_gamma_on_mf6_neutron_only(cu63_jeff40):
+    """MT 51 in JEFF-4.0 Cu-63 has MF6 gamma-less and no MF4. It used
+    to raise IndexError before S0 (PR #37); after S0 alone it
+    returned zeros; after D2 (issue #36) it now returns the MF14
+    isotropic distribution (0.5) since Cu-63 declares MF14/MT 51 with
+    LI=1. Either way the cumulative sum in
     get_particle_production_dxs_dmu stays well-defined."""
     einc = np.array([1.5e6])
     mus = np.linspace(-0.9, 0.9, 5)
@@ -120,7 +122,8 @@ def test_compute_angdist_returns_zeros_for_gamma_on_mf6_neutron_only(cu63_jeff40
         cu63_jeff40, 51, PARTICLE_ZAP['g'], einc, mus,
     )
     assert r.shape == (len(einc), len(mus))
-    np.testing.assert_array_equal(r, 0.0)
+    # After D2: MF14 LI=1 => f(mu) = 0.5 (isotropic, integrates to 1).
+    np.testing.assert_allclose(r, 0.5)
 
 
 def test_compute_energydist_no_keyerror_for_gamma_on_mf4_neutron_file(fe56_tendl):
