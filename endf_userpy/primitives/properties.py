@@ -56,7 +56,22 @@ def get_ejectile(endf_dict, mt):
         ejectiles = get_ejectiles(projectile, mt)
         if ejectiles is None:
             raise ValueError(f'AWP cannot be determined for MT={mt}.')
-        assert len(ejectiles) == 1 or ejectiles[0][1] == 'n'
+        # Return the primary ejectile: for single-ejectile MTs there is
+        # only one, and for multi-ejectile MTs whose reaction string
+        # lists a neutron first (like (n,n'X)) that neutron is the one
+        # carrying MF4/MF6 angular data. Multi-ejectile MTs whose first
+        # ejectile is not a neutron (e.g. MT 112 = (n,p a), MT 115..117)
+        # do not have a well-defined single "the ejectile"; refuse
+        # rather than silently guessing. Callers who want a boolean
+        # "does mt emit zap" should use is_zap_consistent, which
+        # handles that case; callers who need a unique ZAP should not
+        # be calling this for multi-ejectile MTs anyway.
+        if len(ejectiles) > 1 and ejectiles[0][1] != 'n':
+            ejectile_names = [e[1] for e in ejectiles]
+            raise ValueError(
+                f'MT={mt} has multiple ejectiles {ejectile_names} and none '
+                f'is a neutron; no unique "the ejectile" to return.'
+            )
         ejectile = ejectiles[0][1]
     return ejectile
 
@@ -74,11 +89,29 @@ def get_ZAP(endf_dict, mt):
 
 
 def is_zap_consistent(endf_dict, mt, zap):
+    """Whether an MT could produce a particle with ZAP=zap.
+
+    Handles multi-ejectile MTs correctly by consulting the reaction-
+    string ejectile table rather than relying on get_ZAP's single-
+    ejectile answer. Gamma (zap=0) is always accepted: gammas
+    accompany many reactions and are typically encoded in MF12/14
+    rather than in the primary MF6 subsections that get_ejectile
+    reasons about.
+    """
+    from . import reactions as _reactions
+    if zap == PARTICLE_ZAP['g']:
+        return True
     try:
-        zap_mt = get_ZAP(endf_dict, mt)
-        return zap_mt == zap or zap == PARTICLE_ZAP['g']
+        projectile = get_projectile(endf_dict)
     except (KeyError, ValueError):
         return True
+    contains = _reactions.contains_zap(projectile, mt, zap)
+    if contains is None:
+        # Unknown reaction table for this MT: be permissive so the
+        # caller can still attempt the reconstruction and fail with
+        # a domain-specific error if the data really is missing.
+        return True
+    return contains
 
 
 def get_projectile(endf_dict):
