@@ -1,0 +1,20 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ruff:
+    name: ruff (pyflakes rules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Install ruff
+        run: pip install ruff
+      # Rule set and excludes live in pyproject.toml ([tool.ruff]).
+      - name: ruff check
+        run: ruff check --output-format github .
