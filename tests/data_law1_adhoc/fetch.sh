@@ -25,6 +25,11 @@ files=(
   "endfb81_n_Al-27.endf  ENDF-B-VIII.1  n_013-Al-27_1325  f68a0fd25f921c59730555d767212b5f30e68f9693b70134d214c94af71eb3a5"
   "tendl21_n_Fe-56.endf  TENDL-2021     n_026-Fe-56_2631  34fb36fe4f20d3263d22f3011d0af32d277ee5f68a99901b2d4ca70ce846ac18"
   "tendl21_n_U-235.endf  TENDL-2021     n_092-U-235_9228  876a66be00cfd8fb0d65f04f678b92bc03ebf501e2430b420a77ab782ed15dca"
+  # Cu-63 from JEFF-4.0: the exact file behind Pablo's four-library
+  # 63Cu(n,xg) plot that motivated issue #29. MF12 partial channels
+  # for MT 51..79 carry the (n,n_i) de-excitation photons that were
+  # silently dropped by the pre-PR#35 gamma production dispatcher.
+  "jeff40_n_Cu-63.endf   JEFF-4.0       n_029-Cu-63_2925  7831a5bab6cac44d56d019f775062112cb38741287cca9745d9cb132413ebafb"
 )
 
 ua='Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)'
