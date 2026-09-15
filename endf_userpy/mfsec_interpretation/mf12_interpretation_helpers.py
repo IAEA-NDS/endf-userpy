@@ -42,8 +42,8 @@ def get_available_series_mts(endf_dict, mt, include_ground_state=False):
     return avail_series_mts
 
 
-def init_trans2yield(endf_dict, mt): 
-    maxlevel = MAX_NUM_LEVEL 
+def init_trans2yield(endf_dict, mt):
+    maxlevel = MAX_NUM_LEVEL
     elis = prop.get_ELIS(endf_dict)
     avail_series_mts = get_available_series_mts(endf_dict, mt, False)
 
@@ -63,7 +63,6 @@ def init_trans2yield(endf_dict, mt):
 
 
 def trans2yield(endf_dict, mt, state_cache):
-    maxlevel = MAX_NUM_LEVEL
     maxnk = MAX_NK 
 
     ee = state_cache['ee']
@@ -86,7 +85,9 @@ def trans2yield(endf_dict, mt, state_cache):
     elif mtsec['LG'] == 2:
         gp = dict2array(mtsec['GP'], dtype=float, order='F')
     else:
-        raise ValueError(f'invalid value for LG encountered (LG={LG})')
+        raise ValueError(
+            f'invalid value for LG encountered (LG={mtsec["LG"]})'
+        )
 
     # allocate variables for output vars from fortran subroutine
     es = np.zeros(maxnk, dtype=float, order='F')  # energy level from which photon originates

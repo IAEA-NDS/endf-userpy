@@ -4,7 +4,6 @@ from ..primitives.helpers import (
     erf,
 )
 from ..primitives.interpolation import (
-    endf_interp1d,
     interp_tab1,
     interp_tab2,
 )
@@ -78,7 +77,7 @@ def compute_simple_maxwellian_fission_spectrum(
     fnz_unnorm = np.sqrt(eout_nz) * np.exp(-eout_nz / theta) 
     # compute normalization constant
     z = np.sqrt((ein - U) / theta)
-    z1 = (0.5*np.sqrt(np.pi)*erf(z) - z*np.exp(-z))
+    z1 = (0.5*np.sqrt(np.pi)*erf(z) - z*np.exp(-z))  # noqa: F841  # unused, see #41
     I = theta * np.sqrt(theta)
     fnz = fnz_unnorm / I
     f = np.zeros((ein.shape[0], eout.shape[1]), dtype=float)

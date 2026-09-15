@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.integrate import quad
 from ..primitives import properties
 from ..primitives import reactions as reaction
 from ..primitives.physical_constants import get_zap_for_particle
@@ -14,7 +13,6 @@ from .distribution1d import (
     compute_angdist_values,
     compute_energydist_values,
 )
-from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from .distribution2d import compute_dist2d_values
 from . import discrete_quantities as discrete_quant
 import logging
@@ -25,8 +23,6 @@ module_logger = logging.getLogger(__name__)
 
 # functions borrowed as is
 from ..mfsec_interpretation.mf3_interpretation import (
-    get_incident_energy_range,
-    get_incident_energies,
     get_reaction_mts as get_reaction_mt_numbers,
 )
 
@@ -42,7 +38,7 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
             )
         if level is not None:
             raise ValueError(
-                f'For fission, `level` argument must be `None`'
+                'For fission, `level` argument must be `None`'
             )
         # if MT=18 (n,f), we assume user wants to know prompt neutron yields
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF1/MT456')

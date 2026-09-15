@@ -1,6 +1,6 @@
 import inspect
 import numpy as np
-from typing import Optional, List, Callable, Union
+from typing import List, Callable, Union
 
 
 def unpack_za(za):
@@ -41,7 +41,6 @@ def pad_nested_ragged_lists(obj, fill_value=0.0, dims=None):
         dims = _determine_dims(obj)
     if not isinstance(obj, list):
         return
-    eff_fill_value = fill_value if len(dims) == 1 else []
     for i in range(dims[0]):
         if i == len(obj):
             obj.append(fill_value)

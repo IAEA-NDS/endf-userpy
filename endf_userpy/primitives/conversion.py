@@ -1,6 +1,4 @@
 import numpy as np
-import logging
-import warnings
 
 
 def _correct_mu_cm(mu_cm):

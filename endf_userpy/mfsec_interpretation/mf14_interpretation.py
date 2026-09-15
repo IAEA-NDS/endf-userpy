@@ -5,7 +5,6 @@ from ..primitives.helpers import (
 )
 from ..primitives.interpolation import evaluate_interp_legendre_polynomials 
 from .mf4_interpretation import _convert_legendre_to_numpy_array
-import logging
 
 
 def get_photon_energies(endf_dict, mt):
@@ -29,7 +28,6 @@ def compute_angdist_from_legendre(
     endf_dict, mt, energies_in, photon_energies, angle_cosines
 ):
     mtsec = endf_dict[14][mt]
-    nk = mtsec['NK']
     ni = mtsec['NI']
     eg = dict2array(mtsec['EG'])
 

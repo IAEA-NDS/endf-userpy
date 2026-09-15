@@ -4,9 +4,7 @@ from ..primitives.interpolation import endf_interp1d
 
 def find_subsec_nums(endf_dict, mt, zap, level=None):
     sec = endf_dict[10][mt]
-    idcs = tuple()
     nums = []
-    final_states = []
     for idx, subsec in sec['subsection'].items():
         if subsec['IZAP'] != zap:
             continue

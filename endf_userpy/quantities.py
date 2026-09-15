@@ -5,7 +5,6 @@ from .primitives import properties as prop
 from .primitives import reactions as reac
 from .primitives.helpers import unpack_za
 from .quantities_mt_zap import quantities as quant_mt_zap
-from .quantities_mt_zap import distribution1d as dist1d
 from .quantities_mt_zap import selectors
 from .quantities_mt_zap import ddx_broadening as ddxb
 import logging

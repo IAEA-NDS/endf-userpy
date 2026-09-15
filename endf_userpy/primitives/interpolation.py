@@ -1,4 +1,3 @@
-import logging
 import numpy as np
 from numpy.polynomial.legendre import Legendre
 from .helpers import (
@@ -94,7 +93,6 @@ def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
         cur_fp = fp[first_idx:last_idx]
         upper = last_idx if is_last else last_idx - 1
         is_in_range = (idcs >= first_idx) & (idcs < upper)
-        cur_idcs = idcs[is_in_range]
         cur_x = xi[is_in_range]
         fi[is_in_range] = interp(
             cur_x, cur_xp, cur_fp, interp_type, outside_value

@@ -4,7 +4,6 @@ from .physical_constants import (
     get_particle_mass,
 )
 from .reactions import (
-    is_binary_reaction,
     get_ejectiles,
     get_raw_reaction_string_for_mt,
 )

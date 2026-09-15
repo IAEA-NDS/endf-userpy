@@ -79,9 +79,7 @@ def list_subsecs(endf_dict, mt=None, zap=None, level=None):
 
 def find_subsec_nums(endf_dict, mt, zap, level=None):
     sec = endf_dict[8][mt]
-    idcs = tuple()
     nums = []
-    final_states = []
     for idx, subsec in sec['subsection'].items():
         if subsec['ZAP'] != zap:
             continue

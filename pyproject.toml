@@ -3,6 +3,24 @@ requires = ["setuptools", "wheel", "numpy>=2.0"]
 build-backend = "setuptools.build_meta"
 
 
+[tool.ruff]
+# Correctness-only gate (pyflakes-equivalent): undefined names, unused
+# imports/variables, duplicate definitions, placeholder-less f-strings.
+# Style rules are deliberately not enabled. Run locally with
+#   ruff check .
+# The same command runs in CI (.github/workflows/lint.yml).
+extend-exclude = [
+    "build",
+    "dist",
+    "docs",
+    "testenv",
+    "endf_userpy/primitives/raw_aux_scripts",
+]
+
+[tool.ruff.lint]
+select = ["F"]
+
+
 [tool.cibuildwheel]
 # CPython 3.9 through 3.13.
 build = "cp39-* cp310-* cp311-* cp312-* cp313-*"

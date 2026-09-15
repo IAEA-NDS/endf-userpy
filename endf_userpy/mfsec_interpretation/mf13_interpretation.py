@@ -1,6 +1,5 @@
 import numpy as np
 from ..primitives.helpers import (
-    dict2array,
     find_indices_with_tol,
 )
 from ..primitives.interpolation import endf_interp1d
@@ -27,7 +26,6 @@ def compute_photon_production_xs(endf_dict, mt, energies_in, photon_energies):
     mtsec = endf_dict[13][mt]
     eincs = energies_in
     subsecs = list(mtsec['subsection'].values())
-    level_energies = np.array([sec['ES'] for sec in subsecs])
     existing_photon_energies = np.array([sec['EG'] for sec in subsecs])
     idcs = find_indices_with_tol(
         existing_photon_energies, photon_energies, atol=1e-3, rtol=1e-5
@@ -61,8 +59,8 @@ def compute_total_photon_production_xs(endf_dict, mt, energies_in):
         if not np.allclose(total_prod_xs, check_tot_prod_xs):
             raise ValueError(
                 'Total photon production cross section '
-                'given in MF12/MT{mt} does not equal the ' 
-                'the sum of the partial production cross '
+                f'given in MF13/MT{mt} does not equal the '
+                'sum of the partial production cross '
                 'sections.'
             )
     return total_prod_xs

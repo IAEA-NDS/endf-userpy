@@ -8,7 +8,6 @@ from endf_userpy.mf4_interpretation_fort import (
     compute_angdist as compute_angdist_fort,
 )
 from endf_userpy.helpers import deg2rad
-import endf_userpy
 import os
 import matplotlib.pyplot as plt
 

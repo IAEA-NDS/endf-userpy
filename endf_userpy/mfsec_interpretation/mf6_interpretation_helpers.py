@@ -32,8 +32,8 @@ def get_zap_with_check(endf_dict, mt, zap):
 def check_mf6_exists(endf_dict):
     if 6 not in endf_dict:
         raise IndexError(
-            f'No information on product-angle distributions found '
-            f'(MF=6 section missing)'
+            'No information on product-angle distributions found '
+            '(MF=6 section missing)'
         )
 
 

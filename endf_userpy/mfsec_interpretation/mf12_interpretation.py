@@ -59,8 +59,6 @@ def compute_photon_yields_from_tabulated_yields(endf_dict, mt, energies_in):
             f'MT{mt} does not contain photon multiplicities'
         )
     eincs = energies_in
-    num_eincs = len(energies_in)
-    num_secs = mtsec['NK']
     tables = list(mtsec['table'].values())
 
     level_energies = dict2array(mtsec['ES']) 
@@ -96,7 +94,7 @@ def compute_photon_yields(endf_dict, mt, energies_in, photon_energies):
         )
     else:
         raise ValueError(
-            'Invalid value LO={LO_value}'
+            f'Invalid value LO={LO_value}'
         )
 
     # select the requested photon energies
