@@ -37,8 +37,18 @@ def _warn_if_missing_isomer_routing(
     endf_dict, residual_str, za_residual, lfs, mt5_contrib
 ):
     """Warn for MTs that could physically produce ``za_residual`` but
-    lack an MF8 entry to resolve the isomer state. Called only when
-    the user explicitly requested a non-ground LFS.
+    do not resolve the requested isomer state. Called only when the
+    user explicitly requested a non-ground LFS.
+
+    Two cases each trigger a per-(file, MT, ZAP, LFS) warning:
+
+    - **No MF8 entry for the MT at all** (the whole isomer routing
+      is missing). Handled since the original implementation.
+    - **MF8 present but does not declare the requested (ZAP, LFS)**
+      (partial isomer coverage; e.g. MF8 declares the ground state
+      but not the metastable a user just asked for). Issue #106
+      /audit D6 -- the pre-fix code skipped MTs with any MF8 entry
+      and silently returned zero for the missing LFS.
     """
     avail_mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
     has_mf8 = (8 in endf_dict)
@@ -47,18 +57,34 @@ def _warn_if_missing_isomer_routing(
             continue
         if not selectors.contains_residual_za(endf_dict, mt, za_residual):
             continue
-        if has_mf8 and mt in endf_dict[8]:
-            continue
+
+        mt_has_mf8_section = has_mf8 and mt in endf_dict[8]
+        if mt_has_mf8_section:
+            # Partial-LFS case: MF8 has an entry for this MT, but
+            # does it declare the requested (ZAP, LFS)?
+            subsec_nums = mf8interp.find_subsec_nums(
+                endf_dict, mt, za_residual, level=lfs,
+            )
+            if subsec_nums:
+                # (ZAP, LFS) IS declared -- routing is available,
+                # no need to warn.
+                continue
+            reason = (
+                f"MT={mt} has MF8 routing but no subsection for "
+                f"ZAP={int(za_residual)}, LFS={lfs}"
+            )
+        else:
+            reason = f"MT={mt} has no MF8 isomer routing in this file"
+
         key = (id(endf_dict), mt, int(za_residual), int(lfs))
         if key in _isomer_warning_seen:
             continue
         _isomer_warning_seen.add(key)
         warnings.warn(
-            f"MT={mt} has no MF8 isomer routing in this file; "
-            f"production of '{residual_str}' from MT={mt} is unresolved "
-            f"at the LFS level. Returning 0 for this isomer. "
-            f"The metastable may still be produced according to other "
-            f"evaluations.",
+            f"{reason}; production of '{residual_str}' from MT={mt} "
+            f"is unresolved at the LFS level. Returning 0 for this "
+            f"isomer. The metastable may still be produced according "
+            f"to other evaluations.",
             UserWarning,
             stacklevel=3,
         )
