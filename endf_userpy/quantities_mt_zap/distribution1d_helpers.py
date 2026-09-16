@@ -2,6 +2,7 @@ import numpy as np
 from scipy.integrate import simpson
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf6_interpretation_integrals as mf6_integral
+from ..mfsec_interpretation import mf6_law7_integrals as mf6_law7
 from ..primitives import conversion_relativistic as conv_relat 
 from ..primitives.properties import (
     get_QM,
@@ -76,11 +77,40 @@ def integrate_mf6_dist2d_over_eout(
     """Angular distribution from the MF6 2D distribution, integrated
     over outgoing energy on `[0, (E_in + q) * 1.1]`.
 
-    Uses `_adaptive_simpson_along_axis` per E_in: the upper limit is
-    E_in-dependent so the mesh cannot be shared across incident
-    energies, but each E_in gets a single vectorised dist2d call per
-    refinement level instead of `n_mu * (~2000)` scalar calls that
-    the previous scipy.quad path incurred (issue #46).
+    Dispatches to a knot-aware trapezoid integrator for the
+    single-subsection LAW=7 case (issue #69: sub-permille accuracy on
+    the tabulated-slice unit-base interpolant that the general
+    adaptive Simpson path only resolves to ~1 %). Everything else
+    routes through `_integrate_mf6_over_eout_adaptive_simpson`:
+    per-E_in adaptive Simpson doubling over a shared E' mesh, one
+    vectorised dist2d call per level instead of `n_mu * (~2000)`
+    scalar calls that the previous scipy.quad path incurred
+    (issue #46).
+    """
+    mtsec = endf_dict[6][mt]
+    subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
+    if len(subsec_nums) == 1:
+        law = mtsec['subsection'][subsec_nums[0]]['LAW']
+        if law == 7:
+            module_logger.debug(
+                f'use knot-aware LAW=7 integrator for MT={mt}',
+            )
+            return mf6_law7.integrate_law7_subsec_over_eout(
+                endf_dict, mt, subsec_nums[0],
+                energies_in, angle_cosines_out, to_lab,
+            )
+    return _integrate_mf6_over_eout_adaptive_simpson(
+        endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+    )
+
+
+def _integrate_mf6_over_eout_adaptive_simpson(
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True,
+):
+    """General-purpose per-E_in adaptive Simpson integrator over
+    outgoing energy. Fallback for MTs the specialised
+    single-subsection integrators (Fortran LAW=1, knot-aware
+    Python LAW=7) do not cover.
     """
     ens_inc = np.asarray(energies_in, dtype=float)
     mus_out = np.asarray(angle_cosines_out, dtype=float)
