@@ -9,6 +9,7 @@ from .quantities_mt_zap import selectors
 from .quantities_mt_zap import ddx_broadening as ddxb
 import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
+from .mfsec_interpretation import mf3_interpretation as mf3interp
 from .mfsec_interpretation import mf6_interpretation as mf6interp
 from .mfsec_interpretation import mf8_interpretation as mf8interp
 from .mfsec_interpretation.mf3_interpretation import above_range_ctx
@@ -134,6 +135,14 @@ def get_declared_isomer_states(endf_dict, residual_nucleus):
 
 
 def get_incident_energies(endf_dict, reaction):
+    """Sorted union of tabulated incident-energy meshes across every
+    MT admitted for `reaction`.
+
+    Uses `mf3_interpretation.get_incident_energies(mt)` per MT (issue
+    #74: the previous callsite reached for a non-existent
+    `quant_mt_zap.get_incident_energies` and raised `AttributeError`
+    on every call).
+    """
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
     select_mts = [
@@ -142,7 +151,7 @@ def get_incident_energies(endf_dict, reaction):
     ]
     module_logger.debug('selected ' + ','.join(str(mt) for mt in select_mts))
     energy_meshes = [
-        quant_mt_zap.get_incident_energies(endf_dict, mt)
+        mf3interp.get_incident_energies(endf_dict, mt)
         for mt in select_mts
     ]
     return np.unique(np.concatenate(energy_meshes))
