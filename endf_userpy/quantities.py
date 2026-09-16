@@ -445,6 +445,19 @@ def _get_particle_production_dxs_dE_impl(
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         )
 
+    def mf13_disc_compute(endf_dict, mt, zap, einc, eouts):
+        return ddxb.compute_dxs_dE_mf13_discrete_broadened(
+            endf_dict, mt, zap, einc, eouts,
+            kernel=kernel,
+        )
+
+    def mf13_disc_select(endf_dict, mt, zap, einc, eouts):
+        return (
+            selectors.contains_zap(endf_dict, mt, zap) and
+            selectors.has_mf13_discrete_lines(endf_dict, mt, zap) and
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+        )
+
     cont = quant_mt_zap.compute_cumulative_quantity(
         cont_compute, select,
         endf_dict, zap, energies_in, energies_out,
@@ -457,7 +470,11 @@ def _get_particle_production_dxs_dE_impl(
         mf12_disc_compute, mf12_disc_select,
         endf_dict, zap, energies_in, energies_out,
     )
-    parts = [p for p in (cont, law1_disc, mf12_disc) if p is not None]
+    mf13_disc = quant_mt_zap.compute_cumulative_quantity(
+        mf13_disc_compute, mf13_disc_select,
+        endf_dict, zap, energies_in, energies_out,
+    )
+    parts = [p for p in (cont, law1_disc, mf12_disc, mf13_disc) if p is not None]
     if not parts:
         return None
     total = parts[0]
@@ -627,6 +644,19 @@ def _get_particle_production_ddxs_impl(
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         )
 
+    def mf13_disc_compute(endf_dict, mt, zap, einc, eouts, mus):
+        return ddxb.compute_ddx_mf13_discrete_broadened(
+            endf_dict, mt, zap, einc, eouts, mus,
+            kernel=kernel,
+        )
+
+    def mf13_disc_select(endf_dict, mt, zap, einc, eouts, mus):
+        return (
+            selectors.contains_zap(endf_dict, mt, zap) and
+            selectors.has_mf13_discrete_lines(endf_dict, mt, zap) and
+            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+        )
+
     # Sum-then-broaden path (issue #26): when 2+ MTs pass
     # cont_select, computing dist2d for the whole sum inside ONE
     # adaptive_convolve saves the FFT overhead of the per-MT
@@ -661,7 +691,14 @@ def _get_particle_production_ddxs_impl(
         mf12_disc_compute, mf12_disc_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
     )
-    parts = [p for p in (cont, disc, law1_disc, mf12_disc) if p is not None]
+    mf13_disc = quant_mt_zap.compute_cumulative_quantity(
+        mf13_disc_compute, mf13_disc_select,
+        endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+    )
+    parts = [
+        p for p in (cont, disc, law1_disc, mf12_disc, mf13_disc)
+        if p is not None
+    ]
     if not parts:
         return None
     total = parts[0]

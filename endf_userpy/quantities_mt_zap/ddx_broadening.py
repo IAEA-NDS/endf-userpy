@@ -35,6 +35,7 @@ from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf12_interpretation as mf12_interp
+from ..mfsec_interpretation import mf13_interpretation as mf13_interp
 from ..mfsec_interpretation import mf14_interpretation as mf14_interp
 from ..primitives import conversion_relativistic as conv_relat
 from ..primitives import reactions as reactions
@@ -52,6 +53,7 @@ from ..primitives.properties import (
     has_mf5_mt,
     has_mf6_mt,
     has_mf12_mt,
+    has_mf13_mt,
     has_mf14_mt,
 )
 from .distribution2d import compute_dist2d_values
@@ -600,6 +602,142 @@ def compute_dxs_dE_mf12_discrete_broadened(
             * weight[:, k].reshape(-1, 1)
         )
     return np.clip(result, 0.0, None)
+
+
+def compute_dxs_dE_mf13_discrete_broadened(
+    endf_dict, mt, zap, energies_in, energies_out, kernel,
+):
+    """1D dxs/dE contribution from discrete photon lines declared in
+    MF13, with each Dirac peak at ``Eg_i`` replaced by ``kernel``.
+
+    MF13 stores the per-line photon-production cross section
+    ``sigma_gamma_i(Ein)`` directly (issue #29's XS-side pattern),
+    so the fold reduces to::
+
+        dxs_dE(Ein, Eout) = sum_i sigma_gamma_i(Ein) * kernel(Eout - Eg_i)
+
+    -- no multiplication by MF3 sigma or MF12 yields needed. This
+    is the MF13 analogue of ``compute_dxs_dE_mf12_discrete_broadened``
+    and closes the differential-side gap noted in that function's
+    docstring (issue #101).
+
+    Gamma-only. A photon energy of 0 in MF13 is the
+    continuum-spectrum placeholder combined with MF15 (same
+    convention as MF12) and is excluded here.
+    """
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF13 discrete-line broadening is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    result = np.zeros(
+        (len(energies_in), len(energies_out)), dtype=float,
+    )
+    if not has_mf13_mt(endf_dict, mt):
+        return result
+
+    photon_energies = mf13_interp.get_photon_energies(endf_dict, mt)
+    if photon_energies is None or len(photon_energies) == 0:
+        return result
+    photon_energies = np.asarray(photon_energies, dtype=float)
+    disc_mask = photon_energies > 0.0
+    if not np.any(disc_mask):
+        return result
+    Eg_disc = photon_energies[disc_mask]
+
+    # (n_einc, n_disc): per-line photon-production XS in barn.
+    prod_xs = mf13_interp.compute_photon_production_xs(
+        endf_dict, mt, energies_in, Eg_disc,
+    )
+
+    for k in range(len(Eg_disc)):
+        delta = energies_out - Eg_disc[k]
+        result += (
+            np.asarray(kernel(delta))[np.newaxis, :]
+            * prod_xs[:, k].reshape(-1, 1)
+        )
+    return np.clip(result, 0.0, None)
+
+
+def compute_ddx_mf13_discrete_broadened(
+    endf_dict, mt, zap,
+    energies_in, energies_out, angle_cosines_out,
+    kernel,
+):
+    """DDX contribution from MF13 discrete photon lines with the
+    MF14 angular distribution factored in, and each Dirac peak at
+    ``Eg_i`` replaced by ``kernel`` along E_out.
+
+    Sibling of ``compute_ddx_mf12_discrete_broadened``; differs only
+    in reading the per-line photon-production cross section from
+    MF13 (``mf13_interp.compute_photon_production_xs``) rather than
+    ``sigma * y_i`` from MF3 + MF12. The per-line angular
+    distribution ``f_i(mu | Ein)`` is looked up the same way (MF14
+    LI=1 -> isotropic, LI=0 -> per-line Legendre; no MF14 -> fall
+    back to isotropic).
+
+    Returns
+    -------
+    ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``.
+    """
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF13 discrete-line broadening is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    n_mus = len(angle_cosines_out)
+    result = np.zeros((n_einc, n_eouts, n_mus), dtype=float)
+    if not has_mf13_mt(endf_dict, mt):
+        return result
+
+    photon_energies = mf13_interp.get_photon_energies(endf_dict, mt)
+    if photon_energies is None or len(photon_energies) == 0:
+        return result
+    photon_energies = np.asarray(photon_energies, dtype=float)
+    disc_mask = photon_energies > 0.0
+    if not np.any(disc_mask):
+        return result
+    Eg_disc = photon_energies[disc_mask]
+
+    # (n_einc, n_disc): per-line photon-production XS in barn.
+    prod_xs = mf13_interp.compute_photon_production_xs(
+        endf_dict, mt, energies_in, Eg_disc,
+    )
+
+    # Per-line angular distribution f_i(mu | Ein), shape
+    # (n_einc, n_disc, n_mus). Same MF14 selection as the MF12
+    # sibling; MF14 doesn't distinguish MF12 from MF13 as its yield
+    # source.
+    if has_mf14_mt(endf_dict, mt):
+        mtsec14 = endf_dict[14][mt]
+        if mtsec14['LI'] == 1:
+            per_line_angdist = np.full(
+                (n_einc, len(Eg_disc), n_mus), 0.5, dtype=float,
+            )
+        else:
+            per_line_angdist = mf14_interp.compute_angdist_values(
+                endf_dict, mt, energies_in, Eg_disc, angle_cosines_out,
+            )
+    else:
+        per_line_angdist = np.full(
+            (n_einc, len(Eg_disc), n_mus), 0.5, dtype=float,
+        )
+
+    for k in range(len(Eg_disc)):
+        e_kernel = np.asarray(kernel(energies_out - Eg_disc[k]))
+        result += (
+            prod_xs[:, k].reshape(-1, 1, 1)
+            * e_kernel.reshape(1, -1, 1)
+            * per_line_angdist[:, k, :].reshape(n_einc, 1, n_mus)
+        )
+    return np.clip(result / (2 * np.pi), 0.0, None)
 
 
 def compute_dxs_dE_law1_discrete_broadened(
