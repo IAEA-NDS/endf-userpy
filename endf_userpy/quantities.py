@@ -549,10 +549,28 @@ def _get_particle_production_ddxs_impl(
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         )
 
-    cont = quant_mt_zap.compute_cumulative_quantity(
-        cont_compute, cont_select,
-        endf_dict, zap, energies_in, energies_out, angle_cosines_out,
-    )
+    # Sum-then-broaden path (issue #26): when 2+ MTs pass
+    # cont_select, computing dist2d for the whole sum inside ONE
+    # adaptive_convolve saves the FFT overhead of the per-MT
+    # approach. Convolution is linear so the answer is identical up
+    # to floating-point summation order. One MT: no gain, fall
+    # through to the per-MT path.
+    cont_mts = [
+        mt for mt in quant_mt_zap.get_reaction_mt_numbers(endf_dict)
+        if cont_select(endf_dict, mt, zap,
+                       energies_in, energies_out, angle_cosines_out)
+    ]
+    if len(cont_mts) >= 2:
+        cont = ddxb.compute_ddx_continuous_broadened_summed(
+            endf_dict, cont_mts, zap,
+            energies_in, energies_out, angle_cosines_out,
+            kernel=kernel, kernel_width=kernel_width,
+        )
+    else:
+        cont = quant_mt_zap.compute_cumulative_quantity(
+            cont_compute, cont_select,
+            endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+        )
     disc = quant_mt_zap.compute_cumulative_quantity(
         disc_compute, disc_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
