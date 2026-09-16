@@ -67,7 +67,7 @@ def interp(x, xp, fp, interp_type, outside_value=None):
 
 def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
     check_int_nbt(int_arr, nbt_arr)
-    x = np.array(x, copy=None)
+    x = np.asarray(x)
     # Rebind `xp` to a deduplicated copy rather than mutating the
     # caller's array in place. `treat_duplicates` perturbs repeated
     # mesh values by a relative epsilon so `searchsorted` can
@@ -114,7 +114,7 @@ def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
 
 
 def interp_legendre_coeffs(x, xp, coeffs, int_arr, nbt_arr):
-    x = np.array(x, copy=None)
+    x = np.asarray(x)
     interp_coeffs = np.zeros((x.shape[0], coeffs.shape[1]), dtype=float)
     for i in range(interp_coeffs.shape[1]):
         interp_coeffs[:, i] = endf_interp1d(x, xp, coeffs[:,i], int_arr, nbt_arr)
@@ -122,8 +122,8 @@ def interp_legendre_coeffs(x, xp, coeffs, int_arr, nbt_arr):
 
 
 def evaluate_interp_legendre_polynomials(x, mu, xp, coeffs, int_arr, nbt_arr):
-    x = np.array(x, copy=None)
-    mu = np.array(mu, copy=None)
+    x = np.asarray(x)
+    mu = np.asarray(mu)
     if mu.ndim == 1:
         mu = mu.reshape(1, -1)
     if mu.shape[0] == 1:
