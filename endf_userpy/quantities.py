@@ -398,7 +398,18 @@ def _get_residual_production_xs_impl(
             selectors.contains_residual_za_and_lfs(
                 endf_dict, mt, za_residual, level
             ) and
-            selectors.satisfies_select_heuristic(endf_dict, mt)
+            # Use the residual-tuned admission rule rather than the
+            # general-purpose satisfies_select_heuristic. The latter's
+            # ancestor-check clause drops ejectile-conserving leaves
+            # (MT28, MT107, ...) whose only representation is MF3
+            # whenever their sum-tree parent (MT3, MT101) is also in
+            # MF3, silently under-counting the residual sum in the
+            # exclusive-channel energy range (issue #120). The
+            # residual-tuned rule admits every leaf and drops sum-MTs
+            # only when their children are present in MF3 (would
+            # double-count), which is the only correctness concern
+            # here.
+            selectors.satisfies_residual_select(endf_dict, mt)
         ),
         endf_dict
     )

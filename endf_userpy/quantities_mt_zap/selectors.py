@@ -274,6 +274,40 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
     return contains_residual_za(endf_dict, mt, residual_za)
 
 
+def satisfies_residual_select(endf_dict, mt):
+    """Admission rule for `get_residual_production_xs`-style queries.
+
+    The general-purpose `satisfies_select_heuristic` is the wrong
+    filter for residual production: its ancestor-check clause
+    (`or not has_ancestor`) drops ejectile-conserving leaf MTs
+    like MT28 (n,np) whose only representation is MF3, silently
+    under-counting the residual sum whenever the sum-tree parent
+    (e.g. MT3) is also in MF3 (issue #120). For the residual case
+    the caller has already filtered to ejectile-conserving MTs via
+    `contains_residual_za_and_lfs`, so the only remaining risk is
+    double-counting a sum MT with its own children when both are
+    present in MF3. That risk is what this rule handles:
+
+    - **Leaf MTs** (not in `reactions.SUM_RULES` as a key) are
+      always admitted -- they represent a single physical channel
+      and their MF3 XS is the data.
+    - **Sum MTs** (in `reactions.SUM_RULES`) are dropped only when
+      at least one of their children is present in MF3, because
+      those children will contribute the same physics separately.
+      A sum MT admitted with no child in MF3 is the ONLY data source
+      for its aggregate and must not be filtered out.
+
+    This is a narrower and more targeted rule than
+    `satisfies_select_heuristic`, correct for the residual-
+    production case only.
+    """
+    if not reac.is_sum_mt(mt):
+        return True
+    return not reac.exist_associated_child_mts(
+        mt, endf_dict.get(3, {})
+    )
+
+
 def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
     if user_mts is not None:
         if not (hasattr(user_mts, '__iter__') or
