@@ -43,6 +43,7 @@ from endf_userpy.quantities import (
     get_particle_production_dxs_dE,
     get_particle_production_xs,
 )
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -134,7 +135,7 @@ def test_dxs_dE_integrates_to_production_xs_on_al27(al27_endfb81):
         )
     # Check the middle-Ein row (5 MeV) whose full spectrum is
     # inside the eouts range.
-    integral = float(np.trapezoid(dxs[1], eouts))
+    integral = float(trapezoid(dxs[1], eouts))
     ratio = integral / float(xs[1])
     # We expect `integral < xs` because the elastic peak at
     # Eout == Ein is entirely above the integration range; the

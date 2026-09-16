@@ -46,6 +46,7 @@ from endf_userpy.mfsec_interpretation import mf3_interpretation as mf3_interp
 from endf_userpy.quantities_mt_zap import ddx_broadening as ddxb
 from endf_userpy.quantities_mt_zap.quantities import compute_yields
 from endf_userpy.quantities_mt_zap import selectors
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 DATA_DIR = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -237,8 +238,8 @@ def test_ddx_folder_finite_and_integrates_to_xs_times_yield(endf_context):
                 failures.append(f'MT={mt}: negative value in {label} DDX')
                 break
         total = ddx_disc if ddx_cont is None else ddx_disc + ddx_cont
-        inner = np.trapezoid(total[0], eouts, axis=0)
-        integ = np.trapezoid(inner, mus) * 2 * np.pi
+        inner = trapezoid(total[0], eouts, axis=0)
+        integ = trapezoid(inner, mus) * 2 * np.pi
         if mt in cfg.get('expected_short', ()):
             # Known ENDF-file normalisation quirk; skip the integral
             # check but the finite/non-negative checks above still fire.
@@ -293,7 +294,7 @@ def test_dxs_dE_folder_finite_and_integrates_to_xs_times_yield(endf_context):
                 failures.append(f'MT={mt}: negative value in {label} dxs/dE')
                 break
         total = dexs_disc + dexs_cont
-        integ = np.trapezoid(total[0], eouts)
+        integ = trapezoid(total[0], eouts)
         if mt in cfg.get('expected_short', ()):
             # Known ENDF-file normalisation quirk; skip the integral
             # check but the finite/non-negative checks above still fire.
@@ -368,10 +369,10 @@ if __name__ == '__main__':
         for mt in admitted[:5]:
             einc, eouts, mus, ddx_disc, ddx_cont = _run_folder_ddx(endf, mt, cfg)
             total = ddx_disc if ddx_cont is None else ddx_disc + ddx_cont
-            inner = np.trapezoid(total[0], eouts, axis=0)
-            integ_total = np.trapezoid(inner, mus) * 2 * np.pi
-            inner_d = np.trapezoid(ddx_disc[0], eouts, axis=0)
-            integ_disc = np.trapezoid(inner_d, mus) * 2 * np.pi
+            inner = trapezoid(total[0], eouts, axis=0)
+            integ_total = trapezoid(inner, mus) * 2 * np.pi
+            inner_d = trapezoid(ddx_disc[0], eouts, axis=0)
+            integ_disc = trapezoid(inner_d, mus) * 2 * np.pi
             ref = _reference_production_xs(endf, mt, einc)
             ref_val = None if ref is None else float(ref[0])
             mix = ' (mixed)' if ddx_cont is not None else ''

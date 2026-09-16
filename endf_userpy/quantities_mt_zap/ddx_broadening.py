@@ -40,6 +40,7 @@ from ..mfsec_interpretation import mf14_interpretation as mf14_interp
 from ..primitives import conversion_relativistic as conv_relat
 from ..primitives import reactions as reactions
 from ..primitives.convolution import adaptive_convolve
+from ..primitives.np_compat import trapezoid
 from ..primitives.physical_constants import (
     get_particle_mass_for_zap,
     get_zap_for_particle,
@@ -756,7 +757,7 @@ def compute_dxs_dE_law1_discrete_broadened(
           xs * yield * integral_over_dOmega( kernel(E_out - ep_lab(mu))
                                              * amp(mu) )
     which we approximate by running the 2D DDX folder on an internal
-    mu grid and using np.trapezoid over dOmega = 2 pi dmu.
+    mu grid and using trapezoid over dOmega = 2 pi dmu.
 
     For LCT=1 subsections and for gamma emission (awp=0, so the
     LCT=2/3 CM->LAB mapping degenerates to identity), the discrete
@@ -784,7 +785,7 @@ def compute_dxs_dE_law1_discrete_broadened(
         energies_in, energies_out, mus,
         kernel, to_lab=to_lab,
     )
-    return np.trapezoid(ddx, mus, axis=-1) * (2 * np.pi)
+    return trapezoid(ddx, mus, axis=-1) * (2 * np.pi)
 
 
 def _compute_discrete_angdist(

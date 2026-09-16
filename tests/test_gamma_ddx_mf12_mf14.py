@@ -21,6 +21,7 @@ from endf_userpy.quantities import (
 )
 from endf_userpy.quantities_mt_zap import ddx_broadening as ddxb
 from endf_userpy.primitives.physical_constants import PARTICLE_ZAP
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC_DATA_DIR = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -111,7 +112,7 @@ def test_ddx_folder_matches_dxs_dE_over_solid_angle(fe56_tendl):
     dxs_dE = ddxb.compute_dxs_dE_mf12_discrete_broadened(
         fe56_tendl, 51, PARTICLE_ZAP['g'], einc, eouts, kernel,
     )
-    integ = np.trapezoid(ddx[0], mus, axis=-1) * (2 * np.pi)
+    integ = trapezoid(ddx[0], mus, axis=-1) * (2 * np.pi)
     scale = dxs_dE[0].max() + 1e-300
     np.testing.assert_allclose(integ, dxs_dE[0], rtol=1e-10, atol=1e-12 * scale)
 
@@ -196,7 +197,7 @@ def test_end_to_end_ddx_matches_dxs_dE_over_solid_angle(fe56_tendl):
     dxs_dE = get_particle_production_dxs_dE(
         fe56_tendl, '(n,total)', 'g', einc, eouts, broadening=3e4,
     )
-    integ = np.trapezoid(ddx[0], mus, axis=-1) * (2 * np.pi)
+    integ = trapezoid(ddx[0], mus, axis=-1) * (2 * np.pi)
     # Peak values should agree within 15% (pre-existing cross-
     # dispatcher difference not introduced by this PR).
     rel_diff = abs(integ.max() - dxs_dE[0].max()) / dxs_dE[0].max()
@@ -217,7 +218,7 @@ def test_end_to_end_cu63_ddx_flat_and_reasonable_scale(cu63_jeff40):
     # Flat in mu
     np.testing.assert_allclose(r[0, :, 0], r[0, :, 1], rtol=1e-10)
     # Integrated over Eout at any mu gives dxs/dOmega ~ xs/(4 pi)
-    dxs_dOmega = np.trapezoid(r[0, :, 0], eouts)
+    dxs_dOmega = trapezoid(r[0, :, 0], eouts)
     xs = get_particle_production_xs(
         cu63_jeff40, '(n,total)', 'g', einc,
     )[0]
@@ -243,7 +244,7 @@ def test_pr38_d1_dxs_dE_unchanged_by_d3(cu63_jeff40):
     r = get_particle_production_dxs_dE(
         cu63_jeff40, '(n,total)', 'g', einc, eouts, broadening=3e4,
     )
-    integral = np.trapezoid(r[0], eouts)
+    integral = trapezoid(r[0], eouts)
     xs = get_particle_production_xs(cu63_jeff40, '(n,total)', 'g', einc)[0]
     assert integral / xs > 0.9
 

@@ -17,6 +17,7 @@ import pytest
 from endf_parserpy import EndfParserCpp
 
 from endf_userpy.mfsec_interpretation import mf5_interpretation as mf5
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC_DATA_DIR = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -43,7 +44,7 @@ def test_u235_mt18_mf5_lf1_integrates_to_one(u235_tendl):
     E = np.array([5.0e6])
     Eout = np.linspace(1.0e4, 2.0e7, 20001)
     f = mf5.compute_spectrum(u235_tendl, 18, E, Eout)
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     assert abs(integ - 1.0) < 5e-3, (
         f'MT 18 MF5 spectrum should integrate to 1; got {integ}'
     )
@@ -86,5 +87,5 @@ def test_lf1_contribution_via_direct_dispatcher(u235_tendl):
     E = np.array([1e6])
     Eout = np.linspace(1.0e4, 2.0e7, 20001)
     f = mf5.compute_spectrum_contribution(c, E, Eout)
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     assert abs(integ - 1.0) < 5e-3

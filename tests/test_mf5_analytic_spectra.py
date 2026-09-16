@@ -26,6 +26,7 @@ import pytest
 from endf_parserpy import EndfParserCpp
 
 from endf_userpy.mfsec_interpretation import mf5_interpretation as mf5
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC_DATA_DIR = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -74,7 +75,7 @@ def test_lf7_integrates_to_one_at_U_zero():
     E = np.array([14e6])
     Eout = np.linspace(0.0, 14e6, 10001)
     f = mf5.compute_simple_maxwellian_fission_spectrum(c, E, Eout)
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     assert abs(integ - 1.0) < 1e-3
 
 
@@ -85,7 +86,7 @@ def test_lf7_integrates_to_one_at_U_nonzero():
     E = np.array([10e6])
     Eout = np.linspace(0.0, 15e6, 10001)
     f = mf5.compute_simple_maxwellian_fission_spectrum(c, E, Eout)
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     assert abs(integ - 1.0) < 1e-3
 
 
@@ -109,7 +110,7 @@ def test_lf7_integrates_to_one_across_ein_vector():
     Eout = np.linspace(0.0, 20e6, 20001)
     f = mf5.compute_simple_maxwellian_fission_spectrum(c, Ein, Eout)
     for i, e in enumerate(Ein):
-        integ = np.trapezoid(f[i], Eout)
+        integ = trapezoid(f[i], Eout)
         assert abs(integ - 1.0) < 1e-3, f'Ein={e}: integral {integ}'
 
 
@@ -134,7 +135,7 @@ def test_lf9_integrates_to_one_at_U_zero():
     E = np.array([14e6])
     Eout = np.linspace(0.0, 14e6, 10001)
     f = mf5.compute_evaporation_spectrum(c, E, Eout)
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     assert abs(integ - 1.0) < 1e-3
 
 
@@ -143,7 +144,7 @@ def test_lf9_integrates_to_one_at_U_nonzero():
     E = np.array([10e6])
     Eout = np.linspace(0.0, 15e6, 10001)
     f = mf5.compute_evaporation_spectrum(c, E, Eout)
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     assert abs(integ - 1.0) < 1e-3
 
 
@@ -162,7 +163,7 @@ def test_lf9_integrates_to_one_across_ein_vector():
     Eout = np.linspace(0.0, 20e6, 20001)
     f = mf5.compute_evaporation_spectrum(c, Ein, Eout)
     for i, e in enumerate(Ein):
-        integ = np.trapezoid(f[i], Eout)
+        integ = trapezoid(f[i], Eout)
         assert abs(integ - 1.0) < 1e-3, f'Ein={e}: integral {integ}'
 
 
@@ -195,7 +196,7 @@ def test_lf5_synthetic_gaussian_integrates_to_one():
     E = np.array([1e6])          # E - U = 11 MeV
     Eout = np.linspace(0.0, 6e6, 6001)  # up to 6 MeV; x up to 6
     f = mf5.compute_general_evaporation_spectrum(c, E, Eout)
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     # Should integrate to 1 within the discretisation error of both
     # the interior trapezoid and the normalisation integral.
     assert abs(integ - 1.0) < 5e-3
@@ -245,7 +246,7 @@ def test_lf5_real_corpus_u235_mt455(u235_tendl):
     Eout = np.linspace(0.0, 3e7, 30001)
     for i, c in enumerate(lf5_contribs):
         f = mf5.compute_general_evaporation_spectrum(c, E, Eout)
-        integ = np.trapezoid(f[0], Eout)
+        integ = trapezoid(f[0], Eout)
         # Accept 1% tolerance for trapezoid on the file's own mesh.
         assert abs(integ - 1.0) < 0.02, (
             f'contribution {i}: integral {integ:.6f} for LF=5'
@@ -279,7 +280,7 @@ def test_dispatcher_lf7_end_to_end():
     f = mf5.compute_spectrum(endf_dict, 18, E, Eout)
     # Includes the p_table probability weight (1.0 in our fixture),
     # so integral is p * 1 = 1.
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     assert abs(integ - 1.0) < 1e-3
 
 
@@ -289,5 +290,5 @@ def test_dispatcher_lf9_end_to_end():
     E = np.array([14e6])
     Eout = np.linspace(0.0, 14e6, 10001)
     f = mf5.compute_spectrum(endf_dict, 18, E, Eout)
-    integ = np.trapezoid(f[0], Eout)
+    integ = trapezoid(f[0], Eout)
     assert abs(integ - 1.0) < 1e-3

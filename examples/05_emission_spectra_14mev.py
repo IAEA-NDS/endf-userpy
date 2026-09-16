@@ -52,6 +52,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from endf_parserpy import EndfParserFactory
 from endf_userpy.quantities import get_particle_production_dxs_dE
+from endf_userpy.primitives.np_compat import trapezoid
 
 # Silence DeprecationWarning noise that the MF6 integration helpers
 # currently emit on numpy >= 1.25.
@@ -90,8 +91,8 @@ spec_broadened = get_particle_production_dxs_dE(
 # the singular spike with a finite kernel-width bump, which the
 # trapezoidal rule handles cleanly; it is usually much closer to
 # the reference (n,X-n) production cross section.
-int_unbroadened = np.trapezoid(spec_unbroadened[0], eouts)
-int_broadened = np.trapezoid(spec_broadened[0], eouts)
+int_unbroadened = trapezoid(spec_unbroadened[0], eouts)
+int_broadened = trapezoid(spec_broadened[0], eouts)
 print("integrated emission spectrum at 14 MeV:")
 print(f"  unbroadened:               {int_unbroadened:.2f} barn")
 print(f"  broadened (sigma=200 keV): {int_broadened:.2f} barn")

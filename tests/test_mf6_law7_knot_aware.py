@@ -30,6 +30,7 @@ from endf_userpy.quantities_mt_zap.distribution2d import compute_dist2d_values
 from endf_userpy.quantities_mt_zap import distribution1d_helpers as d1h
 from endf_userpy.mfsec_interpretation import mf6_law7_integrals as mf6_l7
 from endf_userpy.primitives.properties import get_QM, get_QI
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -76,7 +77,7 @@ def _fine_trapezoid_reference(endf, mt, zap, einc, mus, N=50000):
         dist = compute_dist2d_values(
             endf, mt, zap, np.array([e]), ep, mus, True,
         )
-        out[i, :] = np.trapezoid(dist[0], x=ep, axis=0)
+        out[i, :] = trapezoid(dist[0], x=ep, axis=0)
     return out
 
 
