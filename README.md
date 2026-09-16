@@ -120,13 +120,31 @@ each include the `wget` command to fetch the JENDL-5 file they need.
   in the resonance region, pre-process the file with
   [NJOY RECONR](https://github.com/njoy/NJOY2016) and pass the PENDF
   file in.
-- **DDX drops kinematic-delta channels.** The double-differential API
-  silently skips elastic and discrete-level inelastic channels because
-  they cannot be represented on a continuous Eout grid. They appear in
-  the 1D dσ/dE spectrum as sharp peaks instead.
+- **DDX drops kinematic-delta channels unless broadened.** The
+  double-differential API cannot represent elastic and discrete-level
+  inelastic channels on a continuous `Eout` grid (their outgoing
+  energy is a Dirac delta at `E' = E'_kin(mu, E_in)`). When called
+  with `broadening=None` (the default), the API skips those channels
+  and emits a `UserWarning` listing the dropped MTs and pointing at
+  the `broadening=sigma_eV` argument that folds each delta into a
+  finite-width kernel that plots on the grid. They also appear in
+  the 1D `dσ/dE` spectrum as sharp peaks.
+- **`sigma` above the file's Ein mesh.** By default,
+  `get_reaction_xs` and the other `get_*` XS APIs fill above-range
+  incident energies with `NaN` and emit one summary `UserWarning`
+  per call. Configure with the `above_range=` kwarg (`'warn_nan'`
+  default, or `'nan'`, `'warn_zero'`, `'zero'`, `'raise'`).
+- **Unimplemented representations** raise `NotImplementedError`:
+  MF5 LF=11 (energy-dependent Watt), LF=12 (Madland-Nix); MF6 LAW=3
+  (charged-particle elastic isotropic in CM), LAW=4 (recoil), LAW=5
+  (charged-particle with phase shift); MF14 LTT=2 (tabulated photon
+  angular).
 - **Stubs.** `endf_userpy/discrete_quantities.py` and
   `endf_userpy/translation.py` are work-in-progress sketches; do not
   rely on them.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the testing conventions
+and per-representation coverage table.
 
 ## Filing issues
 
