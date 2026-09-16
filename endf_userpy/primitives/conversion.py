@@ -19,6 +19,18 @@ def compute_r2(E_lab, awi, awr, awp, q):
 
 
 def convert_angcos_to_cmsys(mu_lab, r2):
+    """Map a LAB-frame cos(theta) to CM-frame cos(theta) given
+    `r2 = compute_r2(...)`. Kinematically forbidden LAB angles
+    (where `z = mu_lab^2 + r^2 - 1 < 0` for r < 1, i.e. the
+    equal-mass / light-ejectile back-scatter region) produce NaN
+    -- the caller is expected to clip NaN to 0 in the LAB return
+    since no scattering into unreachable angles is physically
+    possible. `np.errstate` here just suppresses the harmless
+    `RuntimeWarning: invalid value encountered in sqrt` that the
+    guaranteed-negative-in-the-forbidden-region argument emits;
+    the NaN itself is exactly what downstream code needs to
+    identify the forbidden region.
+    """
     mu_lab = mu_lab.reshape(1, -1)
     r2 = r2.reshape(-1, 1)
     _correct_r2(r2)
@@ -27,7 +39,8 @@ def convert_angcos_to_cmsys(mu_lab, r2):
     u2 = np.square(mu_lab)
     z = u2 + r2 - 1.0
     z1 = (1.0-u2-r2*u2)
-    z2 = (r*(u2-1.0-u*np.sqrt(z)))
+    with np.errstate(invalid='ignore'):
+        z2 = (r*(u2-1.0-u*np.sqrt(z)))
     mu_cm = z1 / z2
     _correct_mu_cm(mu_cm)
     return mu_cm
