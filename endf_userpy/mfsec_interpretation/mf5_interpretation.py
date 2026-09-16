@@ -7,6 +7,7 @@ from ..primitives.interpolation import (
     interp_tab1,
     interp_tab2,
 )
+from ..primitives.np_compat import trapezoid
 
 
 def _compute_prob(contrib_sec, energies_in):
@@ -101,11 +102,11 @@ def compute_general_evaporation_spectrum(
     provides the normalisation. The pre-fix code returned just
     ``E'/theta`` (the reduced variable), never touching ``g_table``.
 
-    The normalisation integral is computed by ``np.trapezoid`` on
-    the ``g_table`` mesh clipped to ``[0, x_max]``. This is exact
-    for the common LIN-LIN (INT=2) interpolation; panel-exact
-    integration for the four log/histogram INT values is a
-    follow-up.
+    The normalisation integral is computed by the numpy trapezoid
+    integrator on the ``g_table`` mesh clipped to ``[0, x_max]``.
+    This is exact for the common LIN-LIN (INT=2) interpolation;
+    panel-exact integration for the four log/histogram INT values
+    is a follow-up.
     """
     ein_arr = np.asarray(energies_in, dtype=float).reshape(-1)
     eout_arr = np.asarray(energies_out, dtype=float).reshape(-1)
@@ -166,7 +167,7 @@ def compute_general_evaporation_spectrum(
             )[0])
             x_int = np.concatenate((x_int, [x_max]))
             g_int = np.concatenate((g_int, [g_at_xmax]))
-        G = float(np.trapezoid(g_int, x_int))
+        G = float(trapezoid(g_int, x_int))
         if G <= 0:
             continue
 

@@ -20,6 +20,7 @@ from endf_userpy.quantities import (
 )
 from endf_userpy.quantities_mt_zap import distribution1d as d1d
 from endf_userpy.primitives.physical_constants import PARTICLE_ZAP
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC_DATA_DIR = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -80,7 +81,7 @@ def test_compute_angdist_mf14_li1_integrates_to_one(cu63_jeff40):
     r = d1d.compute_angdist_values(
         cu63_jeff40, 51, PARTICLE_ZAP['g'], einc, mus,
     )
-    integral = np.trapezoid(r[0], mus)
+    integral = trapezoid(r[0], mus)
     assert abs(integral - 1.0) < 1e-6, (
         f'expected int f dmu = 1, got {integral}'
     )
@@ -190,6 +191,6 @@ def test_pr38_d1_dxs_dE_unchanged_by_d2(cu63_jeff40):
     r = get_particle_production_dxs_dE(
         cu63_jeff40, '(n,total)', 'g', einc, eouts, broadening=3e4,
     )
-    integral = np.trapezoid(r[0], eouts)
+    integral = trapezoid(r[0], eouts)
     xs = get_particle_production_xs(cu63_jeff40, '(n,total)', 'g', einc)[0]
     assert integral / xs > 0.9

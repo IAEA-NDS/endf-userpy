@@ -55,6 +55,7 @@ from endf_userpy.quantities_mt_zap.distribution2d import compute_dist2d_values
 from endf_userpy.quantities_mt_zap import distribution1d_helpers as d1h
 from endf_userpy.primitives.properties import get_QM, get_QI
 from endf_userpy.primitives import interpolation as interp_mod
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -290,7 +291,7 @@ def test_dxs_dmu_al27_cross_section_consistency(al27_endfb81):
         al27_endfb81, '(n,total)', 'n', einc, mus,
     )
     # 2 pi times the mu integral of dxs/dmu = production xs
-    integ = 2 * np.pi * np.trapezoid(r, mus, axis=1)
+    integ = 2 * np.pi * trapezoid(r, mus, axis=1)
     xs = get_particle_production_xs(al27_endfb81, '(n,total)', 'n', einc)
     # 2% tolerance because MF6/LAW=1 gamma-in-LAW=1 content is not
     # yet surfaced (D2 landmark noted in the coverage table) and the

@@ -31,6 +31,7 @@ from endf_userpy.quantities import (
 )
 from endf_userpy.mfsec_interpretation import mf12_interpretation as mf12_interp
 from endf_userpy.mfsec_interpretation import mf3_interpretation as mf3_interp
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC_DATA_DIR = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -146,7 +147,7 @@ def test_al27_mt102_dxs_dE_integral_matches_ycont_sigma(al27_endfb81):
         al27_endfb81, '(n,g)', 'g', einc, eouts,
     )
     assert r is not None
-    integral = np.trapezoid(r[0], eouts)
+    integral = trapezoid(r[0], eouts)
 
     pes = np.asarray(mf12_interp.get_photon_energies(al27_endfb81, 102))
     y = mf12_interp.compute_photon_yields(al27_endfb81, 102, einc, pes)

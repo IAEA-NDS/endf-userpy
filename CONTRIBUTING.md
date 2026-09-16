@@ -14,7 +14,9 @@ these when adding new tests or extending existing ones.
    analytic, MF6, MF14, MF15, add a test that evaluates the
    spectrum on a fine grid at several representative incident
    energies and checks
-   `abs(np.trapezoid(f, eouts) - 1.0) < 1e-3`. Loosen the tolerance
+   `abs(trapezoid(f, eouts) - 1.0) < 1e-3` (import `trapezoid` from
+   `endf_userpy.primitives.np_compat` so tests keep running on numpy
+   1.x, where `np.trapezoid` is spelled `np.trapz`). Loosen the tolerance
    only when the file's own tabulation forces coarser trapezoid
    error (`< 1e-2` is a reasonable ceiling; wider means the test
    is not really pinning normalization).

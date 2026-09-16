@@ -26,6 +26,7 @@ from endf_userpy.quantities import (
 from endf_userpy.quantities_mt_zap import selectors
 from endf_userpy.quantities_mt_zap import ddx_broadening as ddxb
 from endf_userpy.primitives.physical_constants import PARTICLE_ZAP
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC_DATA_DIR = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -127,7 +128,7 @@ def test_folder_integral_matches_yield_times_xs(fe56_tendl):
     r = ddxb.compute_dxs_dE_mf12_discrete_broadened(
         fe56_tendl, 51, PARTICLE_ZAP['g'], einc, eouts, kernel,
     )
-    integral = np.trapezoid(r[0], eouts)
+    integral = trapezoid(r[0], eouts)
     xs_mt51 = mf3.compute_cross_section(fe56_tendl, 51, einc)[0]
     # yield is 1 for MT 51 in Fe-56 (single photon line, LO=2)
     expected = xs_mt51 * 1.0
@@ -184,7 +185,7 @@ def test_end_to_end_fe56_gamma_peak_at_847keV(fe56_tendl):
     )
     # Integral over the peak window should account for the bulk of
     # the total gamma XS at this energy.
-    integral = np.trapezoid(r[0], eouts)
+    integral = trapezoid(r[0], eouts)
     xs = get_particle_production_xs(fe56_tendl, '(n,total)', 'g', einc)[0]
     # At 1.5 MeV Fe-56 the sub-1.2 MeV window catches ~99% of gamma
     # production (MT 91 continuum threshold is > 5 MeV in this file).
@@ -204,7 +205,7 @@ def test_end_to_end_cu63_gamma_discrete_line_bulk(cu63_jeff40):
     r = get_particle_production_dxs_dE(
         cu63_jeff40, '(n,total)', 'g', einc, eouts, broadening=3e4,
     )
-    integral = np.trapezoid(r[0], eouts)
+    integral = trapezoid(r[0], eouts)
     xs = get_particle_production_xs(cu63_jeff40, '(n,total)', 'g', einc)[0]
     # >= 90% of the total σ_xg should be in the discrete-line window
     # at 1.5 MeV (MT 91 continuum contributes < 10% here).

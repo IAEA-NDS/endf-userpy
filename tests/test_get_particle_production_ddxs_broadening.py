@@ -12,6 +12,7 @@ import warnings
 import pytest
 
 import endf_userpy.quantities as quantities
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 @pytest.fixture
@@ -327,7 +328,7 @@ def test_normalize_broadening_gaussian_is_unit_norm():
     kernel, width = quantities._normalize_broadening(1.0e5)
     # Sample over +/- 10 sigma -> well outside the kernel support.
     x = np.linspace(-1.0e6, 1.0e6, 50001)
-    integral = np.trapezoid(kernel(x), x)
+    integral = trapezoid(kernel(x), x)
     assert abs(integral - 1.0) < 1e-6
 
 

@@ -45,6 +45,7 @@ from endf_userpy.quantities import (
 )
 from endf_userpy.quantities_mt_zap import ddx_broadening as ddxb
 from endf_userpy.quantities_mt_zap import selectors
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 ADHOC = Path(__file__).resolve().parent / 'data_law1_adhoc'
@@ -191,7 +192,7 @@ def test_dxs_dE_broadened_integral_consistent_on_n14(n14_endfb81):
         xs = get_particle_production_xs(
             n14_endfb81, '(n,total)', 'g', einc,
         )
-    integ = float(np.trapezoid(r[0], eouts))
+    integ = float(trapezoid(r[0], eouts))
     ratio = integ / float(xs[0])
     assert 0.85 < ratio < 1.05, (
         f'integral / xs = {ratio:.3f}; expected ~1.0 (fine-grid '
@@ -213,7 +214,7 @@ def test_ddx_broadened_integrates_to_production_xs_on_n14(n14_endfb81):
         xs = get_particle_production_xs(
             n14_endfb81, '(n,total)', 'g', einc,
         )
-    integ = 2 * np.pi * float(np.trapezoid(np.trapezoid(r[0], eouts, axis=0), mus))
+    integ = 2 * np.pi * float(trapezoid(trapezoid(r[0], eouts, axis=0), mus))
     ratio = integ / float(xs[0])
     assert 0.75 < ratio < 1.05, (
         f'DDX integral / xs = {ratio:.3f}; mu grid coarser than '

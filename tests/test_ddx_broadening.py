@@ -10,6 +10,7 @@ import pytest
 
 from endf_userpy.quantities_mt_zap import ddx_broadening as ddxb
 from endf_userpy.quantities_mt_zap import selectors
+from endf_userpy.primitives.np_compat import trapezoid
 
 
 def _gaussian(x, sigma, mu=0.0):
@@ -231,7 +232,7 @@ def test_integral_preserved(patched_environment):
     # the eouts grid spans +/- 7.5 sigma so the truncation loss is
     # negligible). Hence the production-side integral is xs * yield
     # / (2 pi) per (E_in, mu) bin = 0.3 * 1.5 / (2 pi).
-    integral = np.trapezoid(broadened[0, :, 0], eouts)
+    integral = trapezoid(broadened[0, :, 0], eouts)
     expected_integral = 1.5 * 0.3 / (2 * np.pi)
     assert abs(integral - expected_integral) / expected_integral < 1e-3
 
@@ -317,8 +318,8 @@ def test_discrete_isotropic_integrates_to_xs_times_yield(patched_environment):
     )
 
     # ∫∫ ddx dE_out d(Omega) = 2*pi ∫∫ ddx dE_out dmu
-    integral = np.trapezoid(
-        np.trapezoid(result[0], eouts, axis=0),
+    integral = trapezoid(
+        trapezoid(result[0], eouts, axis=0),
         mus,
     ) * 2 * np.pi
 
@@ -359,8 +360,8 @@ def test_discrete_yield_from_reaction_multiplicity(patched_environment):
         kernel=lambda d: _gaussian(d, sigma_k),
     )
 
-    integral = np.trapezoid(
-        np.trapezoid(result[0], eouts, axis=0),
+    integral = trapezoid(
+        trapezoid(result[0], eouts, axis=0),
         mus,
     ) * 2 * np.pi
     expected = xs_val * 2.0
@@ -539,7 +540,7 @@ def test_dxs_dE_integral_preserved(patched_environment):
         rtol=1e-5,
         max_iter=10,
     )
-    integral = np.trapezoid(broadened[0], eouts)
+    integral = trapezoid(broadened[0], eouts)
     # The underlying gaussian integrates to amplitude over its
     # support; the eouts grid spans +/- 7.5 sigma_f so truncation is
     # negligible.
@@ -735,8 +736,8 @@ def test_law1_disc_real_be9_gamma_line():
         assert abs(eouts[ipeaks[j]] - 4.77e5) < 2 * (eouts[1] - eouts[0])
 
     # Integrated production xs = xs(mt=701) * yield(zap=0).
-    inner = np.trapezoid(result[0], eouts, axis=0)
-    integ = np.trapezoid(inner, mus) * 2 * np.pi
+    inner = trapezoid(result[0], eouts, axis=0)
+    integ = trapezoid(inner, mus) * 2 * np.pi
     xs = mf3.compute_cross_section(endf, 701, einc)[0]
     yld = compute_yields(endf, 701, 0.0, einc, include_discrete=True)[0]
     assert abs(integ - xs * yld) / (xs * yld) < 1e-3
@@ -785,7 +786,7 @@ def test_dxs_dE_law1_disc_delegates_to_ddx_folder_and_integrates(
         energies_in=einc, energies_out=eouts, angle_cosines_out=mus,
         kernel=lambda d: _gaussian(d, sigma),
     )
-    expected = np.trapezoid(ddx, mus, axis=-1) * (2 * np.pi)
+    expected = trapezoid(ddx, mus, axis=-1) * (2 * np.pi)
     np.testing.assert_allclose(dxs_dE, expected, rtol=1e-12, atol=0)
 
 
@@ -849,7 +850,7 @@ def test_dxs_dE_law1_disc_real_be9_gamma_line():
     ipeak = np.argmax(result[0])
     assert abs(eouts[ipeak] - 4.77e5) < 2 * (eouts[1] - eouts[0])
 
-    integ = np.trapezoid(result[0], eouts)
+    integ = trapezoid(result[0], eouts)
     xs = mf3.compute_cross_section(endf, 701, einc)[0]
     yld = compute_yields(endf, 701, 0.0, einc, include_discrete=True)[0]
     assert abs(integ - xs * yld) / (xs * yld) < 1e-3

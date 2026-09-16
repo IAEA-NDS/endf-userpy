@@ -216,7 +216,7 @@ setup(
     cmdclass={'build_ext': build_ext},
     python_requires='>=3.9',
     install_requires=[
-        'numpy>=2.0',
+        'numpy>=1.22',
         'scipy',
         'endf_parserpy',
     ],
