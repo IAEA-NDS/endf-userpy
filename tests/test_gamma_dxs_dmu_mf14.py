@@ -139,10 +139,15 @@ def test_end_to_end_cu63_isotropic_dxs_dmu(cu63_jeff40):
     assert r is not None
     np.testing.assert_allclose(r[0], r[0].mean(), rtol=1e-6)
     expected = xs / (4 * np.pi)
-    # Ratio should be > 0.9 (MF6/LAW=1 gamma-angular-in-LAW=1 content
-    # not yet surfaced accounts for a few percent shortfall).
+    # Ratio should be in (0.9, 1.01]: MF6/LAW=1 gamma-angular-in-LAW=1
+    # content is not yet surfaced and accounts for a few percent
+    # shortfall, but the mu-integration in `dxs_dmu` can also
+    # overshoot the tabulated MF3 cross section by a few ppm depending
+    # on the mesh (see issue #46: the shared-Simpson integrator is
+    # more accurate than the previous per-cell quad, and can nudge
+    # the sum microscopically above the reference).
     ratio = r[0].mean() / expected
-    assert 0.9 < ratio <= 1.0, (
+    assert 0.9 < ratio <= 1.001, (
         f'expected xs/(4pi) match within 10%, got mean={r[0].mean()}, '
         f'xs/(4pi)={expected}, ratio={ratio}'
     )

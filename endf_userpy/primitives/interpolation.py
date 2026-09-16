@@ -39,6 +39,37 @@ def interp_log_log(x, xp, fp):
     return y1*np.exp(np.log(x/x1)*np.log(y2/y1)/np.log(x2/x1))
 
 
+def _interp_two_point_columns(x, x1, x2, y1, y2, interp_type):
+    """Closed-form 2-point interpolation applied column-wise.
+
+    `x, x1, x2` are scalars; `y1, y2` are 1D arrays of the same
+    length K holding the two bracketing rows of a matrix whose K
+    columns we interpolate along. Returns the interpolated row,
+    shape `(K,)`. Used by `interp_tab2` in place of a Python loop
+    over K that called `interp` once per column (issue #46).
+
+    The five interpolation types collapse for two points to the
+    same closed form each scheme uses in `interp_*`, so this
+    function is exact-equivalent numerically, not just
+    approximately.
+    """
+    if interp_type == 1:      # histogram / constant
+        return np.broadcast_to(y1, y1.shape).copy()
+    if interp_type == 2:      # lin-lin
+        return y1 + (x - x1) * (y2 - y1) / (x2 - x1)
+    if interp_type == 3:      # lin-log (log in x)
+        return y1 + np.log(x / x1) * (y2 - y1) / np.log(x2 / x1)
+    if interp_type == 4:      # log-lin (log in y)
+        return y1 * np.exp((x - x1) * np.log(y2 / y1) / (x2 - x1))
+    if interp_type == 5:      # log-log
+        return y1 * np.exp(
+            np.log(x / x1) * np.log(y2 / y1) / np.log(x2 / x1)
+        )
+    raise TypeError(
+        f'interpolation scheme (INT={interp_type}) not implemented'
+    )
+
+
 def interp(x, xp, fp, interp_type, outside_value=None):
     """Interpolation using various schemes"""
     # TODO: Here we provisionally let NaN values pass through the
@@ -249,14 +280,15 @@ def interp_tab2(
             f1 *= jac1
             f2 *= jac2
 
-        red_xp = np.array([x1, x2], dtype=float)
-        red_f = np.vstack([f1, f2])
-        curres = np.zeros(y.shape[1], dtype=float)
-        for j in range(y.shape[1]):
-            curres[j] = \
-                interp(cur_x, red_xp , red_f[:,j], eff_interp_type)
-
-        result_arr[i,:] = curres
+        # Two-point interpolation along the x axis for every column
+        # of red_f at once. The generic `interp` helper is scalar in
+        # its fp argument, so the previous Python loop paid one call
+        # per column (issue #46 hot spot 3); with red_xp fixed at
+        # length 2 the interpolation formulas collapse to closed
+        # form that broadcasts over columns directly.
+        result_arr[i, :] = _interp_two_point_columns(
+            cur_x, x1, x2, f1, f2, eff_interp_type,
+        )
 
     if outside_value is not None and any_outside:
             full_result_dim = (len(x_orig), y.shape[1])
