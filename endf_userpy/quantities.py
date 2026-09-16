@@ -11,6 +11,7 @@ import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
 from .mfsec_interpretation import mf6_interpretation as mf6interp
 from .mfsec_interpretation import mf8_interpretation as mf8interp
+from .mfsec_interpretation.mf3_interpretation import above_range_ctx
 
 
 # Cache of (id(endf_dict), mt, zap, lfs) tuples we have already warned
@@ -161,7 +162,26 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
     return np.unique(np.concatenate(energy_meshes))
 
 
-def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
+def get_reaction_xs(
+    endf_dict, reaction, energies_in, mt5_contrib=True,
+    above_range='warn_nan',
+):
+    """Cross section for `reaction` on the incident energy grid.
+
+    `above_range` (default ``'warn_nan'``) controls how the library
+    handles incident energies above the file's upper Ein boundary.
+    See ``mfsec_interpretation.mf3_interpretation.compute_cross_section``
+    for the full set of policies (``'warn_nan' | 'nan' | 'warn_zero' |
+    'zero' | 'raise'``). The setting is inherited by every internal
+    call to ``compute_cross_section`` for the duration of this call.
+    """
+    with above_range_ctx(above_range):
+        return _get_reaction_xs_impl(
+            endf_dict, reaction, energies_in, mt5_contrib,
+        )
+
+
+def _get_reaction_xs_impl(endf_dict, reaction, energies_in, mt5_contrib):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
     iter_mts = avail_mts.copy()
@@ -207,7 +227,24 @@ def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
     return xs
 
 
-def get_residual_production_xs(endf_dict, residual_nucleus, energies_in, mt5_contrib=True):
+def get_residual_production_xs(
+    endf_dict, residual_nucleus, energies_in, mt5_contrib=True,
+    above_range='warn_nan',
+):
+    """Residual-production cross section for `residual_nucleus`.
+
+    `above_range` (default ``'warn_nan'``) matches
+    ``get_reaction_xs``; see its docstring for the policy set.
+    """
+    with above_range_ctx(above_range):
+        return _get_residual_production_xs_impl(
+            endf_dict, residual_nucleus, energies_in, mt5_contrib,
+        )
+
+
+def _get_residual_production_xs_impl(
+    endf_dict, residual_nucleus, energies_in, mt5_contrib,
+):
     za_residual, level = physconst.get_za_for_residual_nucleus(residual_nucleus)
     if level is not None:
         module_logger.debug(f'user requested isomeric state LFS={level}')
@@ -233,7 +270,23 @@ def get_residual_production_xs(endf_dict, residual_nucleus, energies_in, mt5_con
     return xs
 
 
-def get_particle_production_xs(endf_dict, reaction, particle, energies_in):
+def get_particle_production_xs(
+    endf_dict, reaction, particle, energies_in, above_range='warn_nan',
+):
+    """Particle-production cross section on the incident energy grid.
+
+    `above_range` (default ``'warn_nan'``) matches
+    ``get_reaction_xs``; see its docstring for the policy set.
+    """
+    with above_range_ctx(above_range):
+        return _get_particle_production_xs_impl(
+            endf_dict, reaction, particle, energies_in,
+        )
+
+
+def _get_particle_production_xs_impl(
+    endf_dict, reaction, particle, energies_in,
+):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
     return quant_mt_zap.compute_cumulative_quantity(
@@ -248,7 +301,7 @@ def get_particle_production_xs(endf_dict, reaction, particle, energies_in):
 
 def get_particle_production_dxs_dE(
     endf_dict, reaction, particle, energies_in, energies_out,
-    broadening=None,
+    broadening=None, above_range='warn_nan',
 ):
     """Energy-differential cross section for particle production.
 
@@ -266,7 +319,20 @@ def get_particle_production_dxs_dE(
         spectrum be compared with finite-resolution measurements.
 
         Same accepted forms as `get_particle_production_ddxs`.
+    above_range : str, default ``'warn_nan'``
+        Policy for incident energies above the file's upper Ein
+        boundary. Matches ``get_reaction_xs``; see its docstring.
     """
+    with above_range_ctx(above_range):
+        return _get_particle_production_dxs_dE_impl(
+            endf_dict, reaction, particle, energies_in, energies_out,
+            broadening,
+        )
+
+
+def _get_particle_production_dxs_dE_impl(
+    endf_dict, reaction, particle, energies_in, energies_out, broadening,
+):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
     kernel, kernel_width = _normalize_broadening(broadening)
@@ -337,7 +403,22 @@ def get_particle_production_dxs_dE(
 
 
 def get_particle_production_dxs_dmu(
-    endf_dict, reaction, particle, energies_in, angle_cosines_out
+    endf_dict, reaction, particle, energies_in, angle_cosines_out,
+    above_range='warn_nan',
+):
+    """Angle-differential cross section for particle production.
+
+    `above_range` (default ``'warn_nan'``) matches
+    ``get_reaction_xs``; see its docstring for the policy set.
+    """
+    with above_range_ctx(above_range):
+        return _get_particle_production_dxs_dmu_impl(
+            endf_dict, reaction, particle, energies_in, angle_cosines_out,
+        )
+
+
+def _get_particle_production_dxs_dmu_impl(
+    endf_dict, reaction, particle, energies_in, angle_cosines_out,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
@@ -353,7 +434,7 @@ def get_particle_production_dxs_dmu(
 
 def get_particle_production_ddxs(
     endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out,
-    broadening=None,
+    broadening=None, above_range='warn_nan',
 ):
     """Double-differential cross section for particle production.
 
@@ -375,7 +456,21 @@ def get_particle_production_ddxs(
           - tuple `(kernel_callable, width)` -> custom kernel; the
             callable is `kernel(delta_E)` and `width` is its
             characteristic scale (passed to the FFT mesh control).
+    above_range : str, default ``'warn_nan'``
+        Policy for incident energies above the file's upper Ein
+        boundary. Matches ``get_reaction_xs``; see its docstring.
     """
+    with above_range_ctx(above_range):
+        return _get_particle_production_ddxs_impl(
+            endf_dict, reaction, particle, energies_in, energies_out,
+            angle_cosines_out, broadening,
+        )
+
+
+def _get_particle_production_ddxs_impl(
+    endf_dict, reaction, particle, energies_in, energies_out,
+    angle_cosines_out, broadening,
+):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
 
