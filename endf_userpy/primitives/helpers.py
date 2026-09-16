@@ -8,7 +8,7 @@ def unpack_za(za):
 
 
 def deg2rad(values):
-    return np.pi / 180.0 * np.array(values, copy=None)
+    return np.pi / 180.0 * np.asarray(values)
 
 
 def _determine_dims(obj):
@@ -57,8 +57,8 @@ def dict2array(obj, dtype=None, order='K', fill_value=None):
 
 
 def check_int_nbt(int_arr, nbt_arr):
-    int_arr = np.array(int_arr, copy=None)
-    nbt_arr = np.array(nbt_arr, copy=None)
+    int_arr = np.asarray(int_arr)
+    nbt_arr = np.asarray(nbt_arr)
     if int_arr.ndim != 1 or nbt_arr.ndim != 1:
         raise IndexError('`int_arr` and `nbt_arr` must be 1d arrays')
     if int_arr.size != nbt_arr.size:
@@ -97,8 +97,8 @@ def convert_interp_repr(int_arr, nbt_arr):
 
 def find_interval(a, v):
     """Find indices where elements should be inserted to maintain order."""
-    a = np.array(a, copy=None)
-    v = np.array(v, copy=None)
+    a = np.asarray(a)
+    v = np.asarray(v)
     # range checks
     if np.any((np.min(a) > v) | (np.max(a) < v)):
         raise IndexError(
@@ -135,9 +135,9 @@ def find_indices_with_tol(a, v, atol, rtol):
 
 
 def get_enclosing_points(x, xp, fp):
-    x = np.array(x, copy=None)
-    xp = np.array(xp, copy=None)
-    fp = np.array(fp, copy=None)
+    x = np.asarray(x)
+    xp = np.asarray(xp)
+    fp = np.asarray(fp)
     idcs1 = find_interval(xp, x)
     idcs2 = idcs1 + 1
     x1 = xp[idcs1]

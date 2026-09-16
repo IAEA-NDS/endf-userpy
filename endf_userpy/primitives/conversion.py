@@ -34,8 +34,8 @@ def convert_angcos_to_cmsys(mu_lab, r2):
 
 
 def convert_angdist_to_labsys(mu_cm, f_cm, r2):
-    mu_cm = np.array(mu_cm, copy=None)
-    f_cm = np.array(f_cm, copy=None)
+    mu_cm = np.asarray(mu_cm)
+    f_cm = np.asarray(f_cm)
     if mu_cm.ndim == 1:
         mu_cm = mu_cm.reshape(1, -1)
         f_cm = f_cm.reshape(1, -1)
