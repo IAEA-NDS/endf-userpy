@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.integrate import quad
+from scipy.integrate import simpson
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf6_interpretation_integrals as mf6_integral
 from ..primitives import conversion_relativistic as conv_relat 
@@ -23,47 +23,112 @@ USE_FORTRAN_INTEGRATION = True
 module_logger = logging.getLogger(__name__)
 
 
+# Adaptive-mesh Simpson defaults for the two MF6 integrators below.
+# INITIAL_MESH_N=81 already resolves Legendre expansions up to order
+# ~40 and typical LAW=1/6 tabulated E' spectra to well under _RTOL.
+# MAX_ITER=3 lets the mesh grow to 641 points for pathological cases
+# (LAW=7 double-tabulated with sharp knots in E'; agreement against
+# quad on the Be-9 (n,2n) LAW=7 sub is a few percent worst-case at
+# 641 points, which is still within the file's own tabulation noise
+# and much better than the previous quad(limit=50, epsrel=1e-4) that
+# also failed to converge on the same integrand -- see PR #68).
+_RTOL = 1e-3
+_INITIAL_MESH_N = 81
+_MAX_ITER = 3
+
+
+def _adaptive_simpson_along_axis(
+    build_dist, axis_lo, axis_hi,
+    rtol=_RTOL, initial_n=_INITIAL_MESH_N, max_iter=_MAX_ITER,
+):
+    """Adaptive Richardson-style doubling on a shared 1D mesh.
+
+    `build_dist(mesh)` returns an ndarray whose last axis is the one
+    to integrate over (so callers pre-shape however they need). We
+    evaluate on a uniform mesh, apply Simpson, double the mesh
+    intervals, and stop once the max relative change across all
+    non-axis cells falls under `rtol`.
+
+    Doing one vectorised `build_dist` call per level replaces the
+    per-cell `scipy.quad` launches that dominated the previous
+    implementation (issue #46 hot spot 1): each level pays one dict
+    walk plus one Fortran call instead of ~2000 per (E_in, mu) cell.
+    """
+    n = initial_n
+    mesh = np.linspace(axis_lo, axis_hi, n)
+    dist = build_dist(mesh)
+    I_prev = simpson(dist, x=mesh, axis=-1)
+    for _ in range(max_iter):
+        n = 2 * n - 1  # double the number of intervals
+        mesh = np.linspace(axis_lo, axis_hi, n)
+        dist = build_dist(mesh)
+        I_new = simpson(dist, x=mesh, axis=-1)
+        scale = np.maximum(np.abs(I_new), 1e-30)
+        if np.max(np.abs(I_new - I_prev) / scale) < rtol:
+            return I_new
+        I_prev = I_new
+    return I_new
+
+
 def integrate_mf6_dist2d_over_eout(
     endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
 ):
-    angdist = np.zeros((len(energies_in), len(angle_cosines_out)), dtype=float)
-    ens_inc = energies_in
-    mus_out = angle_cosines_out
+    """Angular distribution from the MF6 2D distribution, integrated
+    over outgoing energy on `[0, (E_in + q) * 1.1]`.
+
+    Uses `_adaptive_simpson_along_axis` per E_in: the upper limit is
+    E_in-dependent so the mesh cannot be shared across incident
+    energies, but each E_in gets a single vectorised dist2d call per
+    refinement level instead of `n_mu * (~2000)` scalar calls that
+    the previous scipy.quad path incurred (issue #46).
+    """
+    ens_inc = np.asarray(energies_in, dtype=float)
+    mus_out = np.asarray(angle_cosines_out, dtype=float)
     q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
-    for i in range(len(energies_in)):
-        for j in range(len(angle_cosines_out)):
-            eout_max = (energies_in[i] + q) * 1.1
-            if eout_max <= 0:
-                angdist[i, j] = 0.0
-                continue
-            cur_ens_inc = ens_inc[i:i+1]
-            cur_mus_out = mus_out[j:j+1]
-            dist2d_func = lambda x: compute_dist2d_values(
+    angdist = np.zeros((len(ens_inc), len(mus_out)), dtype=float)
+    for i, ein in enumerate(ens_inc):
+        eout_max = (ein + q) * 1.1
+        if eout_max <= 0:
+            continue
+        cur_ein = ens_inc[i:i+1]
+
+        def build(ep_mesh, _cur_ein=cur_ein):
+            # dist2d shape (1, n_ep, n_mu) -> (n_mu, n_ep) so the
+            # integrate axis is last for _adaptive_simpson_along_axis.
+            dist = compute_dist2d_values(
                 endf_dict, mt, zap,
-                cur_ens_inc, np.array([x], dtype=float), cur_mus_out,
-                to_lab
-            ).item()
-            angdist[i, j] = quad(dist2d_func, 0.0, eout_max, epsrel=1e-4)[0]
+                _cur_ein, ep_mesh, mus_out, to_lab,
+            )
+            return np.moveaxis(dist[0], 0, 1)
+
+        angdist[i, :] = _adaptive_simpson_along_axis(build, 0.0, eout_max)
     return angdist
 
 
 def _integrate_mf6_dist2d_over_mu_default(
     endf_dict, mt, zap, energies_in, energies_out, to_lab=True
 ):
-        energydist = np.zeros((len(energies_in), len(energies_out)), dtype=float)
-        ens_inc = energies_in
-        ens_out = energies_out
-        for i in range(len(ens_inc)):
-            for j in range(len(ens_out)):
-                cur_ens_inc = ens_inc[i:i+1]
-                cur_ens_out =  ens_out[j:j+1]
-                dist2d_func = lambda x: compute_dist2d_values(
-                    endf_dict, mt, zap,
-                    cur_ens_inc, cur_ens_out, np.array([x], dtype=float),
-                    to_lab
-                ).item()
-                energydist[i, j] = quad(dist2d_func, -1.0, 1.0, epsrel=1e-4)[0]
-        return energydist
+    """Energy distribution from the MF6 2D distribution, integrated
+    over mu on `[-1, +1]`.
+
+    Uses `_adaptive_simpson_along_axis` on a shared mu mesh across
+    every (E_in, E_out) cell: one dist2d call per refinement level
+    (three levels at worst) instead of `n_ein * n_eout * (~2000)`
+    scalar dist2d calls the previous scipy.quad path incurred
+    (issue #46). The mu integrand is smooth for LAW=1 (Legendre or
+    tabulated), LAW=6, and LAW=7 tabulated distributions, so
+    Simpson's uniform mesh converges before max_iter for the corpus.
+    """
+    ens_inc = np.asarray(energies_in, dtype=float)
+    ens_out = np.asarray(energies_out, dtype=float)
+
+    def build(mu_mesh):
+        # dist2d already has the mu axis last: (n_ein, n_eout, n_mu).
+        return compute_dist2d_values(
+            endf_dict, mt, zap, ens_inc, ens_out, mu_mesh, to_lab,
+        )
+
+    return _adaptive_simpson_along_axis(build, -1.0, 1.0)
 
 
 def integrate_mf6_dist2d_over_mu(
