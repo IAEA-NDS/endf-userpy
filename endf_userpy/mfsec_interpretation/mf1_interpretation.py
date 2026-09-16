@@ -4,7 +4,20 @@ from ..primitives.interpolation import endf_interp1d
 
 
 def _compute_yields_from_polynomial(coefs, energies_in):
-    return coefs * (energies_in**(np.arange(len(coefs))))
+    """Evaluate the ENDF-6 MF1 polynomial nubar representation
+    ``nu(E) = sum_k C_k * E**k`` at each of ``energies_in``.
+
+    ``coefs`` has shape ``(NC,)`` and ``energies_in`` shape
+    ``(n_ein,)``. Uses ``np.polynomial.polynomial.polyval``, which
+    is the "coefficients in ascending order" variant (as opposed
+    to ``np.polyval``, which reverses them). The pre-fix arithmetic
+    ``coefs * energies_in**arange(len(coefs))`` did elementwise
+    products (not the polynomial sum) and additionally required
+    ``n_ein == NC`` to broadcast at all -- so MT452 / MT455 with
+    ``LNU=1`` raised ``ValueError: operands could not be broadcast``
+    for almost every user grid (issue #42).
+    """
+    return np.polynomial.polynomial.polyval(energies_in, coefs)
 
 
 def compute_yields_from_mt452(endf_dict, energies_in):
