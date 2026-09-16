@@ -138,6 +138,13 @@ def get_incident_energies(endf_dict, reaction):
     """Sorted union of tabulated incident-energy meshes across every
     MT admitted for `reaction`.
 
+    Returns an empty float ndarray if the reaction resolves to no MT
+    present in the file (issue #75: previously raised
+    ``ValueError: need at least one array to concatenate`` from the
+    unguarded ``np.concatenate([])`` call). Callers using this
+    function to introspect "does this file have this reaction" can
+    now check ``len(result) == 0`` instead of wrapping in try/except.
+
     Uses `mf3_interpretation.get_incident_energies(mt)` per MT (issue
     #74: the previous callsite reached for a non-existent
     `quant_mt_zap.get_incident_energies` and raised `AttributeError`
@@ -154,10 +161,22 @@ def get_incident_energies(endf_dict, reaction):
         mf3interp.get_incident_energies(endf_dict, mt)
         for mt in select_mts
     ]
+    if not energy_meshes:
+        return np.array([], dtype=float)
     return np.unique(np.concatenate(energy_meshes))
 
 
 def get_emission_energies(endf_dict, reaction, particle, nofail=False):
+    """Sorted union of tabulated outgoing-energy meshes for `particle`
+    across every MT admitted for `reaction`.
+
+    Returns an empty float ndarray if no MT in the file both matches
+    the reaction and declares the requested ejectile (issue #75:
+    previously raised ``ValueError: need at least one array to
+    concatenate``). Legitimate empty-result queries include
+    ``(n,p)`` on H-2, ``(n,g)`` on H-1 with `particle="g"` if the
+    file has no gamma production, etc.
+    """
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
     mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
@@ -171,6 +190,8 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
         mf6interp.get_emission_energies(endf_dict, mt, zap, nofail)
         for mt in select_mts
     ]
+    if not energy_meshes:
+        return np.array([], dtype=float)
     return np.unique(np.concatenate(energy_meshes))
 
 
