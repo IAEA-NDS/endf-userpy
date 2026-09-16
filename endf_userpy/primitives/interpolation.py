@@ -68,7 +68,14 @@ def interp(x, xp, fp, interp_type, outside_value=None):
 def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
     check_int_nbt(int_arr, nbt_arr)
     x = np.array(x, copy=None)
-    treat_duplicates(xp, inplace=True)
+    # Rebind `xp` to a deduplicated copy rather than mutating the
+    # caller's array in place. `treat_duplicates` perturbs repeated
+    # mesh values by a relative epsilon so `searchsorted` can
+    # distinguish them; if we did that in place, any caller that
+    # passes a long-lived array (e.g. cached from the ENDF dict)
+    # would have its mesh silently modified, and a second call on
+    # the same array would perturb it again (issue #49).
+    xp = treat_duplicates(xp)
     # TODO: Here we provisionally let NaN values pass through the
     #       program logic for comparison with the Fortran routines.
     #       However, eventually no NaN values should appear in x.
