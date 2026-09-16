@@ -57,12 +57,123 @@ existing single-subsection LAW=1 Fortran shortcut in
 `distribution1d_helpers.integrate_mf6_dist2d_over_mu`).
 Multi-subsection LAW=7 continues to use the general-purpose
 adaptive Simpson integrator.
+
+INT>=3 warning (issue #71)
+--------------------------
+When any bracketing table's E' interpolation law is `INT>=3`
+(log-based) and a caller has opened `collect_law7_log_errors()`,
+the integrator adds a per-segment error estimate on top of the
+midpoint integral (two extra evaluations per segment at
+`mid +- w/4`, second-difference `f''` estimate, `w^3/24 * |f''|`
+per segment) and records it into the context-scoped accumulator.
+The top-level API (`get_particle_production_dxs_dmu` in
+`endf_userpy.quantities`) opens the context around its dispatch
+and emits one summary `UserWarning` at the end of the call. On
+INT=1/2 sections (100 % of the corpus surveyed to date) the code
+path is inactive and no extra evaluations happen.
 """
+import contextlib
+import contextvars
+import warnings
 import numpy as np
 
 from ..primitives.helpers import dict2array, find_interval
 from ..primitives.properties import get_QM, get_QI
 from . import mf6_interpretation_subsecs as _subsec
+
+
+# Per-query accumulator for LAW=7 INT>=3 integration errors. Set
+# by `collect_law7_log_errors()`; read by `integrate_law7_subsec_
+# over_eout` to decide whether to do the extra work of estimating
+# `f''` on each segment. Value is either None (no active context;
+# skip the estimate) or an `Law7LogErrorAccumulator` instance.
+_law7_log_error_accum = contextvars.ContextVar(
+    '_law7_log_error_accum', default=None,
+)
+
+
+class Law7LogErrorAccumulator:
+    """Per-query record of LAW=7 sections that hit log-based
+    `INT>=3` E' interpolation, together with the computed
+    integration-error estimate. Consumed by
+    `collect_law7_log_errors()` on exit to emit one summary
+    UserWarning for the query. Filled by
+    `integrate_law7_subsec_over_eout`.
+    """
+
+    __slots__ = ('records',)
+
+    def __init__(self):
+        # {(mt, subsec_num): (int_laws_seen_set, max_abs_err, peak_val)}
+        self.records = {}
+
+    def record(self, mt, subsec_num, int_laws, max_abs_err, peak_val):
+        key = (mt, subsec_num)
+        prev = self.records.get(key)
+        if prev is None:
+            self.records[key] = (set(int_laws), max_abs_err, peak_val)
+        else:
+            prev_laws, prev_err, prev_peak = prev
+            prev_laws.update(int_laws)
+            self.records[key] = (
+                prev_laws,
+                max(prev_err, max_abs_err),
+                max(prev_peak, peak_val),
+            )
+
+    def has_records(self):
+        return bool(self.records)
+
+    def format_summary(self):
+        parts = []
+        max_abs = 0.0
+        max_rel = 0.0
+        for (mt, subsec), (laws, err, peak) in sorted(self.records.items()):
+            laws_str = ','.join(str(x) for x in sorted(laws))
+            rel = err / peak if peak > 0 else 0.0
+            parts.append(
+                f'MT={mt} subsec={subsec} INT={{{laws_str}}} '
+                f'|err|<={err:.3e} ({rel*100:.3f}% of peak)'
+            )
+            max_abs = max(max_abs, err)
+            max_rel = max(max_rel, rel)
+        return (
+            f'MF6 LAW=7 knot-aware integrator saw log-based E\' '
+            f'interpolation on {len(self.records)} subsection(s). The '
+            f'midpoint rule is exact for INT=1/2 but has O(h^3) '
+            f'per-segment error on log-based interpolants. '
+            f'Estimated max absolute integration error this call: '
+            f'{max_abs:.3e} ({max_rel*100:.3f}% of peak). Details: '
+            + '; '.join(parts) + '. '
+            'For sub-permille accuracy, pass explicit E\' grids or '
+            'use scipy.integrate.quad(points=knots, ...) with the '
+            'section\'s tabulated E\' knots as breakpoints. See '
+            'issue #71.'
+        )
+
+
+@contextlib.contextmanager
+def collect_law7_log_errors():
+    """Context manager that turns on the per-segment error estimate
+    inside the knot-aware LAW=7 integrator for any `INT>=3` cell it
+    encounters, aggregates the estimates across every `(mt, subsec)`
+    hit during the block, and emits one summary `UserWarning` on
+    exit if anything was recorded.
+
+    Opened by the top-level `get_particle_production_dxs_dmu` in
+    `endf_userpy.quantities`. Also usable directly when calling the
+    knot-aware integrator outside the top-level API. On INT=1/2
+    sections (100 % of the corpus surveyed to date) the block is
+    entered and exited with zero records; no warning is emitted.
+    """
+    accum = Law7LogErrorAccumulator()
+    token = _law7_log_error_accum.set(accum)
+    try:
+        yield accum
+    finally:
+        _law7_log_error_accum.reset(token)
+        if accum.has_records():
+            warnings.warn(accum.format_summary(), UserWarning, stacklevel=2)
 
 
 def _project_ub_knots(y0, y1, y2, x1_knots, x2_knots):
@@ -138,6 +249,16 @@ def integrate_law7_subsec_over_eout(
 
     out = np.zeros((len(einc), len(mus)), dtype=float)
 
+    # Optional per-segment integration-error estimate for cells with
+    # log-based (INT>=3) E' interpolation on any bracketing table
+    # (issue #71). Only fires when a caller has opened
+    # `collect_law7_log_errors()`; on INT=1/2 sections the code path
+    # never triggers because `_check_log_int` returns False.
+    err_accum = _law7_log_error_accum.get()
+    total_max_abs_err = 0.0
+    total_peak_val = 0.0
+    log_int_laws_seen = set()
+
     for i, e in enumerate(einc):
         # Kinematic bounds: outside the section's E_in range -> zero.
         if e < ei_mesh[0] or e > ei_mesh[-1]:
@@ -191,15 +312,74 @@ def integrate_law7_subsec_over_eout(
             mids = 0.5 * (mesh[:-1] + mesh[1:])
             widths = mesh[1:] - mesh[:-1]
 
-            dist = _subsec.get_dist2d_from_subsec_law7(
-                endf_dict, mt, subsec_num,
-                np.array([e], dtype=float),
-                mids,
-                np.array([u], dtype=float),
-                True,
-            )
-            # dist shape: (1, len(mids), 1)
-            fvals = dist[0, :, 0]
-            out[i, j] = float(np.sum(widths * fvals))
+            # Cell-level INT>=3 detection: only kick in the error
+            # estimator when a table on this cell has a log-based
+            # E' interpolation AND the caller is inside
+            # `collect_law7_log_errors()`. Records the actual INT
+            # values seen so the summary warning can name them.
+            cell_log_laws = ()
+            if err_accum is not None:
+                cell_log_laws = tuple(sorted(
+                    int(v) for v in set().union(
+                        (int(x) for x in tables_e1[j1 + 1]['INT']),
+                        (int(x) for x in tables_e1[j1 + 2]['INT']),
+                        (int(x) for x in tables_e2[j2 + 1]['INT']),
+                        (int(x) for x in tables_e2[j2 + 2]['INT']),
+                    ) if int(v) >= 3
+                ))
+
+            if cell_log_laws:
+                # Estimate per-segment error via second-difference of
+                # `f` at `mid`, `mid +- w/4`. Midpoint rule error on
+                # a smooth per-segment integrand is `(w^3/24)*f''(xi)`;
+                # substituting `f''(mid) ~ (f(mid - h) - 2 f(mid) +
+                # f(mid + h)) / h^2` with `h = w/4` gives per-segment
+                # bound `(2 w / 3) * |Delta^2 f|`. Skip zero-width
+                # segments defensively.
+                h = widths / 4.0
+                # Pack the three sample sets into one dist2d call to
+                # keep the dispatch cost proportional to (n_seg * 3)
+                # rather than three separate section walks.
+                lo_pts = mids - h
+                hi_pts = mids + h
+                all_pts = np.concatenate([mids, lo_pts, hi_pts])
+                dist = _subsec.get_dist2d_from_subsec_law7(
+                    endf_dict, mt, subsec_num,
+                    np.array([e], dtype=float),
+                    all_pts,
+                    np.array([u], dtype=float),
+                    True,
+                )
+                fv = dist[0, :, 0]
+                n = len(mids)
+                f_mid = fv[:n]
+                f_lo = fv[n:2 * n]
+                f_hi = fv[2 * n:]
+                out[i, j] = float(np.sum(widths * f_mid))
+                d2 = np.abs(f_lo - 2.0 * f_mid + f_hi)
+                seg_err = (2.0 * widths / 3.0) * d2
+                cell_err = float(np.sum(seg_err))
+                if cell_err > total_max_abs_err:
+                    total_max_abs_err = cell_err
+                log_int_laws_seen.update(cell_log_laws)
+            else:
+                dist = _subsec.get_dist2d_from_subsec_law7(
+                    endf_dict, mt, subsec_num,
+                    np.array([e], dtype=float),
+                    mids,
+                    np.array([u], dtype=float),
+                    True,
+                )
+                # dist shape: (1, len(mids), 1)
+                fvals = dist[0, :, 0]
+                out[i, j] = float(np.sum(widths * fvals))
+            if abs(out[i, j]) > total_peak_val:
+                total_peak_val = abs(out[i, j])
+
+    if err_accum is not None and log_int_laws_seen:
+        err_accum.record(
+            mt, subsec_num, log_int_laws_seen,
+            total_max_abs_err, total_peak_val,
+        )
 
     return out
