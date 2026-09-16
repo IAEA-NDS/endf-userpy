@@ -84,6 +84,26 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
         module_logger.debug(
             f'--> getting yields for MT={mt} and ZAP={zap} from reaction string (yield={mult})'
         )
+        if mult is None:
+            # Fallback reaction-string lookup couldn't determine a
+            # multiplicity for this (MT, ZAP): the MT is either not
+            # in `reactions.REACTION_DICT` or its ejectile parsing
+            # hit a defensive `return None` branch (mangled ejectile
+            # string, unknown particle, invalid level suffix). Well-
+            # formed admissible calls do not reach here because
+            # `selectors.contains_zap` already filters unknown MTs.
+            # Raise loudly rather than propagate `np.full(..., None)`
+            # -> silent NaN through the rest of the pipeline
+            # (issue #104 / audit D4).
+            raise ValueError(
+                f'Cannot derive multiplicity for MT={mt}, ZAP={zap}: '
+                f'the MT is not in reactions.REACTION_DICT (or its '
+                f'ejectile string could not be parsed), no MF6 '
+                f'subsection carries the ZAP, and it is not a '
+                f'gamma-in-MF12/MF13 case. Add the MT to the '
+                f'reaction table or file an issue with the offending '
+                f'MT and file.'
+            )
         yields = np.full(len(energies_in), mult, dtype=float)
     return yields
 
