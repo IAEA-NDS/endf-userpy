@@ -321,17 +321,49 @@ def get_nominal_incident_energy_range(endf_dict, mt):
 
 
 def get_incident_energies(endf_dict, mt):
+    """Nominal incident-energy mesh for MT trimmed to the nonzero
+    cross-section block plus one bracketing zero on each side.
+
+    Returns an empty float ndarray if the MT's cross section is
+    all-zero (some libraries carry placeholder MT entries for MF6 or
+    MF8 book-keeping with a zeroed MF3): callers use empty as the
+    "no meaningful incident energies" signal (issue #96).
+    """
     energies = get_nominal_incident_energies(endf_dict, mt)
     treat_duplicates(energies, inplace=True)
     xs = np.array(endf_dict[3][mt]['xstable']['xs'], dtype=float)
     idcs = np.nonzero(xs)[0]
-    first_idx = idcs[0]-1 if idcs[0] > 0 else 0
-    last_idx = idcs[-1]+1 if idcs[-1]+1 < len(idcs) else idcs[-1]
+    if idcs.size == 0:
+        # All-zero cross section: no energy has a physical
+        # reaction rate; return empty rather than the full mesh
+        # (which would misleadingly imply coverage) or raise
+        # IndexError from `idcs[0]` (issue #96, second bug).
+        return energies[:0].copy()
+    # Bracket the nonzero block by one point on each side (so the
+    # cross section is guaranteed to start/end at zero for downstream
+    # interpolation). Cap by the mesh length, not the nonzero-count:
+    # the pre-fix `last_idx+1 < len(idcs)` compared against the
+    # number of nonzero points (issue #96, first bug) and silently
+    # dropped the trailing bracketing zero whenever the nonzero block
+    # extended to within one index of the mesh end.
+    first_idx = max(idcs[0] - 1, 0)
+    last_idx = min(idcs[-1] + 1, len(xs) - 1)
     return energies[first_idx:last_idx+1].copy()
 
 
 def get_incident_energy_range(endf_dict, mt):
+    """(min, max) of `get_incident_energies(mt)`.
+
+    Raises `ValueError` if the cross section is all-zero (empty
+    mesh has no min/max). Callers that need to survive all-zero MTs
+    should check `len(get_incident_energies(...)) == 0` first.
+    """
     eincs = get_incident_energies(endf_dict, mt)
+    if eincs.size == 0:
+        raise ValueError(
+            f'MT={mt} has an all-zero cross section; no incident '
+            f'energy range defined'
+        )
     return (min(eincs), max(eincs))
 
 
