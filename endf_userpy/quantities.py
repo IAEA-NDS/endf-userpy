@@ -12,6 +12,9 @@ import logging
 from .mfsec_interpretation import mf6_interpretation as mf6interp
 from .mfsec_interpretation import mf8_interpretation as mf8interp
 from .mfsec_interpretation.mf3_interpretation import above_range_ctx
+from .mfsec_interpretation.mf6_law7_integrals import (
+    collect_law7_log_errors,
+)
 
 
 # Cache of (id(endf_dict), mt, zap, lfs) tuples we have already warned
@@ -411,7 +414,13 @@ def get_particle_production_dxs_dmu(
     `above_range` (default ``'warn_nan'``) matches
     ``get_reaction_xs``; see its docstring for the policy set.
     """
-    with above_range_ctx(above_range):
+    # `collect_law7_log_errors` aggregates the knot-aware LAW=7
+    # integrator's per-segment error estimate across every MT hit
+    # by this query, and emits one summary UserWarning on exit if
+    # any bracketing table uses log-based E' interpolation
+    # (INT>=3). Silent no-op for the INT=1/2 cases that cover the
+    # whole current corpus (issue #71).
+    with above_range_ctx(above_range), collect_law7_log_errors():
         return _get_particle_production_dxs_dmu_impl(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,
         )
