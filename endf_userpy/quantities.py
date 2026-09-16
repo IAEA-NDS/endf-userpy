@@ -187,7 +187,17 @@ def get_reaction_xs(endf_dict, reaction, energies_in, mt5_contrib=True):
                 and reac.is_unique_path_to_residual(proj, mt)):
             if not mt_available or not should_select:
                 cur_xs = np.zeros_like(energies_in, dtype=float)
-            eincs_sel = (~np.bool(mt_available)) | (cur_xs == 0.0)
+            # `mt_available` is a Python bool (from `mt in avail_mts`),
+            # so the pre-fix `~np.bool(mt_available)` cast was doing
+            # nothing useful (and `np.bool` was removed in numpy 1.24
+            # anyway -- issue #15). Ternary form makes the two branches
+            # explicit: if the MT is not in the file, include every
+            # incident energy in the MT5 sum; otherwise include only
+            # those where the MT's own XS is zero.
+            eincs_sel = (
+                (cur_xs == 0.0) if mt_available
+                else np.ones_like(energies_in, dtype=bool)
+            )
             mt5_xs = quant_mt_zap.compute_xs_mt5_contrib(
                 endf_dict, mt, energies_in[eincs_sel]
             )
