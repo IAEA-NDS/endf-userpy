@@ -359,16 +359,32 @@ def is_unique_path_to_residual(proj, mt):
     if ejectiles is None or len(ejectiles) > 1:
         return False
     mult, ejectile = ejectiles[0]
-    # this particle must be a single light-ion ejectile whose residual
-    # ZA is uniquely determined by the projectile, target, and ejectile
-    if ejectile not in ('g', 'n', 'p', 'd', 't', 'h', 'a'):
+    # Restrict to simple ejectiles whose residual is NOT shared with
+    # any multi-particle-exit MT. Deuteron, triton, He-3 and alpha
+    # were on this whitelist historically, but a scan of REACTION_DICT
+    # shows every composite-ejectile MT has at least one multi-particle
+    # sibling landing on the same residual ZA:
+    #   MT104 (n,d)   <-> MT28  (n,np)
+    #   MT105 (n,t)   <-> MT32  (n,nd),  MT41  (n,2np)
+    #   MT106 (n,3He) <-> MT44  (n,n2p), MT115 (n,pd)
+    #   MT107 (n,a)   <-> MT34  (n,n3He), MT116 (n,pt),
+    #                    MT183 (n,npd),  MT190 (n,2n2p)
+    # Attributing an MT5 catch-all's full residual-ZA production to
+    # the light-ion MT would over-count whenever the file lumps both
+    # single- and multi-particle exit paths into MT5.
+    # Gamma, single-neutron, and single-proton exits do NOT overlap
+    # with any multi-particle-exit MT and are safely uniquely
+    # attributable.
+    if ejectile not in ('g', 'n', 'p'):
         return False
     # for neutron-induced reactions, there is not an MT number
     # corresponding to n,el + n,inl, so whenever only one neutron is
     # in the exit channel, MT=4 is only a partial component and
     # therefore not the unique path. Photon and charged-particle
     # projectiles do not have this ambiguity, since no elastic MT
-    # alongside MT=4 shares the n ejectile.
+    # alongside MT=4 shares the n ejectile. MT=16 (n,2n), MT=17 (n,3n),
+    # etc. have mult >= 2 and pass this check because no multi-particle
+    # MT emits the same neutron count with no other ejectiles.
     if proj == 'n' and ejectile == 'n' and mult == 1:
         return False
     # discrete-level scattering MTs (e.g. MT=51..90, 600..648, ...)
