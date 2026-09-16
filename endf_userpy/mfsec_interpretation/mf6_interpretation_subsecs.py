@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 from ..primitives.interpolation import interp_tab1
 from ..fortran.endf6 import (
@@ -271,10 +272,37 @@ def get_angdist_from_subsec_law2(
     #       the emission energy.
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
+    # Short-circuit for gamma ZAP (issue #78): the LAW=2 CM<->LAB
+    # conversion in `mf6_get_law2` uses massive-particle 2-body
+    # kinematics with the subsection's `AWP` as the ejectile mass.
+    # For photons the correct treatment is massless-ejectile
+    # kinematics (energy and direction related by |p_gamma| = E_gamma
+    # rather than E = p^2 / 2m), which the Fortran evaluator does not
+    # implement. Previously the massive-formula path silently
+    # produced all NaN in the returned angular distribution and the
+    # caller propagated the NaN into `get_particle_production_dxs_dmu`.
+    # Return zeros so the sum-over-MTs stays well-defined; emit one
+    # summary warning per file so users see a clear signal.
+    if subsec.get('ZAP') == 0.0:
+        warnings.warn(
+            f'MF6/MT{mt} subsection {subsec_num} stores gamma '
+            f'(ZAP=0) with LAW=2. The 2-body angular distribution '
+            f'conversion currently assumes a massive ejectile and '
+            f'returns NaN for photons; skipping this contribution '
+            f'(returning zeros). Files that need gamma production '
+            f'from radiative-capture channels should carry the '
+            f'photon yield and spectrum in MF12+MF14 or MF13+MF14; '
+            f'the MF6/LAW=2 photon-kinematics path is not yet '
+            f'implemented (issue #78).',
+            UserWarning, stacklevel=3,
+        )
+        return np.zeros(
+            (len(energies_in), len(angle_cosines_out)), dtype=float,
+        )
     awr = get_AWR(endf_dict)
     awi = get_AWI(endf_dict)
     awp = subsec['AWP']
-    q = get_QI(endf_dict, mt) 
+    q = get_QI(endf_dict, mt)
     lct = sec['LCT'] if to_lab else 1
     lang = subsec['LANG']
     ei_mesh = dict2array(subsec['E'], dtype=float)
