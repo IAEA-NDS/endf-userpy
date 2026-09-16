@@ -136,6 +136,76 @@ def compute_ddx_continuous_broadened(
     return np.clip(ddx * yields * xs / (2 * np.pi), 0.0, None)
 
 
+def compute_ddx_continuous_broadened_summed(
+    endf_dict, mts, zap,
+    energies_in, energies_out, angle_cosines_out,
+    kernel, kernel_width,
+    to_lab=True,
+    **convolve_kwargs,
+):
+    """DDX of `sum_{MT in mts}` convolved with `kernel` along E_out
+    in a single `adaptive_convolve` call (issue #26).
+
+    Uses linearity of convolution: `sum_m conv(dist2d_m * y_m * xs_m)
+    == conv(sum_m dist2d_m * y_m * xs_m)`, so instead of one FFT per
+    MT, one FFT covers the sum. Each internal-mesh evaluation now
+    computes the sum of `M = len(mts)` dist2d contributions rather
+    than one, so the dist2d cost stays roughly the same; the FFT
+    count drops by a factor of M and the Python outer-loop overhead
+    of `adaptive_convolve` amortises across the whole sum.
+
+    Callers must pre-filter `mts` to those that pass
+    `has_continuous_ddx(mt, zap)`; discrete two-body / LAW=1 discrete
+    / MF12 discrete channels go through their own kernel folders.
+
+    A one-MT list is accepted but there is no gain over the per-MT
+    routine, so the top-level dispatcher only routes through this
+    function when `len(mts) >= 2`.
+
+    Returns
+    -------
+    ddx : ndarray of shape `(n_einc, n_eouts, n_mus)`.
+    """
+    einc = np.asarray(energies_in, dtype=float)
+    eouts = np.asarray(energies_out, dtype=float)
+    mus = np.asarray(angle_cosines_out, dtype=float)
+
+    if len(mts) == 0:
+        return np.zeros(
+            (len(einc), len(eouts), len(mus)), dtype=float,
+        )
+
+    # Pre-compute the per-MT (yield * xs) scaling once. These depend
+    # only on Ein so they don't participate in the convolution and
+    # don't need to be recomputed inside f_summed.
+    scales = []
+    for mt in mts:
+        y = compute_yields(
+            endf_dict, mt, zap, einc, include_discrete=False,
+        )
+        xs = mf3_interp.compute_cross_section(endf_dict, mt, einc)
+        scales.append((y * xs).reshape(-1, 1, 1))
+
+    def f_summed(eout_internal):
+        total = None
+        for mt, scale in zip(mts, scales):
+            dist2d = compute_dist2d_values(
+                endf_dict, mt, zap, einc, eout_internal, mus, to_lab,
+            )
+            # (n_einc, n_eout, n_mus) -> (n_einc, n_mus, n_eout)
+            contrib = np.moveaxis(dist2d, 1, -1) * scale
+            total = contrib if total is None else total + contrib
+        return total
+
+    broadened = adaptive_convolve(
+        f_summed, kernel, eouts,
+        kernel_width=kernel_width, **convolve_kwargs,
+    )
+    # (n_einc, n_mus, n_eouts) -> (n_einc, n_eouts, n_mus)
+    ddx = np.moveaxis(broadened, -1, 1)
+    return np.clip(ddx / (2 * np.pi), 0.0, None)
+
+
 def compute_dxs_dE_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out,
