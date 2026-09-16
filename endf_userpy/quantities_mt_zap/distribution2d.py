@@ -1,5 +1,5 @@
 import numpy as np
-from ..mfsec_interpretation import mf4_interpretation_fort as mf4_interp 
+from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf5_interpretation as mf5_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp 
 from ..primitives.physical_constants import get_zap_for_particle

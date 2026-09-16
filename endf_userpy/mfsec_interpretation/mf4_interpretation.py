@@ -161,6 +161,24 @@ def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
             'Unknown angular distribution representation '
             f'(MT={mt}, LTT={ltt}, LI={li}).'
         )
-    # convert result to LAB system if required
-    f_lab = f_eff if lct == 1 else convert_angdist_to_labsys(mu_eff, f_eff, r2)
+    # Convert result to LAB system if required. At LAB angles that
+    # are kinematically forbidden (for equal-mass or heavy-ejectile
+    # elastic like H-1, `mu_lab < mu_lab_min`), `convert_angcos_to_cmsys`
+    # returned NaN via `sqrt(z)` with `z = mu_lab^2 + r^2 - 1 < 0`,
+    # and that NaN propagated through the polynomial / tabulated
+    # evaluation and the LAB Jacobian. Values just inside the
+    # boundary picked up small-negative artefacts from the vanishing
+    # Jacobian near the CM back-scatter singularity. Physics says
+    # the angular distribution is zero at forbidden angles (no
+    # scattering into unreachable angles), so we clip NaN and
+    # negatives to zero here (issue #45). The Fortran reference
+    # implementation does the same, so this brings the two backends
+    # to bit-for-bit agreement on the H-1 elastic equivalence test
+    # and removes the `equal_nan=True` workaround downstream.
+    if lct == 1:
+        f_lab = f_eff
+    else:
+        f_lab = convert_angdist_to_labsys(mu_eff, f_eff, r2)
+        f_lab = np.where(np.isnan(f_lab), 0.0, f_lab)
+        f_lab = np.clip(f_lab, 0.0, None)
     return f_lab
