@@ -203,7 +203,7 @@ extension = Extension(
 
 setup(
     name='endf-userpy',
-    version='0.1.0a4',
+    version='0.1.0a5',
     author='Georg Schnabel, Daniel Lopez Aldama',
     license='MIT',
     url='https://github.com/IAEA-NDS/endf-userpy',
@@ -218,7 +218,7 @@ setup(
     install_requires=[
         'numpy>=1.22',
         'scipy',
-        'endf_parserpy',
+        'endf_parserpy>=0.14',
     ],
     description='High-level interpretation of ENDF-6 data',
     long_description=open('README.md').read(),
