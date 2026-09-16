@@ -486,6 +486,9 @@ def _get_particle_production_dxs_dE_impl(
         )
 
     if kernel is None:
+        _warn_law1_discrete_dropped_from_unbroadened_dxs_dE(
+            endf_dict, zap, user_mts,
+        )
         return quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_dexs, select,
             endf_dict, zap, energies_in, energies_out,
@@ -823,6 +826,60 @@ def _warn_discrete_dropped_from_unbroadened_ddx(endf_dict, zap, user_mts):
         f'in the DDX, pass a `broadening=sigma_eV` (or a custom '
         f'(kernel, width) tuple) so the deltas are folded into a '
         f'finite kernel that plots on the E_out grid.',
+        UserWarning, stacklevel=3,
+    )
+
+
+def _warn_law1_discrete_dropped_from_unbroadened_dxs_dE(
+    endf_dict, zap, user_mts,
+):
+    """Emit a UserWarning if the unbroadened `dxs/dE` call would
+    silently drop MF6/LAW=1 ND>0 discrete-line channels that pass
+    every other admission check (issue #102 / audit D2).
+
+    LAW=1 with ND>0 subsections encodes per-line emissions as
+    Dirac deltas at fixed outgoing energies inside a MF6 subsection
+    (JENDL-5 partial-inelastic gamma cascades and some capture
+    channels use this layout). The unbroadened 1D dispatcher walks
+    only the continuum part of each subsection; the discrete deltas
+    are correctly excluded from the sum -- a delta on a finite
+    grid integrates to zero almost everywhere -- but the exclusion
+    is silent. Users see a continuum-only spectrum and no signal
+    that the discrete-line content is being dropped.
+
+    Mirrors ``_warn_discrete_dropped_from_unbroadened_ddx`` (issue
+    #21) for the DDX case. Users get real content by passing
+    ``broadening=sigma_eV``: the same MT then routes through
+    ``ddx_broadening.compute_dxs_dE_law1_discrete_broadened`` which
+    folds each delta with the kernel and adds it to the continuum
+    contribution.
+    """
+    dropped = []
+    for mt in quant_mt_zap.get_reaction_mt_numbers(endf_dict):
+        if not selectors.contains_zap(endf_dict, mt, zap):
+            continue
+        if not selectors.satisfies_select_heuristic(endf_dict, mt, user_mts):
+            continue
+        if not selectors.has_mf6_law1_discrete_lines(endf_dict, mt, zap):
+            continue
+        dropped.append(mt)
+    if not dropped:
+        return
+    if len(dropped) > 12:
+        mt_str = (
+            ', '.join(str(m) for m in dropped[:12])
+            + f', ... ({len(dropped)} total)'
+        )
+    else:
+        mt_str = ', '.join(str(m) for m in dropped)
+    warnings.warn(
+        f'get_particle_production_dxs_dE (unbroadened) dropped '
+        f'MF6/LAW=1 ND>0 discrete-line content whose outgoing '
+        f'energy is a Dirac delta on the E\' axis: MT={mt_str}. '
+        f'The continuum part of these MTs IS included. To include '
+        f'the discrete lines too, pass a `broadening=sigma_eV` (or '
+        f'a custom (kernel, width) tuple) so the deltas are folded '
+        f'into a finite kernel that plots on the E\' grid.',
         UserWarning, stacklevel=3,
     )
 
