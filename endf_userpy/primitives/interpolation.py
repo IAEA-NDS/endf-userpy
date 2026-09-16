@@ -144,15 +144,34 @@ def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
     return f
 
 
-def interp_legendre_coeffs(x, xp, coeffs, int_arr, nbt_arr):
+def interp_legendre_coeffs(x, xp, coeffs, int_arr, nbt_arr, outside_value=None):
     x = np.asarray(x)
     interp_coeffs = np.zeros((x.shape[0], coeffs.shape[1]), dtype=float)
     for i in range(interp_coeffs.shape[1]):
-        interp_coeffs[:, i] = endf_interp1d(x, xp, coeffs[:,i], int_arr, nbt_arr)
+        interp_coeffs[:, i] = endf_interp1d(
+            x, xp, coeffs[:, i], int_arr, nbt_arr, outside_value,
+        )
     return interp_coeffs
 
 
-def evaluate_interp_legendre_polynomials(x, mu, xp, coeffs, int_arr, nbt_arr):
+def evaluate_interp_legendre_polynomials(
+    x, mu, xp, coeffs, int_arr, nbt_arr, outside_value=None,
+):
+    """Evaluate Legendre polynomials of degree `coeffs.shape[1]-1`
+    at each `mu` after interpolating the per-degree coefficient
+    across the incident-energy axis `xp`.
+
+    `outside_value=None` (default) raises when any `x` value is
+    outside `xp` -- callers that pre-filter `x` to the tabulated
+    range (via the `pad_outside_*` decorators used by the MF4
+    evaluators) rely on this to catch mistakes. Callers that walk
+    per-photon-line tables whose own `xp` mesh is narrower than
+    the caller's `x` (MF14 discrete lines with per-line `E`
+    mesh -- issue #81) pass `outside_value=0.0` so the out-of-mesh
+    interpolated coefficients zero out and the Legendre evaluation
+    gives 0 at those `x` (a photon line only contributes at Ein
+    values it was tabulated at).
+    """
     x = np.asarray(x)
     mu = np.asarray(mu)
     if mu.ndim == 1:
@@ -160,10 +179,12 @@ def evaluate_interp_legendre_polynomials(x, mu, xp, coeffs, int_arr, nbt_arr):
     if mu.shape[0] == 1:
         mu = np.tile(mu, (x.size, 1))
     result = np.zeros((x.size, mu.shape[1]), dtype=float)
-    interp_coeffs = interp_legendre_coeffs(x, xp, coeffs, int_arr, nbt_arr)
+    interp_coeffs = interp_legendre_coeffs(
+        x, xp, coeffs, int_arr, nbt_arr, outside_value,
+    )
     for i in range(interp_coeffs.shape[0]):
-        cur_res = Legendre(interp_coeffs[i,:])(mu[i,:])
-        result[i,:] = cur_res
+        cur_res = Legendre(interp_coeffs[i, :])(mu[i, :])
+        result[i, :] = cur_res
     return result
 
 

@@ -110,9 +110,18 @@ def compute_angdist_from_legendre(
         int_arr = np.array(interp_table['INT'], dtype=int)
         einc_mesh = dict2array(mtsec['E'][eg_idx + 1], dtype=float)
         coeffs_arr = _convert_legendre_to_numpy_array(mtsec['a'][eg_idx + 1])
+        # Per-photon-line Ein mesh: pad with zeros outside the
+        # tabulated range rather than raising. In files where the
+        # user's `energies_in` spans a wider range than a specific
+        # line's tabulation (JENDL-5 C-12 gamma dxs/dmu on a
+        # 100 keV .. 14 MeV grid vs. a line only tabulated above
+        # ~10 MeV -- issue #81), the natural physical meaning is
+        # "this line contributes nothing at those Ein" rather
+        # than an aborting error.
         f = evaluate_interp_legendre_polynomials(
             energies_in, angle_cosines,
             einc_mesh, coeffs_arr, int_arr, nbt_arr,
+            outside_value=0.0,
         )
         res_list.append(f)
 
