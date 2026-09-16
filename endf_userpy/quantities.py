@@ -11,6 +11,7 @@ import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
 from .mfsec_interpretation import mf3_interpretation as mf3interp
 from .mfsec_interpretation import mf6_interpretation as mf6interp
+from .mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from .mfsec_interpretation import mf8_interpretation as mf8interp
 from .mfsec_interpretation.mf3_interpretation import above_range_ctx
 from .mfsec_interpretation.mf6_law7_integrals import (
@@ -176,6 +177,15 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
     concatenate``). Legitimate empty-result queries include
     ``(n,p)`` on H-2, ``(n,g)`` on H-1 with `particle="g"` if the
     file has no gamma production, etc.
+
+    The mesh is built from MF6 subsections only. Some MTs pass the
+    top-level ``selectors.contains_zap`` gate via MF12/MF13 (e.g.
+    discrete-inelastic MT 51..90 gamma yields on medium/heavy
+    nuclei) without having any MF6 subsection for that ZAP; those
+    MTs are filtered here before dispatch, otherwise the leaf
+    walker raises ``IndexError: subsection with ZAP=... not found``
+    (issue #77). A full MF12/MF13 emission-mesh walk is a separate
+    piece of work (see issue #82 D7).
     """
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
@@ -184,6 +194,10 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
         mt for mt in mts
         if selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         and selectors.contains_zap(endf_dict, mt, zap)
+        # Per-MT gate: the leaf walks only MF6, so skip MTs whose
+        # ZAP content is in MF12/MF13 only (issue #77).
+        and prop.has_mf6_mt(endf_dict, mt)
+        and mf6_help.contains_zap(endf_dict, mt, zap)
     ]
     module_logger.debug('selected ' + ','.join(str(mt) for mt in select_mts))
     energy_meshes = [
