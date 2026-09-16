@@ -119,7 +119,14 @@ each include the `wget` command to fetch the JENDL-5 file they need.
   parameters) is not reconstructed. For evaluations whose MF3 is empty
   in the resonance region, pre-process the file with
   [NJOY RECONR](https://github.com/njoy/NJOY2016) and pass the PENDF
-  file in.
+  file in. Evaluations that store MF3 as a **subtractive background**
+  in the resolved-resonance region (which ENDF-6 permits, and which
+  can produce negative raw MF3 values -- e.g. JENDL-5 Cu-63 MT1/MT2
+  tabulate `-0.9 barn` at thermal energies) return the raw background
+  by default and emit one summary `UserWarning` per call naming the
+  affected MTs and RRR bounds. Configure with the `resonance_range=`
+  kwarg on every `get_*` XS API: `'warn'` (default),
+  `'warn_nan'`, `'nan'`, `'raise'`.
 - **DDX drops kinematic-delta channels unless broadened.** The
   double-differential API cannot represent elastic and discrete-level
   inelastic channels on a continuous `Eout` grid (their outgoing

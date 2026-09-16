@@ -31,6 +31,179 @@ _above_range_accum = contextvars.ContextVar(
 )
 
 
+_RESONANCE_RANGE_POLICIES = ('warn', 'warn_nan', 'nan', 'raise')
+
+# Context-inherited policy for how to handle incident energies
+# inside the file's resolved-resonance region (LRU=1). ENDF-6 stores
+# MF3 in the RRR as a subtractive **background cross section** that
+# must be added to the resonance reconstruction from MF2. The
+# library does not reconstruct resonances (documented in README's
+# "Known limitations"), so raw MF3 in the RRR is not the physical
+# cross section -- and can even be negative (JENDL-5 Cu-63 MT1/MT2
+# hit -0.9 barn at 1 eV; issue #84).
+#
+# Set by the top-level `get_*` functions via `resonance_range_ctx`;
+# read by the leaf `compute_cross_section`. Default `'warn'` returns
+# the raw MF3 background with one summary UserWarning per top-level
+# query; `'warn_nan'` / `'nan'` fill in-RRR points with NaN;
+# `'raise'` hard-errors on any RRR hit.
+_resonance_range_var = contextvars.ContextVar(
+    '_resonance_range', default='warn',
+)
+
+_resonance_range_accum = contextvars.ContextVar(
+    '_resonance_range_accum', default=None,
+)
+
+
+def get_resolved_resonance_ranges(endf_dict):
+    """Return list of `(EL, EH)` tuples for every resolved-resonance
+    (LRU=1) range in the file, or `[]` if there is no MF2/MT151 or no
+    LRU=1 range.
+
+    Unresolved-resonance ranges (LRU=2) are skipped: MF3 in the URR
+    is the average cross section, not a subtractive background, so
+    it does not carry the negative-value or missing-reconstruction
+    problem the LRU=1 case does.
+
+    Files without MF2 at all (photonuclear, some light-nuclide
+    evaluations that go straight to point-wise MF3) return `[]` and
+    the resonance-range policy layer becomes a no-op on them.
+    """
+    if 2 not in endf_dict or 151 not in endf_dict[2]:
+        return []
+    mf2 = endf_dict[2][151]
+    ranges = []
+    for iso in mf2.get('isotope', {}).values():
+        for rng in iso.get('range', {}).values():
+            if rng.get('LRU') != 1:
+                continue
+            ranges.append((float(rng['EL']), float(rng['EH'])))
+    return ranges
+
+
+@contextlib.contextmanager
+def resonance_range_ctx(policy):
+    """Context manager that sets the resonance-range policy for the
+    duration of the `with` block. Mirrors `above_range_ctx` from
+    issue #28.
+
+    Accepted policies:
+
+    - ``'warn'`` (default): return raw MF3 as-is; emit ONE summary
+      UserWarning on context exit naming every MT whose queried
+      Ein range touched the file's resolved-resonance region
+      (LRU=1). The library does not reconstruct MF2 resonances
+      (README "Known limitations"), so raw MF3 in the RRR is only
+      the background component, not the physical cross section.
+    - ``'warn_nan'``: fill in-RRR points with NaN plus the summary
+      warning. Convenient for callers that want to filter or mask
+      undefined regions downstream.
+    - ``'nan'``: same as above but silent.
+    - ``'raise'``: raise `ValueError` on any Ein inside the RRR.
+
+    The ``'clip'`` / ``'warn_clip'`` variants that would replace
+    negative background with zero were considered and dropped: the
+    MF3 background is a subtractive residual, not a physical XS on
+    its own, so clipping it to zero produces nothing meaningful
+    (either the user is doing their own resonance reconstruction --
+    in which case zeroing the background is silently wrong -- or
+    they are not, in which case NaN is a strictly more honest
+    fill).
+    """
+    if policy not in _RESONANCE_RANGE_POLICIES:
+        raise ValueError(
+            f"resonance_range must be one of "
+            f"{_RESONANCE_RANGE_POLICIES}; got {policy!r}"
+        )
+    policy_token = _resonance_range_var.set(policy)
+    accum = {} if policy in ('warn', 'warn_nan') else None
+    accum_token = _resonance_range_accum.set(accum)
+    try:
+        yield
+    finally:
+        _resonance_range_var.reset(policy_token)
+        _resonance_range_accum.reset(accum_token)
+        if accum:
+            action = 'NaN' if policy == 'warn_nan' else 'raw MF3 background'
+            n_mts = len(accum)
+            total_pts = sum(n for _, n, _, _ in accum.values())
+            details = ', '.join(
+                f'MT={mt} ({n_in} of {n_total} pts in RRR '
+                f'[{el:.3g}, {eh:.3g}] eV)'
+                for mt, (el, eh, n_in, n_total) in sorted(accum.items())
+            )
+            warnings.warn(
+                f'resonance_range: {total_pts} in-RRR points across '
+                f'{n_mts} MTs returned as {action}: {details}. '
+                f'MF3 in the resolved-resonance region is a '
+                f'subtractive background cross section; the physical '
+                f'cross section requires resonance reconstruction from '
+                f'MF2 (not performed by this library -- see README '
+                f'"Known limitations").',
+                UserWarning, stacklevel=2,
+            )
+
+
+def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges):
+    """Common resonance-range policy implementation shared by every
+    XS reader. Returns `(in_rrr_mask, fill_value)`: `in_rrr_mask` is
+    True at Ein positions inside any LRU=1 range; `fill_value` is
+    `np.nan` for the nan policies and `None` (meaning don't overwrite)
+    for the pure-warn / passthrough policies.
+
+    Callers apply the mask themselves:
+
+        if in_rrr_mask.any() and fill_value is not None:
+            xs = np.where(in_rrr_mask, fill_value, xs)
+    """
+    if not rrr_ranges:
+        # No LRU=1 ranges in the file: nothing to check.
+        return None, None
+    einc_arr = np.asarray(einc_arr, dtype=float)
+    in_rrr_mask = np.zeros_like(einc_arr, dtype=bool)
+    for el, eh in rrr_ranges:
+        in_rrr_mask |= (einc_arr >= el) & (einc_arr <= eh)
+    n_in = int(in_rrr_mask.sum())
+    if n_in == 0:
+        return None, None
+    # Union bounds for the summary warning
+    el_union = min(el for el, _ in rrr_ranges)
+    eh_union = max(eh for _, eh in rrr_ranges)
+    if policy == 'raise':
+        raise ValueError(
+            f'{n_in} of {len(einc_arr)} incident energies for MT={mt} '
+            f'fall inside the file\'s resolved-resonance region '
+            f'[{el_union:.6g}, {eh_union:.6g}] eV. MF3 there is a '
+            f'subtractive background, not the physical cross section '
+            f'(this library does not perform MF2 resonance '
+            f'reconstruction).'
+        )
+    if policy in ('warn', 'warn_nan'):
+        accum = _resonance_range_accum.get()
+        if accum is not None:
+            prev = accum.get(mt)
+            if prev is None or n_in > prev[2]:
+                accum[mt] = (el_union, eh_union, n_in, len(einc_arr))
+        else:
+            # Called outside a ctx (leaf reader used directly): fall
+            # back to a per-call warning so the caller still sees a
+            # signal without needing to open the context manager.
+            action = 'NaN' if policy == 'warn_nan' else 'the raw MF3 background'
+            warnings.warn(
+                f'{n_in} of {len(einc_arr)} incident energies for '
+                f'MT={mt} fall inside the resolved-resonance region '
+                f'[{el_union:.6g}, {eh_union:.6g}] eV; returning '
+                f'{action}. MF3 there is a subtractive background '
+                f'cross section (this library does not reconstruct '
+                f'MF2 resonances).',
+                UserWarning, stacklevel=3,
+            )
+    if policy in ('warn_nan', 'nan'):
+        return in_rrr_mask, np.nan
+    return in_rrr_mask, None  # 'warn' / passthrough
+
+
 @contextlib.contextmanager
 def above_range_ctx(policy):
     """Context manager that sets the above-range fill policy for
@@ -172,7 +345,9 @@ def get_reactions(endf_dict):
     return reacs
 
 
-def compute_cross_section(endf_dict, mt, energies_in, above_range=None):
+def compute_cross_section(
+    endf_dict, mt, energies_in, above_range=None, resonance_range=None,
+):
     """Cross section for MT evaluated on `energies_in`.
 
     `above_range` controls what happens at incident energies above
@@ -182,8 +357,7 @@ def compute_cross_section(endf_dict, mt, energies_in, above_range=None):
     `get_*` APIs in `endf_userpy.quantities`; the ambient default
     when nothing is set is ``'warn_nan'``.
 
-    Explicit policies (also accepted here for callers that go
-    around the top-level API):
+    Explicit `above_range` policies:
 
     - ``'warn_nan'`` (default): fill above-range points with NaN and
       emit a `UserWarning` naming the MT and the exceeded limit.
@@ -195,15 +369,30 @@ def compute_cross_section(endf_dict, mt, energies_in, above_range=None):
     - ``'zero'``: fill with 0, silent. Pre-issue-#28 default.
     - ``'raise'``: raise `ValueError` and refuse to return.
 
-    Below the mesh (typically sub-threshold or below the reaction
-    onset) the return is always 0 regardless of `above_range`:
-    `interp_tab1`'s outside-value fill uses 0 there and the physics
-    interpretation of "below the file's lowest tabulated Ein" is
-    almost always "physically zero" (the mesh starts at or below
-    the reaction threshold).
+    `resonance_range` controls what happens at incident energies
+    inside the file's resolved-resonance region (LRU=1 in
+    MF2/MT151). ENDF-6 stores MF3 there as a subtractive
+    **background** cross section that must be added to the resonance
+    reconstruction from MF2; this library does not reconstruct
+    resonances (README "Known limitations"), so raw MF3 in the RRR
+    is not the physical cross section and can be negative (issue
+    #84). Default ``'warn'`` returns the raw background with a
+    summary UserWarning; ``'warn_nan'`` / ``'nan'`` fill with NaN;
+    ``'raise'`` errors on any RRR hit. Files without MF2 or with
+    only LRU=0 / LRU=2 ranges are unaffected (no LRU=1 range
+    exists to check against).
+
+    Below the MT-specific mesh (typically sub-threshold or below
+    the reaction onset) the return is always 0 regardless of
+    `above_range`: `interp_tab1`'s outside-value fill uses 0 there
+    and the physics interpretation of "below the file's lowest
+    tabulated Ein" is almost always "physically zero" (the mesh
+    starts at or below the reaction threshold).
     """
     if above_range is None:
         above_range = _above_range_var.get()
+    if resonance_range is None:
+        resonance_range = _resonance_range_var.get()
     sec = endf_dict[3][mt]
     xstab = sec['xstable']
     e_mesh = np.asarray(xstab['E'], dtype=float)
@@ -216,4 +405,20 @@ def compute_cross_section(endf_dict, mt, energies_in, above_range=None):
     xs = interp_tab1(energies_in, xstab, 'E', 'xs', outside_value=0.0)
     if above_mask.any() and fill_value != 0.0:
         xs = np.where(above_mask, fill_value, xs)
+    # Resonance-range policy (issue #84): applied after the
+    # above-range fill so that Ein above the file's mesh keeps
+    # the NaN/0 above-range fill even if it happened to also be
+    # inside the RRR (in practice above_mask and RRR are disjoint;
+    # the guard is defensive).
+    rrr_ranges = get_resolved_resonance_ranges(endf_dict)
+    if rrr_ranges:
+        in_rrr_mask, rrr_fill = _handle_resonance_range(
+            resonance_range, mt, einc_arr, rrr_ranges,
+        )
+        if in_rrr_mask is not None and rrr_fill is not None:
+            # Only overwrite positions that are NOT already
+            # above-range (above_range takes precedence).
+            overwrite_mask = in_rrr_mask & ~above_mask
+            if overwrite_mask.any():
+                xs = np.where(overwrite_mask, rrr_fill, xs)
     return xs
