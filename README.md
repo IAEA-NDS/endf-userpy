@@ -151,19 +151,31 @@ each include the `wget` command to fetch the JENDL-5 file they need.
   `get_reaction_xs` and `get_residual_production_xs` route the MT5
   contribution to the specific MT so the requested reaction is not
   silently zero. The routing only fires when the specific MT is a
-  **unique path** to its residual, i.e. one light-ion ejectile
-  (`g`, `n`, `p`, `d`, `t`, `h`, `a`) whose residual ZA is fixed by
-  the projectile, target and ejectile. It does **not** rescue:
-  discrete-level scattering MTs (51..90, 601..648, 651..699,
-  701..748, 751..798, 801..848, 851..898), continuum-channel MTs
-  (91, 649, 699, 749, 799, 849, 899), MT4 for a neutron projectile
-  (single-neutron ejectile shared with elastic MT2), or the
-  particle-production sum MTs (201..207). Files that carry those
-  reactions only through MT5 return zero for the specific-MT query
-  with no warning -- an MT5 catch-all cannot be uniquely apportioned
-  across discrete levels or a single-neutron ejectile without extra
-  information. Ask for MT5 directly (or check `get_available_reactions`
-  first) if the file evaluation uses an unenumerated catch-all.
+  **unique path** to its residual, meaning the residual is unshared
+  with any other MT: gamma emission (MT102), single-proton emission
+  (MT103), and neutron multiplication with mult >= 2 (MT16 (n,2n),
+  MT17 (n,3n), etc.). Deuteron (MT104), triton (MT105), He-3 (MT106)
+  and alpha (MT107) emissions are **not** rescued from MT5 because
+  their residual ZA is also produced by multi-particle-exit MTs
+  (MT28 (n,np) shares MT104's residual; MT32 (n,nd) and MT41
+  (n,2np) share MT105's; MT44 (n,n2p) and MT115 (n,pd) share
+  MT106's; MT34 (n,n3He), MT116 (n,pt), MT183 (n,npd) and MT190
+  (n,2n2p) share MT107's), and lumping the full MT5 catch-all
+  onto the single-ejectile MT would over-count the reaction
+  whenever the file also folds those multi-particle paths into
+  the same catch-all. Also **not** rescued: discrete-level
+  scattering MTs (51..90, 601..648, 651..699, 701..748, 751..798,
+  801..848, 851..898), continuum-channel MTs (91, 649, 699, 749,
+  799, 849, 899), MT4 for a neutron projectile (single-neutron
+  ejectile shared with elastic MT2), or the particle-production sum
+  MTs (201..207). Files that carry those reactions only through MT5
+  return zero for the specific-MT query with no warning -- an MT5
+  catch-all cannot be uniquely apportioned across discrete levels,
+  a single-neutron ejectile, or a composite-particle ejectile
+  whose residual is shared with other exit channels. Ask for MT5
+  directly (or use `get_residual_production_xs` for the specific
+  residual, or check `get_available_reactions` first) if the file
+  evaluation uses an unenumerated catch-all.
 - **DDX drops kinematic-delta channels unless broadened.** The
   double-differential API cannot represent elastic and discrete-level
   inelastic channels on a continuous `Eout` grid (their outgoing
