@@ -6,9 +6,84 @@ from .quantities import (
     get_reaction_mt_numbers
 )
 import logging
+import warnings
 
 
 module_logger = logging.getLogger(__name__)
+
+
+# Per-(file, parent-MT) dedup for the "gappy child coverage" warning
+# emitted by satisfies_select_heuristic below (issue #108 / audit D8).
+# Keyed on (id(endf_dict), parent_mt) so the same call site does not
+# storm its warning across every ejectile and every MT iteration
+# within one query pass. Cleared for tests via
+# `_gappy_children_warned.clear()`.
+_gappy_children_warned = set()
+
+
+def _warn_gappy_child_coverage(endf_dict, parent_mt):
+    """Emit one summary UserWarning per (file, parent_mt) when the
+    heuristic drops `parent_mt` in favour of children that carry
+    detailed distributions in MF4/5/6 -- but at least one sibling
+    child has an MF3 cross section without any MF4/5/6/12/13 detail,
+    so its contribution is silently missed by the resulting
+    child-summed query.
+
+    Rare in modern evaluations (which enumerate the discrete-level
+    child series completely), but silent under-count when it hits is
+    hard to diagnose without knowing the heuristic. Issue #108
+    (audit D8): behaviour is unchanged; the warning is signal-only.
+    """
+    if not reac.is_sum_mt(parent_mt):
+        return
+    mf3 = endf_dict.get(3, {})
+    if parent_mt not in mf3:
+        # Parent has no MF3 XS to fall back on either; there is
+        # nothing to under-count against, so no signal to emit.
+        return
+    part_mts = reac.get_part_mts_from_sum_mt(parent_mt)
+    mf4 = endf_dict.get(4, {})
+    mf5 = endf_dict.get(5, {})
+    mf6 = endf_dict.get(6, {})
+    mf12 = endf_dict.get(12, {})
+    mf13 = endf_dict.get(13, {})
+    # A "gappy" child is one that (a) has an MF3 cross section but
+    # NO MF4/5/6/12/13 detail AND (b) is itself a leaf in the sum
+    # tree (not a sum-MT whose own children get iterated
+    # separately). Skipping intermediate sum-MTs is essential:
+    # e.g. MT3 is in SUM_RULES[1] but its own children (MT4, MT16,
+    # ...) are admitted downstream, so MT3's own MF3 XS is NOT
+    # silently missed even when the heuristic drops MT1 in favour
+    # of MT2. Only terminal leaves (MT52 in SUM_RULES[4], MT602 in
+    # SUM_RULES[103], ...) are genuinely lost.
+    gappy = [
+        pm for pm in part_mts
+        if pm in mf3
+        and pm not in mf4 and pm not in mf5 and pm not in mf6
+        and pm not in mf12 and pm not in mf13
+        and not reac.is_sum_mt(pm)
+    ]
+    if not gappy:
+        return
+    key = (id(endf_dict), int(parent_mt))
+    if key in _gappy_children_warned:
+        return
+    _gappy_children_warned.add(key)
+    gappy_str = ', '.join(f'MT={m}' for m in gappy[:10])
+    if len(gappy) > 10:
+        gappy_str += f', ... ({len(gappy)} total)'
+    warnings.warn(
+        f'Sum-MT admission heuristic dropped parent MT={parent_mt} '
+        f'in favour of children with detailed MF4/5/6 distributions, '
+        f'but the following sibling child MT(s) carry only an MF3 '
+        f'cross section (no MF4/5/6/12/13 detail) and are silently '
+        f'missed by the current query: {gappy_str}. To recover the '
+        f'missing contribution, query MT={parent_mt} directly '
+        f'(bypasses the heuristic) or ask for the missing child MTs '
+        f'individually. See issue #108.',
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 def has_continuous_ddx(endf_dict, mt, zap):
@@ -244,6 +319,15 @@ def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
             f'child mts with distribution info available for MT={mt}, '
             f'hence skipping inclusion of MT={mt}.'
         )
+        # Diagnostic (issue #108): warn if some sibling child of `mt`
+        # has an MF3 cross section but no MF4/5/6/12/13 detail. That
+        # child would be admitted only via the escape-hatch branch
+        # below (`or not has_ancestor`), which fires only when no
+        # ancestor is in MF3 -- and here the ancestor `mt` IS in MF3,
+        # so the child is silently dropped. Warning is signal-only;
+        # per-(file, parent) dedup so a run over many MTs and many
+        # ejectiles emits at most one warning per parent per query.
+        _warn_gappy_child_coverage(endf_dict, mt)
         return False
 
     module_logger.debug(f'no distribution for child mts available for MT={mt}')

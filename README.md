@@ -127,6 +127,24 @@ each include the `wget` command to fetch the JENDL-5 file they need.
   affected MTs and RRR bounds. Configure with the `resonance_range=`
   kwarg on every `get_*` XS API: `'warn'` (default),
   `'warn_nan'`, `'nan'`, `'raise'`.
+- **Aggregate-reaction sum-MT queries under-count on sparse files.**
+  `get_reaction_xs("(n,n)")` resolves to MT4 (inelastic-scattering
+  sum over MT51..90). The admission heuristic drops the parent MT4
+  as soon as any child MT51..90 carries detailed MF4/5/6
+  distributions -- correct on well-formed evaluations where the
+  full discrete-level series is populated, avoiding double-counting.
+  On files with **sparse discrete-level enumeration** where some
+  child MT has an MF3 cross section but no MF4/5/6/12/13 detail,
+  that child's contribution is silently missed by the query (parent
+  is dropped in favour of children, and the missing child falls
+  through the escape hatch because its ancestor MT4 IS in MF3). Rare
+  in modern ENDF/B-VIII, JEFF-4, TENDL-2021, JENDL-5 evaluations
+  that populate the full MT51..90 series. When the pathology hits,
+  one summary `UserWarning` per (file, parent) is emitted naming
+  the missed children; the numeric answer is unchanged. Query the
+  parent MT directly (bypasses the heuristic) or ask for the
+  missing child MTs individually to recover the missing
+  contribution.
 - **MT5 catch-all rescue applies only to unique-path MTs.** When an
   evaluation packages a residual channel into MF6/MT5 (the "any other"
   catch-all) instead of the specific MT for that residual,
