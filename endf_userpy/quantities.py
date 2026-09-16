@@ -13,7 +13,10 @@ from .mfsec_interpretation import mf3_interpretation as mf3interp
 from .mfsec_interpretation import mf6_interpretation as mf6interp
 from .mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from .mfsec_interpretation import mf8_interpretation as mf8interp
-from .mfsec_interpretation.mf3_interpretation import above_range_ctx
+from .mfsec_interpretation.mf3_interpretation import (
+    above_range_ctx,
+    resonance_range_ctx,
+)
 from .mfsec_interpretation.mf6_law7_integrals import (
     collect_law7_log_errors,
 )
@@ -211,7 +214,7 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
 
 def get_reaction_xs(
     endf_dict, reaction, energies_in, mt5_contrib=True,
-    above_range='warn_nan',
+    above_range='warn_nan', resonance_range='warn',
 ):
     """Cross section for `reaction` on the incident energy grid.
 
@@ -221,8 +224,16 @@ def get_reaction_xs(
     for the full set of policies (``'warn_nan' | 'nan' | 'warn_zero' |
     'zero' | 'raise'``). The setting is inherited by every internal
     call to ``compute_cross_section`` for the duration of this call.
+
+    `resonance_range` (default ``'warn'``) controls the handling of
+    Ein points inside the file's resolved-resonance region (LRU=1
+    in MF2/MT151). MF3 there is a subtractive background that the
+    library cannot reconstruct against MF2, so raw MF3 in the RRR
+    is not the physical cross section and can be negative (issue
+    #84). Policies: ``'warn' | 'warn_nan' | 'nan' | 'raise'``.
+    Silent on files without an LRU=1 range.
     """
-    with above_range_ctx(above_range):
+    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_reaction_xs_impl(
             endf_dict, reaction, energies_in, mt5_contrib,
         )
@@ -276,14 +287,15 @@ def _get_reaction_xs_impl(endf_dict, reaction, energies_in, mt5_contrib):
 
 def get_residual_production_xs(
     endf_dict, residual_nucleus, energies_in, mt5_contrib=True,
-    above_range='warn_nan',
+    above_range='warn_nan', resonance_range='warn',
 ):
     """Residual-production cross section for `residual_nucleus`.
 
-    `above_range` (default ``'warn_nan'``) matches
-    ``get_reaction_xs``; see its docstring for the policy set.
+    `above_range` (default ``'warn_nan'``) and `resonance_range`
+    (default ``'warn'``) match ``get_reaction_xs``; see its
+    docstring for the policy sets.
     """
-    with above_range_ctx(above_range):
+    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_residual_production_xs_impl(
             endf_dict, residual_nucleus, energies_in, mt5_contrib,
         )
@@ -318,14 +330,16 @@ def _get_residual_production_xs_impl(
 
 
 def get_particle_production_xs(
-    endf_dict, reaction, particle, energies_in, above_range='warn_nan',
+    endf_dict, reaction, particle, energies_in,
+    above_range='warn_nan', resonance_range='warn',
 ):
     """Particle-production cross section on the incident energy grid.
 
-    `above_range` (default ``'warn_nan'``) matches
-    ``get_reaction_xs``; see its docstring for the policy set.
+    `above_range` (default ``'warn_nan'``) and `resonance_range`
+    (default ``'warn'``) match ``get_reaction_xs``; see its
+    docstring for the policy sets.
     """
-    with above_range_ctx(above_range):
+    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_particle_production_xs_impl(
             endf_dict, reaction, particle, energies_in,
         )
@@ -348,7 +362,7 @@ def _get_particle_production_xs_impl(
 
 def get_particle_production_dxs_dE(
     endf_dict, reaction, particle, energies_in, energies_out,
-    broadening=None, above_range='warn_nan',
+    broadening=None, above_range='warn_nan', resonance_range='warn',
 ):
     """Energy-differential cross section for particle production.
 
@@ -369,8 +383,11 @@ def get_particle_production_dxs_dE(
     above_range : str, default ``'warn_nan'``
         Policy for incident energies above the file's upper Ein
         boundary. Matches ``get_reaction_xs``; see its docstring.
+    resonance_range : str, default ``'warn'``
+        Policy for incident energies inside the file's
+        resolved-resonance region. Matches ``get_reaction_xs``.
     """
-    with above_range_ctx(above_range):
+    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_particle_production_dxs_dE_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             broadening,
@@ -451,12 +468,13 @@ def _get_particle_production_dxs_dE_impl(
 
 def get_particle_production_dxs_dmu(
     endf_dict, reaction, particle, energies_in, angle_cosines_out,
-    above_range='warn_nan',
+    above_range='warn_nan', resonance_range='warn',
 ):
     """Angle-differential cross section for particle production.
 
-    `above_range` (default ``'warn_nan'``) matches
-    ``get_reaction_xs``; see its docstring for the policy set.
+    `above_range` (default ``'warn_nan'``) and `resonance_range`
+    (default ``'warn'``) match ``get_reaction_xs``; see its
+    docstring for the policy sets.
     """
     # `collect_law7_log_errors` aggregates the knot-aware LAW=7
     # integrator's per-segment error estimate across every MT hit
@@ -464,7 +482,11 @@ def get_particle_production_dxs_dmu(
     # any bracketing table uses log-based E' interpolation
     # (INT>=3). Silent no-op for the INT=1/2 cases that cover the
     # whole current corpus (issue #71).
-    with above_range_ctx(above_range), collect_law7_log_errors():
+    with (
+        above_range_ctx(above_range),
+        resonance_range_ctx(resonance_range),
+        collect_law7_log_errors(),
+    ):
         return _get_particle_production_dxs_dmu_impl(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,
         )
@@ -487,7 +509,7 @@ def _get_particle_production_dxs_dmu_impl(
 
 def get_particle_production_ddxs(
     endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out,
-    broadening=None, above_range='warn_nan',
+    broadening=None, above_range='warn_nan', resonance_range='warn',
 ):
     """Double-differential cross section for particle production.
 
@@ -520,8 +542,11 @@ def get_particle_production_ddxs(
     above_range : str, default ``'warn_nan'``
         Policy for incident energies above the file's upper Ein
         boundary. Matches ``get_reaction_xs``; see its docstring.
+    resonance_range : str, default ``'warn'``
+        Policy for incident energies inside the file's
+        resolved-resonance region. Matches ``get_reaction_xs``.
     """
-    with above_range_ctx(above_range):
+    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_particle_production_ddxs_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             angle_cosines_out, broadening,
