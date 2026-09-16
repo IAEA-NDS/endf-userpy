@@ -10,9 +10,13 @@ from .quantities_mt_zap import ddx_broadening as ddxb
 import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
 from .mfsec_interpretation import mf3_interpretation as mf3interp
+from .mfsec_interpretation import mf5_interpretation as mf5interp
 from .mfsec_interpretation import mf6_interpretation as mf6interp
 from .mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from .mfsec_interpretation import mf8_interpretation as mf8interp
+from .mfsec_interpretation import mf12_interpretation as mf12interp
+from .mfsec_interpretation import mf13_interpretation as mf13interp
+from .mfsec_interpretation import mf15_interpretation as mf15interp
 from .mfsec_interpretation.mf3_interpretation import (
     above_range_ctx,
     resonance_range_ctx,
@@ -174,39 +178,87 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
     """Sorted union of tabulated outgoing-energy meshes for `particle`
     across every MT admitted for `reaction`.
 
-    Returns an empty float ndarray if no MT in the file both matches
-    the reaction and declares the requested ejectile (issue #75:
-    previously raised ``ValueError: need at least one array to
-    concatenate``). Legitimate empty-result queries include
-    ``(n,p)`` on H-2, ``(n,g)`` on H-1 with `particle="g"` if the
-    file has no gamma production, etc.
+    Walks MF6 (all ZAPs, LAW=1/7 tabulated Ep meshes), MF12
+    (discrete photon lines for gamma), MF13 (discrete photon lines
+    for gamma), MF15 (continuous photon Eout mesh for gamma), and
+    MF5 (LF=1 tabulated neutron Eout mesh) as appropriate for the
+    requested ejectile. Photon Eg=0 placeholders in MF12/MF13 are
+    treated as continuum markers and skipped; the MF15 tabulated
+    mesh provides the corresponding continuum coverage.
 
-    The mesh is built from MF6 subsections only. Some MTs pass the
-    top-level ``selectors.contains_zap`` gate via MF12/MF13 (e.g.
-    discrete-inelastic MT 51..90 gamma yields on medium/heavy
-    nuclei) without having any MF6 subsection for that ZAP; those
-    MTs are filtered here before dispatch, otherwise the leaf
-    walker raises ``IndexError: subsection with ZAP=... not found``
-    (issue #77). A full MF12/MF13 emission-mesh walk is a separate
-    piece of work (see issue #82 D7).
+    LAW=2/3/4/5/6 MF6 subsections do not tabulate an Ep mesh
+    (angular-distribution-only or n-body phase-space); they
+    contribute an empty mesh via the leaf walker (issue #87 mode A)
+    rather than raising.
+
+    Returns an empty float ndarray if no MT in the file both matches
+    the reaction and declares the requested ejectile (issue #75).
+
+    Historical note: before this expansion the function walked only
+    MF6, which returned an empty mesh on files whose gamma content
+    lives entirely in MF12/MF13/MF15 (typical for ENDF/B-VIII
+    medium/heavy nuclei; issue #107 / audit D7) and for the MF4+MF5
+    neutron representation. `nofail` is now vestigial (the leaf
+    walker always returns empty for LAWs it doesn't handle) but is
+    kept for signature compatibility.
     """
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
+    gamma_zap = physconst.get_zap_for_particle('g')
+    neutron_zap = physconst.get_zap_for_particle('n')
     mts = quant_mt_zap.get_reaction_mt_numbers(endf_dict)
     select_mts = [
         mt for mt in mts
         if selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         and selectors.contains_zap(endf_dict, mt, zap)
-        # Per-MT gate: the leaf walks only MF6, so skip MTs whose
-        # ZAP content is in MF12/MF13 only (issue #77).
-        and prop.has_mf6_mt(endf_dict, mt)
-        and mf6_help.contains_zap(endf_dict, mt, zap)
     ]
     module_logger.debug('selected ' + ','.join(str(mt) for mt in select_mts))
-    energy_meshes = [
-        mf6interp.get_emission_energies(endf_dict, mt, zap, nofail)
-        for mt in select_mts
-    ]
+
+    energy_meshes = []
+    for mt in select_mts:
+        # MF6 walker: LAW=1/7 tabulated Ep meshes. The
+        # `contains_zap` gate skips MTs whose MF6 subsection lacks
+        # the requested ZAP (issue #77); other MFs still contribute
+        # via the branches below.
+        if prop.has_mf6_mt(endf_dict, mt) and mf6_help.contains_zap(
+            endf_dict, mt, zap,
+        ):
+            energy_meshes.append(
+                mf6interp.get_emission_energies(endf_dict, mt, zap, nofail),
+            )
+        if zap == gamma_zap:
+            # MF12: discrete photon lines. get_photon_energies
+            # returns None when LI=1 (isotropic, no photon energies
+            # provided) so guard.
+            if prop.has_mf12_mt(endf_dict, mt):
+                pes = mf12interp.get_photon_energies(endf_dict, mt)
+                if pes is not None:
+                    pes = np.asarray(pes, dtype=float)
+                    energy_meshes.append(pes[pes > 0.0])
+            # MF13: same discrete-line pattern.
+            if prop.has_mf13_mt(endf_dict, mt):
+                pes = mf13interp.get_photon_energies(endf_dict, mt)
+                if pes is not None:
+                    pes = np.asarray(pes, dtype=float)
+                    energy_meshes.append(pes[pes > 0.0])
+            # MF15: continuous photon spectrum's Eout mesh.
+            if prop.has_mf15_mt(endf_dict, mt):
+                energy_meshes.append(np.asarray(
+                    mf15interp.get_photon_energies(endf_dict, mt),
+                    dtype=float,
+                ))
+        elif zap == neutron_zap:
+            # MF5: tabulated (LF=1) neutron outgoing-energy mesh.
+            # Analytic LFs contribute empty (see the mf5interp
+            # helper's docstring).
+            if prop.has_mf5_mt(endf_dict, mt):
+                energy_meshes.append(
+                    mf5interp.get_emission_energies(endf_dict, mt),
+                )
+
+    # Drop any empty mesh (contributions from unimplemented
+    # LAWs / LFs) before the union.
+    energy_meshes = [m for m in energy_meshes if len(m) > 0]
     if not energy_meshes:
         return np.array([], dtype=float)
     return np.unique(np.concatenate(energy_meshes))

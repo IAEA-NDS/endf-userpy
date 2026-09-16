@@ -488,6 +488,25 @@ def get_incident_energies_from_subsec(endf_dict, mt, subsec_num):
 
 
 def get_emission_energies_from_subsec(endf_dict, mt, subsec_num, nofail=False):
+    """Tabulated outgoing-energy mesh of one MF6 subsection.
+
+    LAW=1 and LAW=7 have per-Ein / per-(Ein, mu) Ep tabulations
+    that this function unions and returns. LAW=2 (angular
+    distribution only), LAW=3 (isotropic charged-particle),
+    LAW=4 (recoil), LAW=5 (charged-particle with phase shift),
+    LAW=6 (n-body phase-space) do not tabulate a per-Ein Ep
+    mesh; their emission energies are either kinematically
+    determined (LAW=2, 3, 4) or analytic (LAW=6). Return an
+    empty ndarray for those (issue #87 mode A: the pre-fix
+    behaviour raised NotImplementedError even with the default
+    ``nofail=False`` so any dispatcher walking a mixed-LAW
+    file crashed at the first LAW=2 subsection encountered).
+
+    The `nofail` parameter is now vestigial: an empty return is
+    always produced for LAWs without a tabulated Ep mesh, and
+    the switch has no effect. Kept for signature compatibility
+    with pre-#107 callers.
+    """
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
     law = subsec['LAW']
@@ -501,10 +520,7 @@ def get_emission_energies_from_subsec(endf_dict, mt, subsec_num, nofail=False):
             for e in v['Ep']
         ]
     else:
-        if nofail:
-            energies = []
-        else:
-            raise NotImplementedError(f'Unable to obtain emission energies for LAW={law}')
+        energies = []
     return np.unique(energies)
 
 

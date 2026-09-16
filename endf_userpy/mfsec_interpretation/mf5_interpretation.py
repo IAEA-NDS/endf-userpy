@@ -40,6 +40,35 @@ def get_incident_energy_range(endf_dict, mt):
     return (en_min, en_max)
 
 
+def get_emission_energies(endf_dict, mt):
+    """Sorted union of tabulated outgoing-energy meshes across every
+    LF=1 (tabulated-spectrum) contribution of MF5/MT.
+
+    Contributions with an analytic LF (5 = general evaporation,
+    7 = simple Maxwellian, 9 = evaporation, 11 = energy-dependent
+    Watt, 12 = Madland-Nix) do not tabulate a discrete outgoing-
+    energy mesh -- the spectrum is a closed-form function of Ein
+    and Eout -- so those contributions add nothing to the union.
+    Users needing a fine Eout grid on analytic-only files should
+    pick one via the kinematic upper bound
+    (``E_in - contribution['U']``) themselves.
+
+    Returns an empty float ndarray if the file has no MF5/MT or if
+    every contribution is analytic.
+    """
+    if 5 not in endf_dict or mt not in endf_dict[5]:
+        return np.array([], dtype=float)
+    eouts = []
+    for contrib in endf_dict[5][mt]['contribution'].values():
+        if contrib.get('LF') != 1:
+            continue
+        for tab in contrib.get('spectrum', {}).values():
+            eouts.extend(float(x) for x in tab.get('Eout', []))
+    if not eouts:
+        return np.array([], dtype=float)
+    return np.unique(np.asarray(eouts, dtype=float))
+
+
 def compute_tabulated_spectrum(
     contrib_sec, energies_in, energies_out
 ):
