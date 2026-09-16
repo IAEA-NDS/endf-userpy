@@ -74,7 +74,14 @@ def get_energydist_from_subsec_law1_dynamic_mesh(
 
     for i in range(result_arr.shape[0]):
         curidx = idcs[i]
-        cur_eu = np.array([eu[i]], order='F')
+        # `feep_points_law1con` / `feep_full_law1con` declare the
+        # first argument as a scalar double; f2py's implicit
+        # `double_from_pyobj` chain calls `.item()` on any ndim>0
+        # input, which emits `DeprecationWarning: Conversion of an
+        # array with ndim > 0 to a scalar is deprecated` on NumPy
+        # >= 1.25 and becomes a hard `TypeError` in a future
+        # release. Extract the scalar explicitly (issue #83).
+        cur_eu = float(eu[i])
         lei = ei_interp[curidx].item()
 
         e1 = ei_mesh[curidx].item()
@@ -162,7 +169,14 @@ def get_energydist_from_subsec_law1(
 
     for i in range(result_arr.shape[0]):
         curidx = idcs[i]
-        cur_eu = np.array([eu[i]], order='F')
+        # `feep_points_law1con` / `feep_full_law1con` declare the
+        # first argument as a scalar double; f2py's implicit
+        # `double_from_pyobj` chain calls `.item()` on any ndim>0
+        # input, which emits `DeprecationWarning: Conversion of an
+        # array with ndim > 0 to a scalar is deprecated` on NumPy
+        # >= 1.25 and becomes a hard `TypeError` in a future
+        # release. Extract the scalar explicitly (issue #83).
+        cur_eu = float(eu[i])
         lei = ei_interp[curidx].item()
 
         e1 = ei_mesh[curidx].item()
