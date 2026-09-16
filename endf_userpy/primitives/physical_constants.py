@@ -6,12 +6,22 @@ AMU_TO_MEV = AMU_TO_EV * 1e-6  # MeV / c^2
 
 
 PARTICLE_MASSES_AMU = {
-    'n': 1.00866491578, 
-    'p': 1.00727646688, 
-    'd': 2.01355321271, 
+    # Photon rest mass is zero. Present so `get_particle_mass_for_zap`
+    # succeeds for the gamma ZAP; the value only enters the reduced-
+    # mass formula `m_r = m_t + (m_i - m_e) - q` in
+    # `_prepare_angdist_to_energydist_conversion`, and the actual
+    # 2-body kinematic conversion for photons requires massless-
+    # particle kinematics that the MF6/LAW=2 handler doesn't support
+    # yet -- those paths short-circuit gamma to zero + warning
+    # rather than passing this mass into the massive-particle
+    # relativistic formulas that produce NaN for m_e = 0 (issue #78).
+    'g': 0.0,
+    'n': 1.00866491578,
+    'p': 1.00727646688,
+    'd': 2.01355321271,
     't': 3.015500713,
-    'h': 3.01493223469, 
-    'a': 4.0015061747, 
+    'h': 3.01493223469,
+    'a': 4.0015061747,
 }
 
 
