@@ -220,17 +220,55 @@ def _prepare_angdist_to_energydist_conversion(
 def convert_angdist_to_energydist(
     compute_angdist_func, endf_dict, mt, zap, energies_in, energies_out, to_lab
 ):
-    module_logger.debug(f'convert angular distribution for MT={mt} to energy distribution')
+    """dxs/dE from a stored angular distribution via the LAB
+    kinematic Jacobian: for a two-body reaction the outgoing
+    ejectile mu is uniquely determined by `(E_in, E_out)`, so
+    `f(E_in, E') = angdist(E_in, mu(E_in, E')) * |dmu/dE'|`.
+
+    `_prepare_angdist_to_energydist_conversion` returns
+    `angle_cosines_out` of shape `(n_ein, n_eout)` -- a per-cell mu
+    that varies with both axes. Evaluating `compute_angdist_func`
+    on that 2D grid was broken: the CM<->LAB kinematic conversion
+    (`primitives.conversion.convert_angcos_to_cmsys`) reshapes
+    `mu_lab.reshape(1, -1)`, collapsing the 2D per-cell mesh into a
+    single 1D row, then re-broadcasting against `r2` and producing
+    a `(n_ein, n_ein * n_eout)` output that fails the downstream
+    `angdist * |jac|` multiplication (issue #76).
+
+    Loop per E_in so each `compute_angdist_func` call sees a 1D
+    `angle_cosines_out` of shape `(n_eout,)` -- the shape all the
+    per-scheme MF4 / MF6 evaluators actually support -- and the
+    kinematic conversion sees a shared 1D mu that broadcasts
+    correctly against the single-row `r2`.
+    """
+    module_logger.debug(
+        f'convert angular distribution for MT={mt} to energy distribution',
+    )
     angle_cosines_out, jacvals = (
         _prepare_angdist_to_energydist_conversion(
-            endf_dict, mt, zap, energies_in, energies_out, to_lab
+            endf_dict, mt, zap, energies_in, energies_out, to_lab,
         )
     )
+    # Shapes: `(n_ein, n_eout)` for both, per the reshape in
+    # `_prepare_angdist_to_energydist_conversion`.
     feasible = (~np.isnan(angle_cosines_out)) & (np.abs(angle_cosines_out) <= 1.0)
-    angle_cosines_out[~feasible] = 0.0  # to avoid warnings
-    angdist_values = compute_angdist_func(
-        endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
-    )
-    energydist = angdist_values * np.abs(jacvals) 
+    angle_cosines_out = np.where(feasible, angle_cosines_out, 0.0)
+
+    ens_inc = np.asarray(energies_in, dtype=float)
+    n_ein = len(ens_inc)
+    n_eout = angle_cosines_out.shape[1]
+    energydist = np.zeros((n_ein, n_eout), dtype=float)
+    for i, ein in enumerate(ens_inc):
+        mu_row = angle_cosines_out[i, :]
+        # (1, n_eout) shape out of the evaluator -- see the
+        # per-scheme handlers in mf4_interpretation.py and
+        # mf6_interpretation.py. Both return (n_ein, n_mu) where
+        # `n_ein == 1` for a single-Ein call.
+        angdist_row = compute_angdist_func(
+            endf_dict, mt, zap,
+            np.array([ein], dtype=float),
+            mu_row, to_lab,
+        )
+        energydist[i, :] = angdist_row[0, :] * np.abs(jacvals[i, :])
     energydist[~feasible] = 0.0
     return energydist
