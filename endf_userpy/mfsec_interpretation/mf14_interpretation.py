@@ -17,16 +17,52 @@ def get_photon_energies(endf_dict, mt):
 
 def compute_angdist_from_isotropic(
     endf_dict, mt, energies_in, photon_energies, angle_cosines
-): 
-    num_eincs_in = len(energies_in)
-    num_angcos_out = len(photon_energies)
-    num_photens_out = len(angle_cosines)
-    return np.full((num_eincs_in, num_angcos_out, num_photens_out), 0.5)
+):
+    """Isotropic (LI=1) branch: `f(E_in, E_gamma, mu) = 0.5`.
+
+    Returns shape `(len(energies_in), len(photon_energies),
+    len(angle_cosines))` -- the same axis order every other
+    `compute_angdist_from_*` helper in this module and every caller
+    of `compute_angdist_values` expects. The local variable names
+    are chosen to match the axis they describe (issue #80: the
+    prior names `num_angcos_out` / `num_photens_out` had the axis
+    labels swapped relative to the parameters and reinforced the
+    call-site bug fixed below).
+    """
+    n_ein = len(energies_in)
+    n_photen = len(photon_energies)
+    n_mu = len(angle_cosines)
+    return np.full((n_ein, n_photen, n_mu), 0.5)
 
 
 def compute_angdist_from_legendre(
     endf_dict, mt, energies_in, photon_energies, angle_cosines
 ):
+    """Angular distribution at each of the user-requested
+    `photon_energies` for a MF14 section that stores per-line
+    Legendre coefficients (LI=0, LTT=1).
+
+    ENDF-6 MF14 declares a total of NE photon lines, of which the
+    first NI are stored as pure-isotropic (only the EG value is
+    written; no Legendre data) and the remaining NE-NI carry
+    per-line Legendre coefficients along the incident energy axis.
+    The header dicts `mtsec['E_interpol']`, `mtsec['E']`, and
+    `mtsec['a']` are keyed by the OVERALL EG position (1-indexed).
+
+    For each user-requested photon `photon_energies[k]` we match it
+    to a position in the MF14 EG list (`eg_idx`) and either take
+    the isotropic 0.5 (if `eg_idx < NI`) or evaluate the per-line
+    Legendre expansion at that `eg_idx`. Photons the file doesn't
+    declare contribute zero (idcs == -1 case).
+
+    The mapping between "position in the user's `photon_energies`
+    list" (used to index axis 1 of the returned array) and
+    "position in the MF14 EG list" (used to fetch the per-line
+    Legendre data) has to be kept explicit, otherwise the
+    per-line-Legendre index leaks into the assignment target and
+    the assignment either out-of-bounds (issue #80) or writes to
+    the wrong photon slot silently.
+    """
     mtsec = endf_dict[14][mt]
     ni = mtsec['NI']
     eg = dict2array(mtsec['EG'])
@@ -35,33 +71,60 @@ def compute_angdist_from_legendre(
         eg, photon_energies, atol=1e-4, rtol=4e-5
     )
 
-    # >= 0 check to skip photon energies that do not exist
-    isotropic_idcs = idcs[(idcs >= 0) & (idcs < ni)]
-    anisotropic_idcs = idcs[idcs >= ni]
+    # Two distinct index arrays with different roles:
+    #  - `*_user_positions`  = positions in `photon_energies`, used
+    #                          to index axis 1 of `full_angdists`;
+    #  - `aniso_eg_indices`  = positions in `eg`, used to look up
+    #                          per-line Legendre data in
+    #                          `mtsec['E_interpol']` / `['E']` /
+    #                          `['a']`.
+    # Photons that don't appear in the file at all (idcs == -1)
+    # stay at the zero fill.
+    iso_mask = (idcs >= 0) & (idcs < ni)
+    aniso_mask = idcs >= ni
 
+    iso_user_positions = np.where(iso_mask)[0]
+    aniso_user_positions = np.where(aniso_mask)[0]
+    aniso_eg_indices = idcs[aniso_mask]
+
+    # Positional-arg order for the isotropic helper:
+    #   (energies_in, photon_energies, angle_cosines)
+    # returning shape `(n_ein, len(photon_energies), len(angle_cosines))`.
+    # The previous call passed
+    #   (energies_in, angle_cosines, photon_energies[isotropic_idcs])
+    # -- axis-swapped -- so the returned isotropic block came out
+    # as `(n_ein, n_mu, n_iso_photons)` and the assignment
+    # `full_angdists[:, isotropic_idcs, :] = ...` (which expects
+    # `(n_ein, n_iso_photons, n_mu)`) raised a shape mismatch
+    # (issue #80).
     isotropic_angdists = compute_angdist_from_isotropic(
-        endf_dict, mt, energies_in, angle_cosines, photon_energies[isotropic_idcs] 
+        endf_dict, mt, energies_in,
+        photon_energies[iso_user_positions], angle_cosines,
     )
+
     einc_interp_tables = mtsec['E_interpol']
     res_list = []
-    for sel_idx in anisotropic_idcs:
-        interp_table = einc_interp_tables[sel_idx+1]
+    for eg_idx in aniso_eg_indices:
+        interp_table = einc_interp_tables[eg_idx + 1]
         nbt_arr = np.array(interp_table['NBT'], dtype=int)
         int_arr = np.array(interp_table['INT'], dtype=int)
-        einc_mesh = dict2array(mtsec['E'][sel_idx+1], dtype=float) 
-        coeffs_arr = _convert_legendre_to_numpy_array(mtsec['a'][sel_idx+1])
+        einc_mesh = dict2array(mtsec['E'][eg_idx + 1], dtype=float)
+        coeffs_arr = _convert_legendre_to_numpy_array(mtsec['a'][eg_idx + 1])
         f = evaluate_interp_legendre_polynomials(
-            energies_in, angle_cosines, einc_mesh, coeffs_arr, int_arr, nbt_arr
+            energies_in, angle_cosines,
+            einc_mesh, coeffs_arr, int_arr, nbt_arr,
         )
         res_list.append(f)
 
     full_angdists = np.zeros(
-        (len(energies_in), len(photon_energies), len(angle_cosines)), dtype=float
+        (len(energies_in), len(photon_energies), len(angle_cosines)),
+        dtype=float,
     )
-    full_angdists[:,isotropic_idcs,:] = isotropic_angdists
+    full_angdists[:, iso_user_positions, :] = isotropic_angdists
     if len(res_list) > 0:
-        anisotropic_angdists = np.stack(res_list, axis=1) 
-        full_angdists[:,anisotropic_idcs,:] = anisotropic_angdists
+        # per-line f has shape (n_ein, n_mu); stack -> (n_ein, n_aniso, n_mu)
+        anisotropic_angdists = np.stack(res_list, axis=1)
+        full_angdists[:, aniso_user_positions, :] = anisotropic_angdists
     return full_angdists
 
 
