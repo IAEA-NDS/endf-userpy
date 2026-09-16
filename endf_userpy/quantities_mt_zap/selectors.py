@@ -72,6 +72,31 @@ def has_mf12_discrete_lines(endf_dict, mt, zap):
     return bool(_np.any(_np.asarray(pes) > 0.0))
 
 
+def has_mf13_discrete_lines(endf_dict, mt, zap):
+    """Whether (MT, ZAP) carries discrete photon lines in MF13.
+
+    True if MF13 declares at least one photon at Eg > 0 for this MT.
+    A Eg=0 subsection in MF13, when present, is the continuum-
+    spectrum placeholder combined with MF15 (analogous to the MF12
+    Eg=0 placeholder convention). Gamma-only.
+
+    Sibling of `has_mf12_discrete_lines`. Files that carry per-
+    partial-channel gamma yields in MF13 (typical for ENDF/B-VIII
+    medium/heavy nuclei) admit through this predicate for the
+    broadened dxs/dE and DDX folders (issue #101).
+    """
+    if zap != physconst.PARTICLE_ZAP['g']:
+        return False
+    if not prop.has_mf13_mt(endf_dict, mt):
+        return False
+    from ..mfsec_interpretation import mf13_interpretation as mf13_interp
+    pes = mf13_interp.get_photon_energies(endf_dict, mt)
+    if pes is None:
+        return False
+    import numpy as _np
+    return bool(_np.any(_np.asarray(pes) > 0.0))
+
+
 def has_discrete_two_body_ddx(endf_dict, mt, zap):
     """Whether (MT, ZAP) carries a 2-body kinematic-delta distribution.
 
