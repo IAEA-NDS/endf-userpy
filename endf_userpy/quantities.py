@@ -443,13 +443,21 @@ def get_particle_production_ddxs(
     endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out
         As before.
     broadening : None or float or (callable, float), optional
-        If None (default), behaviour is unchanged: only channels with
-        a true continuous (E_out, mu) distribution contribute, and
-        the result is the bare DDX. If broadening is provided, the
-        result instead sums (i) the continuous DDX folded with the
-        kernel along E_out, and (ii) the discrete two-body channels
-        (MT 2 elastic, MT 51..90 etc.) with the kinematic delta
-        replaced by the kernel.
+        If None (default), only channels with a true continuous
+        (E_out, mu) distribution contribute: MF6/LAW=1 continuum,
+        LAW=6, LAW=7, or MF4+MF5. Discrete two-body channels (MT 2
+        elastic, MT 51..90 discrete inelastic) carry their outgoing
+        energy as a kinematic delta at ``E' = E'_kin(mu, E_in)``
+        which cannot be represented on the caller's finite E_out
+        grid; those MTs are silently excluded from the sum and a
+        UserWarning names them (issue #21). Pass a `broadening=`
+        to include their peaks.
+
+        If broadening is provided, the result sums (i) the continuous
+        DDX folded with the kernel along E_out, and (ii) the discrete
+        two-body channels with the kinematic delta replaced by the
+        kernel, plus (iii) the MF6/LAW=1 discrete-line channels and
+        (iv) the MF12 discrete-line gamma channels.
 
         Accepted forms:
           - scalar `sigma` (eV) -> Gaussian kernel of that width.
@@ -476,6 +484,9 @@ def _get_particle_production_ddxs_impl(
 
     kernel, kernel_width = _normalize_broadening(broadening)
     if kernel is None:
+        _warn_discrete_dropped_from_unbroadened_ddx(
+            endf_dict, zap, user_mts,
+        )
         return quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_ddxs,
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
@@ -561,6 +572,48 @@ def _get_particle_production_ddxs_impl(
     for p in parts[1:]:
         total = total + p
     return total
+
+
+def _warn_discrete_dropped_from_unbroadened_ddx(endf_dict, zap, user_mts):
+    """Emit a UserWarning if the unbroadened DDX call would silently
+    drop discrete two-body MTs that pass every other admission check
+    (issue #21). Elastic (MT 2) and discrete inelastic (MT 51..90 in
+    a neutron file) carry their outgoing energy as a kinematic delta
+    at ``E' = E'_kin(mu, E_in)``. A delta on a finite (E', mu) grid
+    integrates to zero almost everywhere, so the unbroadened DDX
+    dispatcher (which admits only MTs with a continuous DDX)
+    correctly excludes them -- but the exclusion is silent, leaving
+    users wondering why the (n,n_i) peaks their eye expects at
+    ``E' ~ E_in - Q_i`` are missing. Users get real content by
+    passing `broadening=` (see the two-body-discrete kernel folder
+    in `ddx_broadening.compute_ddx_discrete_broadened`).
+    """
+    dropped = []
+    for mt in quant_mt_zap.get_reaction_mt_numbers(endf_dict):
+        if not selectors.contains_zap(endf_dict, mt, zap):
+            continue
+        if not selectors.satisfies_select_heuristic(endf_dict, mt, user_mts):
+            continue
+        if selectors.has_continuous_ddx(endf_dict, mt, zap):
+            continue
+        if not selectors.has_discrete_two_body_ddx(endf_dict, mt, zap):
+            continue
+        dropped.append(mt)
+    if not dropped:
+        return
+    if len(dropped) > 12:
+        mt_str = ', '.join(str(m) for m in dropped[:12]) + f', ... ({len(dropped)} total)'
+    else:
+        mt_str = ', '.join(str(m) for m in dropped)
+    warnings.warn(
+        f'get_particle_production_ddxs (unbroadened) dropped discrete '
+        f'two-body MTs whose outgoing energy is a kinematic delta at '
+        f"E' = E'_kin(mu, E_in): MT={mt_str}. To include their peaks "
+        f'in the DDX, pass a `broadening=sigma_eV` (or a custom '
+        f'(kernel, width) tuple) so the deltas are folded into a '
+        f'finite kernel that plots on the E_out grid.',
+        UserWarning, stacklevel=3,
+    )
 
 
 def _normalize_broadening(broadening):
