@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf5_interpretation as mf5_interp
@@ -29,6 +30,14 @@ import logging
 
 
 module_logger = logging.getLogger(__name__)
+
+
+# Per-(file, MT) dedup for the "MF15 present, MF12 has no Eg=0
+# continuum placeholder" warning (issue #103 / audit D3). `id()`
+# can be reused after GC, but the worst case is a missed warning
+# rather than a wrong result -- same trade as `_isomer_warning_seen`
+# in endf_userpy.quantities.
+_mf15_no_placeholder_warned = set()
 
 
 def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
@@ -291,7 +300,24 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
                 # the file's own convention says there is no
                 # continuum for this MT. Any MF15 content here is
                 # inconsistent with MF12; drop it rather than let
-                # it inflate the sum.
+                # it inflate the sum. Emit one warning per
+                # (file, MT) so users see why their MF15 content
+                # vanished (issue #103 / audit D3).
+                key = (id(endf_dict), int(mt))
+                if key not in _mf15_no_placeholder_warned:
+                    _mf15_no_placeholder_warned.add(key)
+                    warnings.warn(
+                        f"MT={mt} has MF15 continuous gamma "
+                        f"spectrum data but MF12 declares no Eg=0 "
+                        f"continuum placeholder, so the file's own "
+                        f"y_cont normalisation is zero and the MF15 "
+                        f"contribution to dxs/dE is dropped to avoid "
+                        f"inflating the sum. If the MF15 content is "
+                        f"physical, the file's MF12 needs an Eg=0 "
+                        f"row with the appropriate continuum yield; "
+                        f"otherwise the drop is correct.",
+                        UserWarning, stacklevel=2,
+                    )
                 spec = np.zeros_like(spec)
         # No MF12 at all: MF15 stands alone, keep unweighted
         # behaviour so the reaction-string yield fallback (mult=1
