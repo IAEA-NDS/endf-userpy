@@ -38,6 +38,20 @@ files=(
   # dropped from dxs/dmu / DDX because `has_angdist_part` only
   # recognised LAW=2/3/4.
   "jendl5_n_Cu-63.endf   JENDL-5        n_029-Cu-63_2925  cf81b57249cd33cc787c197f21ce560cda4f711b6fd77141710ce90f1fcf6a7f"
+  # Broad public-API stress-test corpus: one representative file
+  # each from ENDF/B-VIII.1, JEFF-4.0, TENDL-2021 and JENDL-5 across
+  # a wide mass range (H, D, C, N, O, Ni, Au, U, Pu). Used by the
+  # ad-hoc stress-test driver that walks every user-facing function
+  # in endf_userpy.quantities.
+  "endfb81_n_H-1.endf     ENDF-B-VIII.1  n_001-H-1_0125    3442a583d436fe3317a87b7d5518b1e64fae11a73bbd25aa9ea7af2e115c0b52"
+  "jeff40_n_H-2.endf      JEFF-4.0       n_001-H-2_0128    8f807ac6a507557a645f13d216672eca872a9120b375e2f70b18598cf290fac3"
+  "jendl5_n_C-12.endf     JENDL-5        n_006-C-12_0625   82b4fd9a757513d276badc2981212bd5c0b0669ad576b3313bed68fcd989950f"
+  "endfb81_n_N-14.endf    ENDF-B-VIII.1  n_007-N-14_0725   fb15493d2b3425af84cedb3018dc7cf18c399d9bfc9ad574ed7551b2841d6a8f"
+  "jeff40_n_O-16.endf     JEFF-4.0       n_008-O-16_0825   099c015375ce869c215a937f47f39b58e709664c55e6ac29fbc3e3c3e9bddf43"
+  "endfb81_n_Ni-58.endf   ENDF-B-VIII.1  n_028-Ni-58_2825  6b3616ae6ec985933f4fe393c7158f985c802cf3b03ce281ae364e4a8620f7c9"
+  "tendl21_n_Au-197.endf  TENDL-2021     n_079-Au-197_7925 265ef2bd036f2e16cf007473c4d91caa714b190276673b018d8578ba74721896"
+  "jendl5_n_U-238.endf    JENDL-5        n_092-U-238_9237  cb987b2c672e2bf3280950d774fc6b316b2efa5e64a28d24f0b05d2be55e5868"
+  "endfb81_n_Pu-239.endf  ENDF-B-VIII.1  n_094-Pu-239_9437 e465d4f589b750cd7a6c1ae0e700367446a71ecad0186cb6b2294c56d36efd9a"
 )
 
 ua='Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)'
