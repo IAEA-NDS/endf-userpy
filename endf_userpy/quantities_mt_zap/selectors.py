@@ -374,29 +374,18 @@ def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
             )
             return False
 
-    # Escape for direct queries on MTs with their own MF13
-    # gamma-production XS (issue #130). Files that put MF13 on a
-    # sum-MT (JENDL-5 N-14 MT 3 nonelastic is the corpus example)
-    # carry the file's entire gamma production for that sum on
-    # that one MT, without an MF3 entry. The default child-drop
-    # heuristic below would drop such a MT in favour of its
-    # children -- but the children have MF4/5/6 neutron
-    # distributions, not the gamma yield/XS that MF13 encodes, so
-    # dropping loses the physics. Admit when the user explicitly
-    # asks for this MT (mt in user_mts) and the MT itself carries
-    # MF13. Does NOT trigger for indirect '(n,total)' queries where
-    # mt is not in user_mts -- the deeper heuristic redesign for
-    # that case is tracked separately.
-    if (
-        user_mts is not None
-        and mt in user_mts
-        and prop.has_mf13_mt(endf_dict, mt)
-    ):
-        module_logger.debug(
-            f'admitting MT={mt} because user-listed and carries MF13 '
-            f'(sum-MT MF13 gamma XS escape, issue #130)'
-        )
-        return True
+    # NOTE: an earlier iteration of this heuristic (issue #130 /
+    # PR #132) had a "user-listed sum-MT with MF13 -> admit"
+    # escape here. That escape was zap-agnostic and fired for
+    # every caller, including get_reaction_xs on the neutron side
+    # where MT 4 (n,inl) has MF13 (gamma) on many light nuclei
+    # (N-14, B-11): the escape admitted MT 4 alongside its
+    # already-admitted children MT 51..90, and the XS sum
+    # double-counted the inelastic total 2x (issue #135). PR #134
+    # added satisfies_gamma_production_select which handles the
+    # gamma MF13 admission properly (via its Rule 2), so the
+    # escape here is redundant AND harmful for XS queries; it
+    # has been removed.
 
     # check if detailed distribution info available
     # for child mts (determined by sum rules) of current mt
