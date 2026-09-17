@@ -112,6 +112,15 @@ def stub_quantities(monkeypatch):
     )
     import endf_userpy.quantities_mt_zap.quantities as qmtz_mod
     monkeypatch.setattr(qmtz_mod, 'get_reaction_mt_numbers', fake_get_reaction_mts)
+    # PR for issue #130 added mf3interp.get_reaction_mts_widened as the
+    # iteration source in the particle-production dispatchers; the
+    # dispatcher stubs pass endf_dict=None which crashes the real
+    # widened helper on the .get() call. Patch it here to the same
+    # fake so dispatcher tests continue to work.
+    monkeypatch.setattr(
+        quantities.mf3interp, 'get_reaction_mts_widened',
+        fake_get_reaction_mts,
+    )
 
     monkeypatch.setattr(
         quantities.reac, 'translate_reaction_string_to_mt',

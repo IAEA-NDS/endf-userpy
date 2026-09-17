@@ -439,13 +439,19 @@ def _get_particle_production_xs_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
+    # Widened iteration (union of MF3+MF12+MF13+MF15 keys) so MTs
+    # that carry gamma production only in MF12/MF13/MF15 without an
+    # MF3 entry (JENDL-5 N-14 MT 3 nonelastic) are visited by the
+    # cumulative-sum iteration (issue #130). Non-gamma queries
+    # over the wider list are still filtered correctly by contains_zap.
+    mts = mf3interp.get_reaction_mts_widened(endf_dict)
     return quant_mt_zap.compute_cumulative_quantity(
         quant_mt_zap.compute_prodxs,
         lambda endf_dict, mt, zap, energies_in: (
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
             and selectors.contains_zap(endf_dict, mt, zap)
         ),
-        endf_dict, zap, energies_in
+        endf_dict, zap, energies_in, mts=mts,
     )
 
 
@@ -489,6 +495,8 @@ def _get_particle_production_dxs_dE_impl(
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
     kernel, kernel_width = _normalize_broadening(broadening)
+    # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
+    mts = mf3interp.get_reaction_mts_widened(endf_dict)
 
     def select(endf_dict, mt, zap, einc, eouts):
         return (
@@ -503,6 +511,7 @@ def _get_particle_production_dxs_dE_impl(
         return quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_dexs, select,
             endf_dict, zap, energies_in, energies_out,
+            mts=mts,
         )
 
     def cont_compute(endf_dict, mt, zap, einc, eouts):
@@ -553,18 +562,22 @@ def _get_particle_production_dxs_dE_impl(
     cont = quant_mt_zap.compute_cumulative_quantity(
         cont_compute, select,
         endf_dict, zap, energies_in, energies_out,
+        mts=mts,
     )
     law1_disc = quant_mt_zap.compute_cumulative_quantity(
         law1_disc_compute, law1_disc_select,
         endf_dict, zap, energies_in, energies_out,
+        mts=mts,
     )
     mf12_disc = quant_mt_zap.compute_cumulative_quantity(
         mf12_disc_compute, mf12_disc_select,
         endf_dict, zap, energies_in, energies_out,
+        mts=mts,
     )
     mf13_disc = quant_mt_zap.compute_cumulative_quantity(
         mf13_disc_compute, mf13_disc_select,
         endf_dict, zap, energies_in, energies_out,
+        mts=mts,
     )
     parts = [p for p in (cont, law1_disc, mf12_disc, mf13_disc) if p is not None]
     if not parts:
@@ -606,13 +619,16 @@ def _get_particle_production_dxs_dmu_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
+    # Widened MT iteration (issue #130).
+    mts = mf3interp.get_reaction_mts_widened(endf_dict)
     return quant_mt_zap.compute_cumulative_quantity(
         quant_mt_zap.compute_daxs,
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
         ),
-        endf_dict, zap, energies_in, angle_cosines_out
+        endf_dict, zap, energies_in, angle_cosines_out,
+        mts=mts,
     )
 
 
@@ -668,6 +684,8 @@ def _get_particle_production_ddxs_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
+    # Widened MT iteration (issue #130).
+    mts = mf3interp.get_reaction_mts_widened(endf_dict)
 
     kernel, kernel_width = _normalize_broadening(broadening)
     if kernel is None:
@@ -689,7 +707,8 @@ def _get_particle_production_ddxs_impl(
                 selectors.has_continuous_ddx(endf_dict, mt, zap) and
                 selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
             ),
-            endf_dict, zap, energies_in, energies_out, angle_cosines_out
+            endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+            mts=mts,
         )
         mf15_unbroad = quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_ddxs_from_mf15_mf14,
@@ -698,7 +717,8 @@ def _get_particle_production_ddxs_impl(
                 selectors.has_mf15_continuum(endf_dict, mt, zap) and
                 selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
             ),
-            endf_dict, zap, energies_in, energies_out, angle_cosines_out
+            endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+            mts=mts,
         )
         parts = [p for p in (cont_unbroad, mf15_unbroad) if p is not None]
         if not parts:
@@ -793,7 +813,7 @@ def _get_particle_production_ddxs_impl(
     # to floating-point summation order. One MT: no gain, fall
     # through to the per-MT path.
     cont_mts = [
-        mt for mt in quant_mt_zap.get_reaction_mt_numbers(endf_dict)
+        mt for mt in mts
         if cont_select(endf_dict, mt, zap,
                        energies_in, energies_out, angle_cosines_out)
     ]
@@ -807,26 +827,32 @@ def _get_particle_production_ddxs_impl(
         cont = quant_mt_zap.compute_cumulative_quantity(
             cont_compute, cont_select,
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+            mts=mts,
         )
     disc = quant_mt_zap.compute_cumulative_quantity(
         disc_compute, disc_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+        mts=mts,
     )
     law1_disc = quant_mt_zap.compute_cumulative_quantity(
         law1_disc_compute, law1_disc_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+        mts=mts,
     )
     mf12_disc = quant_mt_zap.compute_cumulative_quantity(
         mf12_disc_compute, mf12_disc_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+        mts=mts,
     )
     mf13_disc = quant_mt_zap.compute_cumulative_quantity(
         mf13_disc_compute, mf13_disc_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+        mts=mts,
     )
     mf15_cont = quant_mt_zap.compute_cumulative_quantity(
         mf15_cont_compute, mf15_cont_select,
         endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+        mts=mts,
     )
     parts = [
         p for p in (cont, disc, law1_disc, mf12_disc, mf13_disc, mf15_cont)

@@ -815,32 +815,49 @@ def compute_ddx_mf15_continuum_broadened(
     if not has_mf15_mt(endf_dict, mt):
         return result_zero
 
-    # Continuum yield from MF12 (the Eg=0 placeholder subsection).
-    # If MF12 has no Eg=0 placeholder, the continuum yield is
-    # undefined and we drop the MF15 contribution -- same
-    # convention as the 1D path (issue #103).
-    if not has_mf12_mt(endf_dict, mt):
-        return result_zero
-    pes = np.asarray(
-        mf12_interp.get_photon_energies(endf_dict, mt), dtype=float,
-    )
-    cont_mask = pes == 0.0
-    if not np.any(cont_mask):
-        return result_zero
-    yields_all = mf12_interp.compute_photon_yields(
-        endf_dict, mt, energies_in, pes,
-    )
-    y_cont = yields_all[:, cont_mask].sum(axis=1)   # (n_einc,)
-    # NOTE on normalisation: the 1D dxs/dE path composes
-    # `compute_dexs = compute_yields * xs * compute_energydist_values`
-    # where compute_yields returns Y_total (all photons: discrete +
-    # continuum) and compute_energydist_values (MF15 branch)
-    # returns spec * (y_cont / Y_total). Net contribution to the
-    # 1D integral is therefore `xs * y_cont`. This folder computes
-    # the DDX contribution directly, so we skip the y_cont / Y_total
-    # scaling and use y_cont as the weight -- matching the physical
-    # normalisation that the 2D DDX integrated over (E_out, mu)
-    # returns `xs * y_cont`.
+    # Compose the (xs * y_cont) weight for the gamma-continuum
+    # contribution. Two shapes are supported (issue #130 for the
+    # MF13-only branch):
+    #  - Standard MF12+MF15 MT: xs from MF3 * MF12 Eg=0
+    #    continuum-placeholder yield.
+    #  - MF13-only MT (JENDL-5 MT 3 style, no MF3): MF13 IS the
+    #    total gamma production XS -- use it directly, no MF3/MF12
+    #    lookup needed.
+    if mt not in endf_dict.get(3, {}) and mt in endf_dict.get(13, {}):
+        weight = mf13_interp.compute_total_photon_production_xs(
+            endf_dict, mt, energies_in,
+        )   # (n_einc,)
+    else:
+        # Continuum yield from MF12 (the Eg=0 placeholder subsection).
+        # If MF12 has no Eg=0 placeholder, the continuum yield is
+        # undefined and we drop the MF15 contribution -- same
+        # convention as the 1D path (issue #103).
+        if not has_mf12_mt(endf_dict, mt):
+            return result_zero
+        pes = np.asarray(
+            mf12_interp.get_photon_energies(endf_dict, mt), dtype=float,
+        )
+        cont_mask = pes == 0.0
+        if not np.any(cont_mask):
+            return result_zero
+        yields_all = mf12_interp.compute_photon_yields(
+            endf_dict, mt, energies_in, pes,
+        )
+        y_cont = yields_all[:, cont_mask].sum(axis=1)   # (n_einc,)
+        xs = mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in,
+        )   # (n_einc,)
+        weight = xs * y_cont
+        # NOTE on normalisation: the 1D dxs/dE path composes
+        # `compute_dexs = compute_yields * xs * compute_energydist_values`
+        # where compute_yields returns Y_total (all photons: discrete
+        # + continuum) and compute_energydist_values (MF15 branch)
+        # returns spec * (y_cont / Y_total). Net contribution to the
+        # 1D integral is therefore `xs * y_cont`. This folder computes
+        # the DDX contribution directly, so we skip the y_cont /
+        # Y_total scaling and use y_cont as the weight -- matching
+        # the physical normalisation that the 2D DDX integrated over
+        # (E_out, mu) returns `xs * y_cont`.
 
     # Continuum angular distribution f_cont(mu | Ein), shape
     # (n_einc, n_mus). MF14 LI=1 is fully isotropic (the common
@@ -873,13 +890,10 @@ def compute_ddx_mf15_continuum_broadened(
         **convolve_kwargs,
     )  # shape (n_einc, n_eouts)
 
-    xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in,
-    )  # (n_einc,)
-    # Assemble: sigma * y_cont * spec * f_cont / (2 pi)
+    # Assemble: weight * spec * f_cont / (2 pi)
     #   (n_einc, 1, 1) * (n_einc, n_eouts, 1) * (n_einc, 1, n_mus)
     ddx = (
-        (xs * y_cont).reshape(-1, 1, 1)
+        weight.reshape(-1, 1, 1)
         * broadened_spec.reshape(n_einc, n_eouts, 1)
         * f_cont.reshape(n_einc, 1, n_mus)
     )

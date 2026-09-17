@@ -10,6 +10,7 @@ from ..mfsec_interpretation import mf8_interpretation as mf8_interp
 from ..mfsec_interpretation import mf9_interpretation as mf9_interp
 from ..mfsec_interpretation import mf10_interpretation as mf10_interp
 from ..mfsec_interpretation import mf12_interpretation as mf12_interp
+from ..mfsec_interpretation import mf13_interpretation as mf13_interp
 from ..mfsec_interpretation import mf14_interpretation as mf14_interp
 from ..mfsec_interpretation import mf15_interpretation as mf15_interp
 from .distribution1d import (
@@ -171,6 +172,22 @@ def compute_xs(endf_dict, mt, energies_in):
 
 
 def compute_prodxs(endf_dict, mt, zap, energies_in):
+    # Fast path for gamma production on MTs with MF13 XS but no MF3.
+    # Typical JENDL-5 pattern: MT 3 (nonelastic sum) carries MF13
+    # (total nonelastic photon-production XS) but the file does not
+    # tabulate MT 3 in MF3 (MT 3 = MT 1 - MT 2 is computed on the
+    # fly). The default xs * yields composition below would crash
+    # on `mf3.compute_cross_section(mt=3)` KeyError. MF13 already
+    # IS the photon-production XS for that MT, so return it
+    # directly (issue #130).
+    if (
+        zap == get_zap_for_particle('g')
+        and mt not in endf_dict.get(3, {})
+        and mt in endf_dict.get(13, {})
+    ):
+        return mf13_interp.compute_total_photon_production_xs(
+            endf_dict, mt, energies_in,
+        )
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     )
@@ -178,7 +195,33 @@ def compute_prodxs(endf_dict, mt, zap, energies_in):
     return xs * yields
 
 
+def _is_mf13_only_gamma(endf_dict, mt, zap):
+    """True iff `(mt, zap)` is a gamma-production case that the file
+    carries via MF13 but not MF3. The standard `xs * yields`
+    composition in compute_dexs / compute_daxs / compute_ddxs
+    requires MF3, so these functions short-circuit to using MF13's
+    prodxs directly (which IS the total gamma production XS for the
+    MT). Issue #130.
+    """
+    return (
+        zap == get_zap_for_particle('g')
+        and mt not in endf_dict.get(3, {})
+        and mt in endf_dict.get(13, {})
+    )
+
+
 def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
+    # MF13-only gamma fast path (issue #130): no MF3, so use MF13's
+    # total gamma production XS directly and skip the xs * yields
+    # composition.
+    if _is_mf13_only_gamma(endf_dict, mt, zap):
+        prodxs = mf13_interp.compute_total_photon_production_xs(
+            endf_dict, mt, energies_in,
+        ).reshape(-1, 1)
+        angdist = compute_angdist_values(
+            endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+        )
+        return angdist * prodxs / (2 * np.pi)
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
@@ -191,6 +234,15 @@ def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
 
 def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
     module_logger.debug(f'compute dexs for MT={mt} and ZAP={zap}')
+    # MF13-only gamma fast path (issue #130).
+    if _is_mf13_only_gamma(endf_dict, mt, zap):
+        prodxs = mf13_interp.compute_total_photon_production_xs(
+            endf_dict, mt, energies_in,
+        ).reshape(-1, 1)
+        energydist = compute_energydist_values(
+            endf_dict, mt, zap, energies_in, energies_out, to_lab,
+        )
+        return energydist * prodxs
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
@@ -203,6 +255,18 @@ def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
 
 
 def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True):
+    # MF13-only gamma fast path (issue #130). For DDX the "f" here
+    # is the double-distribution values from MF4+MF5 / MF6 which
+    # don't apply to a MF13-only gamma MT (no MF6 gamma subsection,
+    # no MF4+MF5 for gamma); the actual DDX for such MTs is composed
+    # from MF15 + MF14 by compute_ddxs_from_mf15_mf14 (which the
+    # unbroadened dispatcher already sums separately). Return zeros
+    # so this branch does not contribute a duplicate.
+    if _is_mf13_only_gamma(endf_dict, mt, zap):
+        n_einc = np.asarray(energies_in).size
+        n_eout = np.asarray(energies_out).size
+        n_mu = np.asarray(angle_cosines_out).size
+        return np.zeros((n_einc, n_eout, n_mu), dtype=float)
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False
     ).reshape(-1, 1, 1)
@@ -263,18 +327,34 @@ def compute_ddxs_from_mf15_mf14(
 
     if not properties.has_mf15_mt(endf_dict, mt):
         return result_zero
-    if not properties.has_mf12_mt(endf_dict, mt):
-        return result_zero
-    pes = np.asarray(
-        mf12_interp.get_photon_energies(endf_dict, mt), dtype=float,
-    )
-    cont_mask = pes == 0.0
-    if not np.any(cont_mask):
-        return result_zero
-    yields_all = mf12_interp.compute_photon_yields(
-        endf_dict, mt, energies_in, pes,
-    )
-    y_cont = yields_all[:, cont_mask].sum(axis=1)   # (n_einc,)
+    # Weight: (xs * y_cont) product for the gamma-continuum
+    # contribution. Two shapes are supported:
+    #  - Standard MF12+MF15 MT: xs from MF3 times MF12 Eg=0
+    #    continuum-placeholder yield.
+    #  - MF13-only MT (JENDL-5 MT 3 style, issue #130): MF13 IS
+    #    the total gamma production XS -- use it directly, no
+    #    MF3/MF12 lookup.
+    if mt not in endf_dict.get(3, {}) and mt in endf_dict.get(13, {}):
+        weight = mf13_interp.compute_total_photon_production_xs(
+            endf_dict, mt, energies_in,
+        )   # (n_einc,)
+    else:
+        if not properties.has_mf12_mt(endf_dict, mt):
+            return result_zero
+        pes = np.asarray(
+            mf12_interp.get_photon_energies(endf_dict, mt), dtype=float,
+        )
+        cont_mask = pes == 0.0
+        if not np.any(cont_mask):
+            return result_zero
+        yields_all = mf12_interp.compute_photon_yields(
+            endf_dict, mt, energies_in, pes,
+        )
+        y_cont = yields_all[:, cont_mask].sum(axis=1)   # (n_einc,)
+        xs = mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in,
+        )   # (n_einc,)
+        weight = xs * y_cont
 
     # Continuum angular from MF14 Eg=0 entry (LI=0), else isotropic.
     if properties.has_mf14_mt(endf_dict, mt) and endf_dict[14][mt]['LI'] == 0:
@@ -289,19 +369,26 @@ def compute_ddxs_from_mf15_mf14(
     spec = mf15_interp.compute_spectrum(
         endf_dict, mt, energies_in, energies_out,
     )   # (n_einc, n_eouts)
-    xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in,
-    )   # (n_einc,)
     ddx = (
-        (xs * y_cont).reshape(-1, 1, 1)
+        weight.reshape(-1, 1, 1)
         * spec.reshape(n_einc, n_eouts, 1)
         * f_cont.reshape(n_einc, 1, n_mus)
     )
     return ddx / (2 * np.pi)
 
 
-def compute_cumulative_quantity(func, select, endf_dict, *args, **kwargs):
-    mt_list = get_reaction_mt_numbers(endf_dict)
+def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwargs):
+    """Iterate over MTs (default: MF3 keys), apply `select`, sum `func`.
+
+    Pass `mts=` explicitly to widen the iteration source; the
+    particle-production dispatchers pass the MF3+MF12+MF13+MF15
+    union so that gamma production from MTs with MF13-only content
+    (e.g. JENDL-5 N-14 MT 3) is not silently skipped (issue #130).
+    """
+    if mts is None:
+        mt_list = get_reaction_mt_numbers(endf_dict)
+    else:
+        mt_list = mts
     is_first = True
     cum_res = None
     for mt in mt_list:
