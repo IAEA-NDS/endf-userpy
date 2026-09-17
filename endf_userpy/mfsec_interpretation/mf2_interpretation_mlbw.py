@@ -16,6 +16,12 @@ avoids the JAX-only design pressures:
   ``xp.select`` handles interpolation-law dispatch;
   :func:`factors.pnt_shf` handles the L-dependence via a
   Newton recurrence.
+- Per-channel aggregation uses a single matmul against a small
+  ``(nres, nch)`` one-hot matrix instead of a Python loop over
+  energies calling :func:`segment_sum` per row. Same result;
+  turns O(NE) Python dispatch into one BLAS call and drops the
+  per-row copy of the ``(NE, nch)`` output matrix that made the
+  loop's cost superlinear in NE.
 
 Formalism (ENDF-6 D.1.3.4, MLBW):
 
@@ -130,7 +136,6 @@ def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
         raised.
     """
     e = xp.asarray(energies_in, dtype=xp.float64)
-    ne = e.shape[0]
 
     er = xp.asarray(data.res_er, dtype=xp.float64)
     gn = xp.asarray(data.res_gn, dtype=xp.float64)
@@ -203,19 +208,24 @@ def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
     rxx_r = ratio * gx_e
 
     # --- Sum per-resonance contributions into per-channel arrays. ---
+    #
+    # Build the one-hot channel-membership matrix once. `G[r, c] = 1`
+    # iff resonance r sits in channel c. Per-channel aggregation is
+    # then one matmul per partial cross section:
+    #     (ne, nres) @ (nres, nch)  ->  (ne, nch)
+    # For an MLBW range with a handful of channels and a few hundred
+    # resonances the one-hot is tiny (nch * nres); the matmul reduces
+    # to one BLAS call on numpy and traces cleanly on JAX.
 
-    def _sum_by_channel_per_energy(sig_ne_nres):
-        """(ne, nres) -> (ne, nch); per-row segment_sum."""
-        out = xp.zeros((ne, nch), dtype=sig_ne_nres.dtype)
-        for i in range(ne):
-            out = _write_row(out, i, xp.segment_sum(sig_ne_nres[i], ich, nch), xp)
-        return out
+    G = (xp.arange(nch).reshape(1, -1) == ich.reshape(-1, 1)).astype(
+        A_r.dtype,
+    )   # (nres, nch)
 
-    A_ch = _sum_by_channel_per_energy(A_r)
-    B_ch = _sum_by_channel_per_energy(B_r)
-    cap_ch = _sum_by_channel_per_energy(cap_r)
-    fis_ch = _sum_by_channel_per_energy(fis_r)
-    rxx_ch = _sum_by_channel_per_energy(rxx_r)
+    A_ch = A_r @ G
+    B_ch = B_r @ G
+    cap_ch = cap_r @ G
+    fis_ch = fis_r @ G
+    rxx_ch = rxx_r @ G
 
     # --- Hard-sphere potential-scattering phase per channel. ---
     rho_s = _rho(e_safe, data.ki, data.r_ap, xp)            # (ne,)
@@ -237,16 +247,3 @@ def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
 
     return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot,
             'rxx': rxx, 'tot': tot}
-
-
-def _write_row(mat, i, row, xp):
-    """`mat[i] = row` in a backend-friendly way.
-
-    NumPy: plain in-place assignment. JAX: functional update via
-    `mat.at[i].set(row)`. Kept out of the main formula for clarity.
-    """
-    if xp.name == 'jax':
-        return mat.at[i].set(row)
-    mat = mat.copy()
-    mat[i] = row
-    return mat
