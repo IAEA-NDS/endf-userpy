@@ -1,10 +1,22 @@
 """ENDF-6 TAB1 interpolation, backend-agnostic.
 
-Small standalone module because the same TAB1 helpers are used by
-every resonance formalism (channel-radius r_a, scattering-radius
-r_ap, and later MF3 backgrounds). Kept out of the physics module
-so the physics stays focused on formulas, not on
-interpolation-law dispatch.
+Small standalone module for TAB1 records represented as a dataclass
+(``x``, ``y``, ``nbt``, ``intp`` numpy arrays). The
+:func:`interp` entry point dispatches through the array-namespace
+adapter (:mod:`endf_userpy.primitives.array_ns`) so the same
+implementation runs on numpy and JAX; a numba backend can plug in
+next to those without touching the physics that calls this.
+
+Related helpers already in the package:
+
+- :mod:`endf_userpy.primitives.interpolation` -- older / broader
+  set of TAB1 helpers used by MF3, MF5, MF15. Those work on
+  the ``endf_parserpy`` dict-of-arrays representation
+  (``tab1['xy']['E']`` etc.) and are numpy-only. They remain the
+  right choice for the existing MF3/5/15 code paths; the
+  backend-agnostic API here is for the MF2 resonance-reconstruction
+  work where the same physics code must run on multiple array
+  backends.
 """
 from __future__ import annotations
 

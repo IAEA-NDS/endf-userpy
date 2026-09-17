@@ -1,9 +1,16 @@
-"""Penetration, shift, and hard-sphere phase factors P_L, S_L, phi_L.
+"""MF2 resonance-formalism factors: penetration P_L, shift S_L,
+hard-sphere phase phi_L.
 
 Closed-form expressions from ENDF-6 Formats Manual D.1.3.3 for
 L = 0..5, then a Newton recurrence for L >= 6. All routines are
-written against the :mod:`array_ns` adapter so numpy and JAX share
-one implementation.
+written against the :mod:`endf_userpy.primitives.array_ns` adapter
+so numpy and JAX share one implementation; a numba backend plugs
+in the same way.
+
+Shared by every R-matrix formalism (SLBW / MLBW / Reich-Moore /
+RML) as auxiliary computations; kept in a dedicated module so the
+top-level ``mf2_interpretation_<formalism>.py`` files stay focused
+on their own physics.
 
 Design note: the JAX prototype used ``lax.switch`` per element for
 L; the numpy backend can't afford per-element Python switching but

@@ -1,9 +1,10 @@
-"""Multi-Level Breit-Wigner (MLBW) reconstruction, backend-agnostic.
+"""Multi-Level Breit-Wigner (MLBW) reconstruction for MF2/MT151.
 
-Port of the JAX MLBW kernel (physics.py:mlbw on
+Port of the JAX MLBW kernel (``physics.py:mlbw`` on branch
 ``feature_resonance``) to a pure-numpy natural-size implementation
-that runs unchanged on the JAX backend via the :mod:`array_ns`
-adapter. Deliberately avoids the JAX-only design pressures:
+that runs unchanged on the JAX backend via the
+:mod:`endf_userpy.primitives.array_ns` adapter. Deliberately
+avoids the JAX-only design pressures:
 
 - No pre-allocated padding (``NRS_SIZE`` / ``MAX_CHN`` / ``NP_TAB1``).
   Resonance and channel arrays are their natural sizes.
@@ -36,8 +37,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import factors
-from . import tab1
+from ..primitives import tab1
+from . import mf2_interpretation_factors as factors
 
 
 @dataclass

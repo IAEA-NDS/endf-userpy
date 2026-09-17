@@ -1,17 +1,20 @@
-"""Sketch-level tests for the backend-agnostic resonance module.
+"""Sketch-level tests for backend-agnostic MLBW reconstruction.
 
-Verifies that the numpy MLBW reconstruction (`endf_userpy.resonance`)
+Verifies that the numpy MLBW reconstruction
+(:mod:`endf_userpy.mfsec_interpretation.mf2_interpretation_mlbw`)
 handles the physics correctly and that the same code, run through
-the JAX backend, gives bit-comparable results. Not an ENDF-preprocessing
-test -- the data structures are hand-built to isolate the physics.
+the JAX backend of :mod:`endf_userpy.primitives.array_ns`, gives
+bit-comparable results. Not an ENDF-preprocessing test -- the
+data structures are hand-built to isolate the physics.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from endf_userpy.resonance import array_ns, mlbw
-from endf_userpy.resonance.tab1 import TAB1
+from endf_userpy.primitives import array_ns
+from endf_userpy.primitives.tab1 import TAB1
+from endf_userpy.mfsec_interpretation import mf2_interpretation_mlbw as mlbw
 
 
 def _constant_tab1(value: float, e_lo: float = 1e-5, e_hi: float = 2e7) -> TAB1:
@@ -95,7 +98,7 @@ def test_unknown_backend_raises():
 
 
 def test_tab1_interp_lin_lin_basic():
-    from endf_userpy.resonance import tab1 as tab1_mod
+    from endf_userpy.primitives import tab1 as tab1_mod
     xp = array_ns.get_backend('numpy')
     t = TAB1(
         x=np.array([1.0, 2.0, 4.0], dtype=np.float64),
@@ -109,7 +112,7 @@ def test_tab1_interp_lin_lin_basic():
 
 
 def test_tab1_interp_extrapolation_returns_zero():
-    from endf_userpy.resonance import tab1 as tab1_mod
+    from endf_userpy.primitives import tab1 as tab1_mod
     xp = array_ns.get_backend('numpy')
     t = _constant_tab1(1.0, e_lo=1.0, e_hi=10.0)
     # 0.5 is below the table, 100 is above; both should hit the
@@ -126,7 +129,7 @@ def test_tab1_interp_extrapolation_returns_zero():
 
 def test_pnt_shf_L0_closed_form():
     """L=0: P(rho) = rho, S(rho) = 0."""
-    from endf_userpy.resonance import factors
+    from endf_userpy.mfsec_interpretation import mf2_interpretation_factors as factors
     xp = array_ns.get_backend('numpy')
     rho = xp.asarray([0.1, 1.0, 3.14])
     L = xp.asarray([0, 0, 0])
@@ -137,7 +140,7 @@ def test_pnt_shf_L0_closed_form():
 
 def test_pnt_shf_L1_closed_form():
     """L=1: P = rho^3/(1+rho^2), S = -1/(1+rho^2)."""
-    from endf_userpy.resonance import factors
+    from endf_userpy.mfsec_interpretation import mf2_interpretation_factors as factors
     xp = array_ns.get_backend('numpy')
     rho = xp.asarray([0.5, 1.0, 2.0])
     L = xp.asarray([1, 1, 1])
@@ -149,7 +152,7 @@ def test_pnt_shf_L1_closed_form():
 
 def test_phase_L0_closed_form():
     """L=0: phi(rho) = rho."""
-    from endf_userpy.resonance import factors
+    from endf_userpy.mfsec_interpretation import mf2_interpretation_factors as factors
     xp = array_ns.get_backend('numpy')
     rho = xp.asarray([0.1, 1.0, 3.14])
     L = xp.asarray([0, 0, 0])
@@ -159,7 +162,7 @@ def test_phase_L0_closed_form():
 
 def test_phase_L1_closed_form():
     """L=1: phi(rho) = rho - atan(rho)."""
-    from endf_userpy.resonance import factors
+    from endf_userpy.mfsec_interpretation import mf2_interpretation_factors as factors
     xp = array_ns.get_backend('numpy')
     rho = xp.asarray([0.5, 1.0, 2.0])
     L = xp.asarray([1, 1, 1])
