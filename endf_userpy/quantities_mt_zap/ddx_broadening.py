@@ -37,6 +37,7 @@ from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf12_interpretation as mf12_interp
 from ..mfsec_interpretation import mf13_interpretation as mf13_interp
 from ..mfsec_interpretation import mf14_interpretation as mf14_interp
+from ..mfsec_interpretation import mf15_interpretation as mf15_interp
 from ..primitives import conversion_relativistic as conv_relat
 from ..primitives import reactions as reactions
 from ..primitives.convolution import adaptive_convolve
@@ -56,6 +57,7 @@ from ..primitives.properties import (
     has_mf12_mt,
     has_mf13_mt,
     has_mf14_mt,
+    has_mf15_mt,
 )
 from .distribution2d import compute_dist2d_values
 from .quantities import compute_yields, compute_dexs
@@ -443,9 +445,9 @@ def compute_ddx_mf12_discrete_broadened(
       folder times ``0.5 / (2 pi) = 1 / (4 pi)``.
     - MF14 LI=0 with Legendre coefficients: ``f_i(mu)`` varies per
       line and is looked up in MF14 for each ``Eg_i > 0``. The MF12
-      Eg=0 continuum placeholder is dropped from this folder (its
-      contribution belongs to the continuous DDX folder combined
-      with MF15 / MF14, tracked as a further follow-up).
+      Eg=0 continuum placeholder is dropped from this folder; its
+      contribution is picked up by
+      `compute_ddx_mf15_continuum_broadened` (issue #123).
     - No MF14 for this MT (unusual for a gamma-emitting MT): treat
       as isotropic.
 
@@ -739,6 +741,151 @@ def compute_ddx_mf13_discrete_broadened(
             * per_line_angdist[:, k, :].reshape(n_einc, 1, n_mus)
         )
     return np.clip(result / (2 * np.pi), 0.0, None)
+
+
+def compute_ddx_mf15_continuum_broadened(
+    endf_dict, mt, zap,
+    energies_in, energies_out, angle_cosines_out,
+    kernel, kernel_width,
+    to_lab=True,
+    **convolve_kwargs,
+):
+    """DDX contribution from the MF15 continuous gamma spectrum,
+    convolved with `kernel` along `E_out`.
+
+    For gamma emission, this is the companion of
+    `compute_ddx_mf12_discrete_broadened` (which folds the MF12
+    discrete photon lines). MF15 tabulates the continuous shape
+    ``spec(E_out | E_in)`` normalised to unit integral over E_out
+    at each E_in; MF12 carries the yield ``y_cont(E_in)`` of the
+    continuum photon "line" (the Eg=0 placeholder subsection). The
+    DDX contribution for a single (E_in, E_out, mu) is::
+
+        DDX(E_in, E_out, mu) = sigma(E_in)
+            * (y_cont(E_in) / Y_total(E_in))
+            * spec(E_out | E_in)
+            * f_cont(mu | E_in) / (2 pi)
+
+    where ``sigma`` is the MF3 cross section for MT, and the
+    continuum angular distribution ``f_cont`` comes from MF14 (Eg=0
+    entry, LI=0 with LTT=1 Legendre) when present, or falls back to
+    isotropic ``0.5`` when MF14 is fully isotropic (LI=1) or absent
+    or has no distinct continuum entry.
+
+    Callers must gate this routine on
+    ``has_mf15_continuum(endf_dict, mt, zap)`` for the channel; a MT
+    with no MF15 returns a zero DDX. When MF12 has no Eg=0 continuum
+    placeholder (a rare corpus shape, see issue #103), MF15 has no
+    normalising yield to weight against and the contribution is
+    dropped -- the caller-facing warning in
+    `distribution1d.compute_energydist_values` already fires for the
+    1D counterpart of the same file, so no separate warning is
+    emitted here.
+
+    Parameters
+    ----------
+    endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
+        Same as `compute_ddx_continuous_broadened`.
+    kernel : callable
+        `kernel(delta_E)`. Should integrate to ~1 over its support.
+    kernel_width : float
+        Characteristic kernel width in eV; passed to
+        `adaptive_convolve` to set the internal mesh and truncation.
+    **convolve_kwargs
+        Forwarded to `adaptive_convolve` (e.g. `rtol`, `max_iter`).
+
+    Returns
+    -------
+    ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``. Units match
+    `compute_ddx_continuous_broadened`: barn / eV / sr.
+    """
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF15 continuum broadening is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    n_mus = len(angle_cosines_out)
+    result_zero = np.zeros((n_einc, n_eouts, n_mus), dtype=float)
+
+    if not has_mf15_mt(endf_dict, mt):
+        return result_zero
+
+    # Continuum yield from MF12 (the Eg=0 placeholder subsection).
+    # If MF12 has no Eg=0 placeholder, the continuum yield is
+    # undefined and we drop the MF15 contribution -- same
+    # convention as the 1D path (issue #103).
+    if not has_mf12_mt(endf_dict, mt):
+        return result_zero
+    pes = np.asarray(
+        mf12_interp.get_photon_energies(endf_dict, mt), dtype=float,
+    )
+    cont_mask = pes == 0.0
+    if not np.any(cont_mask):
+        return result_zero
+    yields_all = mf12_interp.compute_photon_yields(
+        endf_dict, mt, energies_in, pes,
+    )
+    y_cont = yields_all[:, cont_mask].sum(axis=1)   # (n_einc,)
+    # NOTE on normalisation: the 1D dxs/dE path composes
+    # `compute_dexs = compute_yields * xs * compute_energydist_values`
+    # where compute_yields returns Y_total (all photons: discrete +
+    # continuum) and compute_energydist_values (MF15 branch)
+    # returns spec * (y_cont / Y_total). Net contribution to the
+    # 1D integral is therefore `xs * y_cont`. This folder computes
+    # the DDX contribution directly, so we skip the y_cont / Y_total
+    # scaling and use y_cont as the weight -- matching the physical
+    # normalisation that the 2D DDX integrated over (E_out, mu)
+    # returns `xs * y_cont`.
+
+    # Continuum angular distribution f_cont(mu | Ein), shape
+    # (n_einc, n_mus). MF14 LI=1 is fully isotropic (the common
+    # case in every ad-hoc corpus file today). MF14 LI=0 with an
+    # Eg=0 entry: use that entry as the continuum angular. Absent
+    # MF14, fall back to isotropic (the neutral choice: MF14's
+    # own default for LI=1 is isotropic).
+    if has_mf14_mt(endf_dict, mt) and endf_dict[14][mt]['LI'] == 0:
+        cont_angdist = mf14_interp.compute_angdist_values(
+            endf_dict, mt, energies_in,
+            np.array([0.0]), angle_cosines_out,
+        )
+        # Shape (n_einc, 1, n_mus) -> (n_einc, n_mus).
+        f_cont = cont_angdist[:, 0, :]
+    else:
+        f_cont = np.full((n_einc, n_mus), 0.5, dtype=float)
+
+    # Broaden the MF15 spectrum along E_out. adaptive_convolve
+    # expects f(eout) returning an array with the E_out axis last;
+    # MF15's compute_spectrum returns (n_einc, n_eout). No mu axis
+    # -- f_cont is broadcast in afterwards.
+    def f_spec(eout_internal):
+        return mf15_interp.compute_spectrum(
+            endf_dict, mt, energies_in, eout_internal,
+        )
+
+    broadened_spec = adaptive_convolve(
+        f_spec, kernel, energies_out,
+        kernel_width=kernel_width,
+        **convolve_kwargs,
+    )  # shape (n_einc, n_eouts)
+
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+    )  # (n_einc,)
+    # Assemble: sigma * y_cont * spec * f_cont / (2 pi)
+    #   (n_einc, 1, 1) * (n_einc, n_eouts, 1) * (n_einc, 1, n_mus)
+    ddx = (
+        (xs * y_cont).reshape(-1, 1, 1)
+        * broadened_spec.reshape(n_einc, n_eouts, 1)
+        * f_cont.reshape(n_einc, 1, n_mus)
+    )
+    # FFT roundoff can produce sub-eps negatives at the tails; clip
+    # for consistency with the other broadened folders.
+    return np.clip(ddx / (2 * np.pi), 0.0, None)
 
 
 def compute_dxs_dE_law1_discrete_broadened(
