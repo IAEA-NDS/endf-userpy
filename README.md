@@ -88,8 +88,54 @@ an `endf_dict` (already parsed) plus user-friendly string identifiers.
 | `get_particle_production_dxs_dmu(endf_dict, reaction, particle, eincs, mus)` | array | dσ/dΩ angular distribution |
 | `get_particle_production_ddxs(endf_dict, reaction, particle, eincs, eouts, mus)` | array | d²σ/dE/dΩ double-differential |
 
-Reaction strings: `"(n,total)"`, `"(n,n_0)"` (elastic), `"(n,2n)"`,
-`"(n,g)"` (capture), `"(n,p)"`, `"(n,a)"`, etc.
+Reaction strings for a neutron projectile follow the ENDF-6 MT
+convention:
+
+| String | MT | Meaning |
+| --- | --- | --- |
+| `"(n,total)"` | MT1 | total cross section |
+| `"(n,n_0)"` | MT2 | elastic scattering |
+| `"(n,nonelas)"` | MT3 | non-elastic sum |
+| `"(n,n)"` | MT4 | inelastic scattering **sum** (MT51..MT91) |
+| `"(n,n_i)"` for `i = 1, 2, ...` | MT51 + i-1 | inelastic to i-th discrete level |
+| `"(n,2n)"` | MT16 | (n,2n) |
+| `"(n,3n)"` | MT17 | (n,3n) |
+| `"(n,fission)"` | MT18 | **total fission** (all chances) |
+| `"(n,f)"` | MT19 | **first-chance fission only** |
+| `"(n,nf)"` | MT20 | second-chance fission |
+| `"(n,2nf)"` | MT21 | third-chance fission |
+| `"(n,3nf)"` | MT38 | fourth-chance fission |
+| `"(n,g)"` | MT102 | radiative capture |
+| `"(n,p)"` | MT103 | (n,proton) |
+| `"(n,d)"` | MT104 | (n,deuteron) |
+| `"(n,t)"` | MT105 | (n,triton) |
+| `"(n,h)"` | MT106 | (n,³He) |
+| `"(n,a)"` | MT107 | (n,α) |
+
+Two subtleties worth calling out:
+
+- **Fission**: `(n,f)` and `(n,fission)` are **not** the same. `(n,f)`
+  is MT19 (first-chance fission only); `(n,fission)` is MT18 (total
+  fission summed over all chances). Most modern evaluations put all
+  their fission data under MT18 and leave MT19–MT21 empty
+  (JENDL-5 U-238, ENDF/B-VIII.1 Pu-239, TENDL-2021 U-235 all do
+  this), so `(n,fission)` is the query users almost always want.
+  `(n,f)` will return 0 on those files. Some files that split by
+  fission chance (older ENDF/B releases, some evaluations of
+  higher actinides) do populate MT19 individually; on those,
+  `(n,f)` gives you the first-chance piece only.
+- **Inelastic scattering**: `(n,n)` is MT4 (**sum** over discrete
+  levels + continuum, MT51..MT91). `(n,n_0)` is MT2 (elastic).
+  `(n,n_1)` is MT51 (inelastic to the first excited state), and so
+  on. See the "Aggregate-reaction sum-MT queries under-count on
+  sparse files" note under Known limitations for the admission-
+  heuristic caveat.
+
+Full lookup: `endf_userpy/primitives/reactions.py:REACTION_DICT`.
+`get_available_reactions(endf_dict)` returns the strings the file
+actually populates, so passing that list to your query is the
+safest way to avoid a silent zero from a mistyped or file-missing MT.
+
 Particles: `"n"`, `"p"`, `"d"`, `"t"`, `"h"` (helium-3),
 `"a"` (alpha), `"g"` (gamma).
 Residual nuclei: `"Z-Sym-A"` (e.g. `"27-Co-60"`) or `"Sym-A"`
