@@ -461,3 +461,112 @@ def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
 
     module_logger.debug(f'none of the selection rules applied, not selecting MT={mt}')
     return False
+
+
+def _mts_covered_by_user_query(user_mts):
+    """Set of MTs the user query implicitly covers: user_mts
+    themselves plus every MT in their SUM_RULES-transitive
+    descendant closure. Used by the gamma-aware admission rule to
+    decide which sum-MTs are 'within scope' for admitting an MF13
+    aggregate.
+    """
+    covered = set(user_mts)
+    stack = list(user_mts)
+    while stack:
+        mt = stack.pop()
+        for child in reac.SUM_RULES.get(mt, ()):
+            if child not in covered:
+                covered.add(child)
+                stack.append(child)
+    return covered
+
+
+def _mf13_authoritative_ancestor(endf_dict, mt, covered_mts):
+    """Walk up the SUM_RULES ancestor chain from `mt` and return the
+    first ancestor that is (a) within `covered_mts` and (b) has MF13
+    gamma content. Returns None if no such ancestor exists.
+
+    An MF13-authoritative ancestor 'subsumes' `mt`'s gamma
+    production: its MF13 XS is the total gamma production for the
+    ancestor and every descendant in the sum tree, so admitting
+    both would double-count.
+    """
+    current = reac.SUM_RULE_MAP.get(mt)
+    while current is not None:
+        if current in covered_mts and prop.has_mf13_mt(endf_dict, current):
+            return current
+        current = reac.SUM_RULE_MAP.get(current)
+    return None
+
+
+def satisfies_gamma_production_select(endf_dict, mt, user_mts=None):
+    """Gamma-aware admission for particle-production dispatchers
+    when the ejectile is gamma (issue #133).
+
+    The general :func:`satisfies_select_heuristic` uses MF4/5/6 as
+    the "children have distribution detail" indicator, which is
+    correct for the neutron side but ill-fit for gamma production
+    on files that aggregate their gamma XS on a sum-MT via MF13
+    (JENDL-5 N-14 MT 3 nonelastic is the corpus example). This
+    rule adds one extra check on top of the general heuristic:
+
+    - If some SUM_RULES-ancestor of ``mt`` is within the user's
+      query scope AND carries MF13 gamma content, that ancestor's
+      MF13 aggregate covers ``mt``'s gamma production; drop ``mt``
+      to avoid double-counting.
+
+    Otherwise, defer to :func:`satisfies_select_heuristic` for
+    the standard sum-vs-children logic (including PR #132's
+    direct-MT MF13 escape).
+
+    ``user_mts`` is the caller-provided list of MTs the reaction
+    string resolves to (typically a single MT for the
+    particle-production APIs). When None, no scope information is
+    available; falls straight through to the general heuristic.
+    """
+    if user_mts is None:
+        return satisfies_select_heuristic(endf_dict, mt, user_mts)
+    user_mts = set(user_mts)
+    covered = _mts_covered_by_user_query(user_mts)
+
+    # Rule 1: subsumed by an MF13-authoritative ancestor within the
+    # user's query scope -- drop to avoid double-counting.
+    subsumer = _mf13_authoritative_ancestor(endf_dict, mt, covered)
+    if subsumer is not None and subsumer != mt:
+        module_logger.debug(
+            f'gamma-aware admission drops MT={mt}: MF13 ancestor '
+            f'MT={subsumer} covers its aggregate'
+        )
+        return False
+
+    # Rule 2: MT itself has MF13 gamma AND is within the user's
+    # query scope -- admit unconditionally. Overrides the general
+    # heuristic's tendency to drop sum-MTs in favour of children
+    # (the children have MF4/5/6 neutron distributions but not
+    # necessarily gamma coverage; the MF13 aggregate IS the total
+    # gamma production).
+    if mt in covered and prop.has_mf13_mt(endf_dict, mt):
+        module_logger.debug(
+            f'gamma-aware admission admits MT={mt}: MF13 authoritative '
+            f'within user scope'
+        )
+        return True
+
+    # Otherwise, defer to the general heuristic.
+    return satisfies_select_heuristic(endf_dict, mt, user_mts)
+
+
+def satisfies_particle_production_select(endf_dict, mt, user_mts, zap):
+    """Admission dispatcher for the four particle-production
+    top-level APIs (``get_particle_production_{xs,dxs_dE,dxs_dmu,ddxs}``).
+
+    For gamma ejectiles, routes through
+    :func:`satisfies_gamma_production_select` (issue #133: prefers
+    MF13-authoritative sum-MTs over their MF12/MF13/MF6-gamma
+    children when both would double-count). For every other
+    ejectile, falls back to the general
+    :func:`satisfies_select_heuristic`.
+    """
+    if zap == physconst.PARTICLE_ZAP['g']:
+        return satisfies_gamma_production_select(endf_dict, mt, user_mts)
+    return satisfies_select_heuristic(endf_dict, mt, user_mts)
