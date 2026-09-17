@@ -371,6 +371,30 @@ def get_reaction_mts(endf_dict):
     return list(endf_dict[3].keys())
 
 
+def get_reaction_mts_widened(endf_dict):
+    """Union of MTs across MF3 + MF12 + MF13 + MF15.
+
+    Wider than `get_reaction_mts` (MF3-only): includes MTs that have
+    photon-production data (MF12 yields, MF13 per-photon XS, MF15
+    continuous spectra) without an MF3 cross section. Typical case
+    is a file that puts gamma production only on a sum-MT (e.g.
+    JENDL-5 N-14 puts MF13 on MT 3 nonelastic without tabulating
+    MT 3 in MF3 -- MT 3 is implicitly MT 1 - MT 2 there).
+
+    Used by the particle-production dispatchers when the caller's
+    ejectile is photon so those MTs are visited by the
+    cumulative-sum iteration. Non-gamma iterations that call this
+    should either check MF3 presence themselves per MT or route
+    through the standard `get_reaction_mts` (MF3-only).
+
+    Issue #130.
+    """
+    mts = set()
+    for mf in (3, 12, 13, 15):
+        mts |= set(endf_dict.get(mf, {}).keys())
+    return sorted(mts)
+
+
 def get_reactions(endf_dict):
     mts = get_reaction_mts(endf_dict)
     reacs = [get_reaction_string_for_mt(endf_dict, m) for m in mts] 
