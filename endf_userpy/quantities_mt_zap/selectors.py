@@ -210,7 +210,25 @@ def has_discrete_two_body_ddx(endf_dict, mt, zap):
 
 def contains_zap(endf_dict, mt, zap):
     if mt in (18, 19, 20, 21, 38):
-        return zap == physconst.PARTICLE_ZAP['n']
+        # Fission (first-chance MT=18, second-chance MT=19, third/
+        # fourth-chance MT=20/21, first-chance-fast MT=38). Prompt
+        # neutrons are always admitted -- MF1/MT456 nubar is the
+        # yield source, downstream. Prompt gammas are admitted
+        # when the file declares them in MF12/MF13 (issue #126);
+        # every fission-gamma-emitting file in the corpus does so
+        # via a single MF12 Eg=0 continuum-placeholder subsection
+        # whose spectrum lives in MF15. Charged fragments are
+        # never returned via this route (they're fission fragments
+        # produced in bulk, not a primary ejectile representable
+        # by the primitives.reactions ejectile machinery).
+        if zap == physconst.PARTICLE_ZAP['n']:
+            return True
+        if zap == physconst.PARTICLE_ZAP['g']:
+            return (
+                prop.has_mf12_mt(endf_dict, mt)
+                or prop.has_mf13_mt(endf_dict, mt)
+            )
+        return False
     # Photons for partial channels (typically inelastic MTs 51..90 and
     # capture-related MTs) are declared in MF12 (yields) or MF13
     # (production cross sections) in most modern libraries (ENDF/B-VIII.1,

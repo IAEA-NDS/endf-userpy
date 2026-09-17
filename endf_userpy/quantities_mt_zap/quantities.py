@@ -29,20 +29,47 @@ from ..mfsec_interpretation.mf3_interpretation import (
 
 def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level=None):
     module_logger.debug(f'compute yields for MT={mt} and ZAP={zap} and level={level}')
-    if mt == 18:
-        neutron_zap = get_zap_for_particle('n')
-        if zap != neutron_zap:
-            raise ValueError(
-                f'For fission, only yield of emitted neutrons can be computed '
-                f'zap={neutron_zap} but obtained zap={zap}'
-            )
+    neutron_zap = get_zap_for_particle('n')
+    gamma_zap = get_zap_for_particle('g')
+    if mt == 18 and zap == neutron_zap:
+        # Prompt neutron yield for MT18 (n,f) comes from MF1/MT456
+        # nubar, not from any per-MT ejectile-multiplicity table.
         if level is not None:
             raise ValueError(
                 'For fission, `level` argument must be `None`'
             )
-        # if MT=18 (n,f), we assume user wants to know prompt neutron yields
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF1/MT456')
         yields = mf1_interp.compute_yields(endf_dict, 456, energies_in)
+    elif mt == 18 and zap == gamma_zap and (
+        properties.has_mf12_mt(endf_dict, mt)
+        or properties.has_mf13_mt(endf_dict, mt)
+    ):
+        # Prompt fission gammas flow through the same MF12/MF13
+        # gamma-yield path as inelastic partial channels (issue
+        # #126). The fall-through-elif below would also match, but
+        # spelling it out here makes the fission gamma routing
+        # explicit and keeps the fallback branch's error message
+        # accurate for the "no representable yield" case.
+        if level is not None:
+            raise ValueError(
+                'For fission, `level` argument must be `None`'
+            )
+        module_logger.debug(
+            f'--> getting fission-gamma yields for MT={mt} from MF12/MF13'
+        )
+        yields = discrete_quant.compute_total_gamma_yields(
+            endf_dict, mt, energies_in
+        )
+    elif mt == 18:
+        # Fission with a ZAP that's neither neutron nor a
+        # gamma-with-MF12/13. Charged fragments are not
+        # representable via this route.
+        raise ValueError(
+            f'For fission (MT=18), only prompt-neutron yield '
+            f'(ZAP={neutron_zap}) and prompt-gamma yield (ZAP='
+            f'{gamma_zap}, when the file carries MF12 or MF13 for '
+            f'MT=18) are supported; got ZAP={zap}'
+        )
     elif (properties.has_mf6_mt(endf_dict, mt)
           and mf6_help.contains_zap(endf_dict, mt, zap)):
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF6/MT{mt}')
