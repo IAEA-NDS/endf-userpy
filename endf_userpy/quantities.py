@@ -448,7 +448,9 @@ def _get_particle_production_xs_impl(
     return quant_mt_zap.compute_cumulative_quantity(
         quant_mt_zap.compute_prodxs,
         lambda endf_dict, mt, zap, energies_in: (
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(
+                endf_dict, mt, user_mts, zap,
+            )
             and selectors.contains_zap(endf_dict, mt, zap)
         ),
         endf_dict, zap, energies_in, mts=mts,
@@ -501,7 +503,7 @@ def _get_particle_production_dxs_dE_impl(
     def select(endf_dict, mt, zap, einc, eouts):
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     if kernel is None:
@@ -530,7 +532,7 @@ def _get_particle_production_dxs_dE_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_mf6_law1_discrete_lines(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     def mf12_disc_compute(endf_dict, mt, zap, einc, eouts):
@@ -543,7 +545,7 @@ def _get_particle_production_dxs_dE_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_mf12_discrete_lines(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     def mf13_disc_compute(endf_dict, mt, zap, einc, eouts):
@@ -556,7 +558,7 @@ def _get_particle_production_dxs_dE_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_mf13_discrete_lines(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     cont = quant_mt_zap.compute_cumulative_quantity(
@@ -625,7 +627,7 @@ def _get_particle_production_dxs_dmu_impl(
         quant_mt_zap.compute_daxs,
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         ),
         endf_dict, zap, energies_in, angle_cosines_out,
         mts=mts,
@@ -705,7 +707,7 @@ def _get_particle_production_ddxs_impl(
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
                 selectors.has_continuous_ddx(endf_dict, mt, zap) and
-                selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+                selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
             mts=mts,
@@ -715,7 +717,7 @@ def _get_particle_production_ddxs_impl(
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
                 selectors.has_mf15_continuum(endf_dict, mt, zap) and
-                selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+                selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
             mts=mts,
@@ -738,7 +740,7 @@ def _get_particle_production_ddxs_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_continuous_ddx(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     def disc_compute(endf_dict, mt, zap, einc, eouts, mus):
@@ -751,7 +753,7 @@ def _get_particle_production_ddxs_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_discrete_two_body_ddx(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     def law1_disc_compute(endf_dict, mt, zap, einc, eouts, mus):
@@ -764,7 +766,7 @@ def _get_particle_production_ddxs_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_mf6_law1_discrete_lines(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     def mf12_disc_compute(endf_dict, mt, zap, einc, eouts, mus):
@@ -777,7 +779,7 @@ def _get_particle_production_ddxs_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_mf12_discrete_lines(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     def mf13_disc_compute(endf_dict, mt, zap, einc, eouts, mus):
@@ -790,7 +792,7 @@ def _get_particle_production_ddxs_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_mf13_discrete_lines(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     def mf15_cont_compute(endf_dict, mt, zap, einc, eouts, mus):
@@ -803,7 +805,7 @@ def _get_particle_production_ddxs_impl(
         return (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.has_mf15_continuum(endf_dict, mt, zap) and
-            selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
     # Sum-then-broaden path (issue #26): when 2+ MTs pass
@@ -884,7 +886,7 @@ def _warn_discrete_dropped_from_unbroadened_ddx(endf_dict, zap, user_mts):
     for mt in quant_mt_zap.get_reaction_mt_numbers(endf_dict):
         if not selectors.contains_zap(endf_dict, mt, zap):
             continue
-        if not selectors.satisfies_select_heuristic(endf_dict, mt, user_mts):
+        if not selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap):
             continue
         if selectors.has_continuous_ddx(endf_dict, mt, zap):
             continue
@@ -936,7 +938,7 @@ def _warn_law1_discrete_dropped_from_unbroadened_dxs_dE(
     for mt in quant_mt_zap.get_reaction_mt_numbers(endf_dict):
         if not selectors.contains_zap(endf_dict, mt, zap):
             continue
-        if not selectors.satisfies_select_heuristic(endf_dict, mt, user_mts):
+        if not selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap):
             continue
         if not selectors.has_mf6_law1_discrete_lines(endf_dict, mt, zap):
             continue
