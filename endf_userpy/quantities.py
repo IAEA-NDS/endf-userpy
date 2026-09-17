@@ -674,7 +674,15 @@ def _get_particle_production_ddxs_impl(
         _warn_discrete_dropped_from_unbroadened_ddx(
             endf_dict, zap, user_mts,
         )
-        return quant_mt_zap.compute_cumulative_quantity(
+        # Unbroadened gamma DDX from MF15 continuum + MF14 angular
+        # (issue #125). The general compute_ddxs path goes through
+        # compute_dist2d_values which handles MF6 XOR MF4+MF5 but
+        # has no MF15 branch, so files whose gamma content lives in
+        # MF15 (Al-27 MT102, U-238 MT18 with the #126 fix, ...)
+        # return zero from that branch. Sum in a separate MF15+MF14
+        # contribution the same way the broadened dispatcher does
+        # for compute_ddx_mf15_continuum_broadened.
+        cont_unbroad = quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_ddxs,
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
@@ -683,6 +691,22 @@ def _get_particle_production_ddxs_impl(
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out
         )
+        mf15_unbroad = quant_mt_zap.compute_cumulative_quantity(
+            quant_mt_zap.compute_ddxs_from_mf15_mf14,
+            lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
+                selectors.contains_zap(endf_dict, mt, zap) and
+                selectors.has_mf15_continuum(endf_dict, mt, zap) and
+                selectors.satisfies_select_heuristic(endf_dict, mt, user_mts)
+            ),
+            endf_dict, zap, energies_in, energies_out, angle_cosines_out
+        )
+        parts = [p for p in (cont_unbroad, mf15_unbroad) if p is not None]
+        if not parts:
+            return None
+        total = parts[0]
+        for p in parts[1:]:
+            total = total + p
+        return total
 
     def cont_compute(endf_dict, mt, zap, einc, eouts, mus):
         return ddxb.compute_ddx_continuous_broadened(

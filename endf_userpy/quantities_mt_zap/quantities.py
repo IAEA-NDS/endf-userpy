@@ -9,6 +9,9 @@ from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf8_interpretation as mf8_interp
 from ..mfsec_interpretation import mf9_interpretation as mf9_interp
 from ..mfsec_interpretation import mf10_interpretation as mf10_interp
+from ..mfsec_interpretation import mf12_interpretation as mf12_interp
+from ..mfsec_interpretation import mf14_interpretation as mf14_interp
+from ..mfsec_interpretation import mf15_interpretation as mf15_interp
 from .distribution1d import (
     compute_angdist_values,
     compute_energydist_values,
@@ -208,6 +211,93 @@ def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_ou
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
     )
     return f * yields * xs / (2*np.pi)
+
+
+def compute_ddxs_from_mf15_mf14(
+    endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
+    to_lab=True,
+):
+    """Unbroadened DDX contribution from MF15 continuum gamma
+    spectrum + MF14 angular. Gamma-only peer of
+    ``ddx_broadening.compute_ddx_mf15_continuum_broadened`` without
+    the ``adaptive_convolve`` step (kernel is a delta).
+
+    Contribution per (E_in, E_out, mu)::
+
+        DDX(E_in, E_out, mu) = sigma(E_in)
+                             * y_cont(E_in)
+                             * spec(E_out | E_in)
+                             * f_cont(mu | E_in) / (2 pi)
+
+    where ``sigma`` is MF3, ``y_cont`` is the MF12 Eg=0
+    continuum-placeholder yield, ``spec`` is the raw (unbroadened)
+    MF15 continuous spectrum, and ``f_cont`` is the MF14 continuum
+    angular distribution (LI=0 Eg=0 entry, or isotropic 0.5 for
+    LI=1 or absent MF14). Matches the composition of
+    ``compute_ddx_mf15_continuum_broadened`` in the delta-kernel
+    limit.
+
+    Callers must gate on ``selectors.has_mf15_continuum(mt, zap)``;
+    calling on a MT with no MF15 returns a zero DDX. If MF12 has no
+    Eg=0 continuum placeholder, the contribution is dropped (same
+    convention as the 1D dxs/dE path from issue #103; the warning
+    from that path fires for the same file).
+
+    Returns
+    -------
+    ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``. Same units
+    and shape as ``compute_ddxs``.
+    """
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF15 continuum unbroadened DDX is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    n_mus = len(angle_cosines_out)
+    result_zero = np.zeros((n_einc, n_eouts, n_mus), dtype=float)
+
+    if not properties.has_mf15_mt(endf_dict, mt):
+        return result_zero
+    if not properties.has_mf12_mt(endf_dict, mt):
+        return result_zero
+    pes = np.asarray(
+        mf12_interp.get_photon_energies(endf_dict, mt), dtype=float,
+    )
+    cont_mask = pes == 0.0
+    if not np.any(cont_mask):
+        return result_zero
+    yields_all = mf12_interp.compute_photon_yields(
+        endf_dict, mt, energies_in, pes,
+    )
+    y_cont = yields_all[:, cont_mask].sum(axis=1)   # (n_einc,)
+
+    # Continuum angular from MF14 Eg=0 entry (LI=0), else isotropic.
+    if properties.has_mf14_mt(endf_dict, mt) and endf_dict[14][mt]['LI'] == 0:
+        cont_angdist = mf14_interp.compute_angdist_values(
+            endf_dict, mt, energies_in,
+            np.array([0.0]), angle_cosines_out,
+        )
+        f_cont = cont_angdist[:, 0, :]
+    else:
+        f_cont = np.full((n_einc, n_mus), 0.5, dtype=float)
+
+    spec = mf15_interp.compute_spectrum(
+        endf_dict, mt, energies_in, energies_out,
+    )   # (n_einc, n_eouts)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+    )   # (n_einc,)
+    ddx = (
+        (xs * y_cont).reshape(-1, 1, 1)
+        * spec.reshape(n_einc, n_eouts, 1)
+        * f_cont.reshape(n_einc, 1, n_mus)
+    )
+    return ddx / (2 * np.pi)
 
 
 def compute_cumulative_quantity(func, select, endf_dict, *args, **kwargs):
