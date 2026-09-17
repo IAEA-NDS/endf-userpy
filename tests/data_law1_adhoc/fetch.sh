@@ -52,6 +52,17 @@ files=(
   "tendl21_n_Au-197.endf  TENDL-2021     n_079-Au-197_7925 265ef2bd036f2e16cf007473c4d91caa714b190276673b018d8578ba74721896"
   "jendl5_n_U-238.endf    JENDL-5        n_092-U-238_9237  cb987b2c672e2bf3280950d774fc6b316b2efa5e64a28d24f0b05d2be55e5868"
   "endfb81_n_Pu-239.endf  ENDF-B-VIII.1  n_094-Pu-239_9437 e465d4f589b750cd7a6c1ae0e700367446a71ecad0186cb6b2294c56d36efd9a"
+  # MF13 cross-library coverage (issue #92 / follow-up to #79).
+  # ENDF/B-VIII.1 N-14 already covers the NK=1 and NK>1 branches of
+  # mf13_interpretation.compute_total_photon_production_xs, but only
+  # from one library. TENDL-2021 N-14 replicates the same seven-MT
+  # layout (MT 4 / 28 / 32 / 103 / 104 / 105 / 107) under a
+  # different evaluator so a library-specific totals-header quirk
+  # would be caught. JENDL-5 N-14 writes MF13 differently -- one MT
+  # (MT 3, the nonelastic sum) with NK=1 -- giving orthogonal
+  # coverage of the NK=1 branch on a distinct data shape.
+  "tendl21_n_N-14.endf   TENDL-2021     n_007-N-14_0725   1f29bf7206a014a0c82272d83d032a80cc115d332cbeefb99e72acd81c03528c"
+  "jendl5_n_N-14.endf    JENDL-5        n_007-N-14_0725   1e23b9c02627a58a3cb718b087acbf0a5b0016629a9347eb735d659a2e7cc00f"
 )
 
 ua='Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)'
