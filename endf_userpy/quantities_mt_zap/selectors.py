@@ -172,6 +172,24 @@ def has_mf13_discrete_lines(endf_dict, mt, zap):
     return bool(_np.any(_np.asarray(pes) > 0.0))
 
 
+def has_mf15_continuum(endf_dict, mt, zap):
+    """Whether (MT, ZAP) carries a continuous photon spectrum in MF15.
+
+    True if the file has an MF15 subsection for `mt` AND `zap` is
+    gamma. MF15 is defined only for photons, so the predicate is
+    gamma-only.
+
+    Used by the broadening dispatcher for gamma DDX to admit the
+    MF15 continuum contribution alongside the MF12/MF13 discrete-line
+    folders (issue #123). The 1D `dxs/dE` gamma path handles the
+    same physics through `distribution1d.compute_energydist_values`,
+    also gated on this predicate.
+    """
+    if zap != physconst.PARTICLE_ZAP['g']:
+        return False
+    return prop.has_mf15_mt(endf_dict, mt)
+
+
 def has_discrete_two_body_ddx(endf_dict, mt, zap):
     """Whether (MT, ZAP) carries a 2-body kinematic-delta distribution.
 
