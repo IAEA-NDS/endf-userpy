@@ -133,8 +133,16 @@ def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
         Cap on the L-value Newton recurrence for penetration and
         shift factors. Default 8 matches the JAX prototype. Files
         with higher L in their resonance table (rare) need this
-        raised.
+        raised. Ignored on the numba backend, which supports L<=5
+        only (closed forms; raises for higher L).
     """
+    if getattr(xp, 'name', None) == 'numba':
+        # Route to the hand-written @njit kernel. Same physics, same
+        # inputs, same outputs. See
+        # :mod:`mf2_interpretation_mlbw_numba` for the trade-offs.
+        from . import mf2_interpretation_mlbw_numba as _numba
+        return _numba.reconstruct(data, energies_in)
+
     e = xp.asarray(energies_in, dtype=xp.float64)
 
     er = xp.asarray(data.res_er, dtype=xp.float64)

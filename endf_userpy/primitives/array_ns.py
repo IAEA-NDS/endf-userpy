@@ -27,7 +27,11 @@ Design principles:
   input arrays at their boundary (typically at the preprocessing
   stage) so the physics core still sees natural sizes.
 
-Currently: numpy and JAX. Numba is next once the design stabilises.
+Currently: numpy, JAX, and numba. The numba backend is a **signal**
+backend: its adapter surface is numpy's (numba doesn't expose ops
+individually), but its ``.name`` triggers physics modules to route
+to their dedicated ``@njit`` kernels (see e.g.
+:mod:`endf_userpy.mfsec_interpretation.mf2_interpretation_mlbw_numba`).
 """
 from __future__ import annotations
 
@@ -134,12 +138,50 @@ class JaxBackend:
         return getattr(self._jnp, name)
 
 
+class NumbaBackend(NumpyBackend):
+    """Signal backend: MLBW / (planned) SLBW / RM dispatch here go to
+    dedicated ``@njit``-compiled kernels instead of the vectorised
+    adapter path.
+
+    Numba doesn't expose ufuncs / array creation via a namespace object
+    the way ``numpy`` or ``jax.numpy`` do, so trying to translate every
+    ``xp.sqrt`` / ``xp.where`` call individually would just wrap numpy
+    with dispatch overhead. Instead, the physics modules keep the
+    adapter path for numpy and JAX (one implementation, two backends),
+    and provide a hand-written ``@njit`` fused kernel for numba
+    -- see :mod:`endf_userpy.mfsec_interpretation.mf2_interpretation_mlbw_numba`.
+    This backend's ``.name = 'numba'`` is the signal that triggers the
+    kernel dispatch.
+
+    The adapter surface itself inherits from :class:`NumpyBackend` so
+    that any code that does hit ``xp.sqrt`` (etc.) still works
+    correctly, just without a numba speedup.
+    """
+
+    name = 'numba'
+
+    def __init__(self):
+        super().__init__()
+        try:
+            import numba  # noqa: F401
+        except ImportError:
+            raise RuntimeError(
+                "numba backend requested but `numba` is not installed; "
+                "install with `pip install numba`."
+            )
+
+
 _BACKENDS: dict[str, type] = {'numpy': NumpyBackend}
 try:
     import jax  # noqa: F401
     _BACKENDS['jax'] = JaxBackend
 except ImportError:
     pass  # JAX optional; numpy backend always available
+try:
+    import numba  # noqa: F401
+    _BACKENDS['numba'] = NumbaBackend
+except ImportError:
+    pass  # numba optional; numpy backend always available
 
 
 def get_backend(name: str = 'numpy'):

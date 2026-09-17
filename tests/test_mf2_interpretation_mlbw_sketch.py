@@ -317,3 +317,45 @@ def test_numpy_jax_agree_no_resonances():
             np.asarray(xs_jax[key]),
             rtol=1e-12, atol=1e-30,
         )
+
+
+# ============================================================
+# Backend equivalence: numpy vs numba must agree numerically.
+#
+# Numba uses `fastmath=True`, which allows the compiler to
+# reassociate float ops for FMA fusion. That legitimately relaxes
+# bit-equivalence to something looser than the numpy-vs-JAX check
+# but is still expected to hold at rtol=1e-10.
+# ============================================================
+
+
+def _numba_available() -> bool:
+    return 'numba' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_numpy_numba_agree_single_resonance():
+    data = _single_resonance_data(er=100.0, gn=0.5, gg=0.3)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = mlbw.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = mlbw.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'rxx', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-10, atol=1e-30,
+            err_msg=f'numpy vs numba disagree on {key}',
+        )
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_numba_rejects_high_L():
+    """Numba path uses closed forms only for L<=5; callers with
+    higher L should hit a clear NotImplementedError pointing at the
+    numpy / jax backends that support the Newton recurrence."""
+    data = _single_resonance_data(er=100.0, gn=0.5, gg=0.3)
+    # bump one channel to L=6
+    data.ch_l[0] = 6
+    einc = np.array([100.0])
+    with pytest.raises(NotImplementedError, match='L<=5'):
+        mlbw.reconstruct(data, einc, array_ns.get_backend('numba'))
