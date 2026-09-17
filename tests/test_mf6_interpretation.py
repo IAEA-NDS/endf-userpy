@@ -107,7 +107,21 @@ def test_dist2d_law1_python_interface(endf_file):
     exefile = 'test_mf6'
     if sys.platform == 'win32':
         exefile += '.exe'
-    cont, endf_dict = call_fortran_test(FORTRAN_TESTS_DIR / exefile, endf_file)
+    exe_path = FORTRAN_TESTS_DIR / exefile
+    if not exe_path.exists():
+        # tests_fortran/ reference binaries are not committed to the
+        # repository (issue #95); on a fresh clone the binary is
+        # absent and the test would fail with FileNotFoundError from
+        # shutil.copy2 inside call_fortran_test. Skip cleanly so this
+        # test does not block the CI pytest job (#94). Contributors
+        # who want to run the fortran/python equivalence check
+        # locally must build tests_fortran/test_mf6 themselves.
+        import pytest
+        pytest.skip(
+            f'{exe_path} not built; run the local fortran build in '
+            f'tests_fortran/ to enable this cross-check (issue #95).'
+        )
+    cont, endf_dict = call_fortran_test(exe_path, endf_file)
     if 6 not in endf_dict:
         return
     mt_ss = find_subsections_by_law(endf_dict, 1)

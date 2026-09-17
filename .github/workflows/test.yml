@@ -1,0 +1,57 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Bracket the supported range: 3.10 (matches the local dev
+        # environment and is a widely deployed baseline) and 3.13
+        # (currently the latest stable). setup.py declares
+        # python_requires='>=3.9'.
+        python-version: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      # The Fortran extension in endf_userpy.fortran.endf6 needs a
+      # Fortran compiler at build time. Ubuntu runners ship gfortran
+      # via apt; install it before pip does the editable build.
+      - name: Install gfortran
+        run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Install package (editable) with test extras
+        # Editable install matches local development. pip install -e .
+        # produces a PEP 660 editable stub that does NOT rebuild the
+        # fortran extension in the source tree, so the source-tree
+        # `from endf_userpy.fortran.endf6 import ...` (which every
+        # test hits transitively) fails with ModuleNotFoundError.
+        #
+        # Run setup.py build_ext explicitly, then copy the .so from
+        # build/lib.*/endf_userpy/fortran/ into endf_userpy/fortran/.
+        # (The custom build_ext in setup.py places the .so under
+        # build/lib/ rather than in-tree even with --inplace, since
+        # the Extension name is bare 'endf6' rather than
+        # 'endf_userpy.fortran.endf6' -- installers rely on the
+        # subsequent copy step here or the wheel build's own move.)
+        #
+        # pytest is not a runtime dep so pull it separately.
+        run: |
+          pip install --upgrade pip build numpy setuptools
+          pip install -e .
+          python setup.py build_ext
+          cp build/lib.*/endf_userpy/fortran/endf6*.so endf_userpy/fortran/
+          pip install pytest
+      # tests/data_law1_adhoc/ is fetch-on-demand; individual tests
+      # skip cleanly when a file is missing (per CLAUDE.md), so we
+      # do NOT run fetch.sh here. tests_fortran/ reference binaries
+      # are not in the repo (issue #95); the one test that used them
+      # now skips cleanly when the binary is missing (this PR).
+      - name: Run pytest
+        run: pytest tests/ -q
