@@ -295,3 +295,82 @@ def test_numpy_jax_agree_with_fission():
             np.asarray(xs_jax[key]),
             rtol=1e-10, atol=1e-30,
         )
+
+
+# ============================================================
+# Backend equivalence: numpy vs numba.
+# ============================================================
+
+
+def _numba_available() -> bool:
+    return 'numba' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_numpy_numba_agree_single_resonance():
+    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-10, atol=1e-30,
+            err_msg=f'numpy vs numba disagree on {key}',
+        )
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_numpy_numba_agree_with_fission():
+    """One fission channel: exercises the 2×2 branch in the numba
+    hand-coded inverse."""
+    data = _single_res_with_fission(er=100.0, gn=0.5, gg=0.3, gf1=0.2)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-10, atol=1e-30,
+        )
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_numpy_numba_agree_with_two_fission_channels():
+    """Two fission channels: exercises the 3×3 branch in the numba
+    hand-coded inverse (cofactor expansion)."""
+    data = rm.RMData(
+        abn=1.0, spi=0.5, ki=1e-4,
+        r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+        group_l=np.array([0], dtype=np.int32),
+        group_g=np.array([1.0], dtype=np.float64),
+        group_nfis=np.array([2], dtype=np.int32),
+        res_group=np.array([0], dtype=np.int32),
+        res_er=np.array([100.0], dtype=np.float64),
+        res_gn=np.array([0.5], dtype=np.float64),
+        res_gg=np.array([0.3], dtype=np.float64),
+        res_gf1=np.array([0.2], dtype=np.float64),
+        res_gf2=np.array([-0.15], dtype=np.float64),   # signed
+    )
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-10, atol=1e-30,
+            err_msg=f'numpy vs numba disagree on {key}',
+        )
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_rm_numba_rejects_high_L():
+    """L>=6 is out of the RM numba scope; caller gets a clear
+    NotImplementedError pointing at numpy/jax."""
+    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3, L=6)
+    einc = np.array([100.0])
+    with pytest.raises(NotImplementedError, match='L<=5'):
+        rm.reconstruct(data, einc, array_ns.get_backend('numba'))

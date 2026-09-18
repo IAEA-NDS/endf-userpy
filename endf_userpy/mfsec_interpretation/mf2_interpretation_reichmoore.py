@@ -307,6 +307,13 @@ def reconstruct(data: RMData, energies_in, xp):
 
     ``tot`` is ``sct + cap + fis`` (no competitive channel in R-M).
     """
+    if getattr(xp, 'name', None) == 'numba':
+        # Route to the hand-written @njit kernel. Same physics, same
+        # inputs, same outputs. See
+        # :mod:`mf2_interpretation_reichmoore_numba` for the trade-offs.
+        from . import mf2_interpretation_reichmoore_numba as _numba
+        return _numba.reconstruct(data, energies_in)
+
     e = xp.asarray(energies_in, dtype=xp.float64)
     e_pos = e > 0.0
     e_safe = xp.maximum(e, 0.0)
