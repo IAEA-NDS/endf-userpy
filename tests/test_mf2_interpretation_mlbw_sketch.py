@@ -122,6 +122,54 @@ def test_tab1_interp_extrapolation_returns_zero():
     np.testing.assert_allclose(ys, [0.0, 1.0, 1.0, 1.0, 0.0])
 
 
+def test_tab1_interp_extrapolation_uses_outside_value():
+    """`outside_value` sends out-of-mesh queries to that value
+    instead of 0. `nan` is the flag policy used by the higher-level
+    quantities API."""
+    from endf_userpy.primitives import tab1 as tab1_mod
+    xp = array_ns.get_backend('numpy')
+    t = _constant_tab1(1.0, e_lo=1.0, e_hi=10.0)
+    xs = xp.asarray([0.5, 5.0, 100.0])
+    ys = tab1_mod.interp(t, xs, xp, outside_value=float('nan'))
+    assert np.isnan(ys[0]) and np.isnan(ys[2])
+    assert ys[1] == 1.0
+
+
+def test_tab1_from_endf_dict_flat():
+    """`from_endf_dict` accepts the flat layout used by many TAB1
+    records in the endf_parserpy rendering."""
+    from endf_userpy.primitives import tab1 as tab1_mod
+    xp = array_ns.get_backend('numpy')
+    d = {
+        'NBT': [3],                              # 1-based -> becomes [2]
+        'INT': [2],
+        'E': [1.0, 2.0, 4.0],
+        'xs': [10.0, 20.0, 40.0],
+    }
+    t = tab1_mod.from_endf_dict(d, x_key='E', y_key='xs')
+    assert t.nbt.tolist() == [2]                 # subtracted 1
+    ys = tab1_mod.interp(t, xp.asarray([1.0, 1.5, 4.0]), xp)
+    np.testing.assert_allclose(ys, [10.0, 15.0, 40.0])
+
+
+def test_tab1_from_endf_dict_wrapped_xstable():
+    """`from_endf_dict` drills into an `xstable` sub-dict, matching
+    what MF3 records look like straight from endf_parserpy."""
+    from endf_userpy.primitives import tab1 as tab1_mod
+    xp = array_ns.get_backend('numpy')
+    d = {
+        'xstable': {
+            'NBT': [3],
+            'INT': [2],
+            'E': [1.0, 2.0, 4.0],
+            'xs': [10.0, 20.0, 40.0],
+        }
+    }
+    t = tab1_mod.from_endf_dict(d, x_key='E', y_key='xs')
+    ys = tab1_mod.interp(t, xp.asarray([2.0]), xp)
+    np.testing.assert_allclose(ys, [20.0])
+
+
 # ============================================================
 # Penetration / shift / phase factors.
 # ============================================================
@@ -359,3 +407,120 @@ def test_numba_rejects_high_L():
     einc = np.array([100.0])
     with pytest.raises(NotImplementedError, match='L<=5'):
         mlbw.reconstruct(data, einc, array_ns.get_backend('numba'))
+
+
+# ============================================================
+# Sensitivity: JAX autodiff through the MLBW reconstruction.
+#
+# The whole point of routing the physics through the array-ns
+# adapter is that `jax.grad` on the JAX backend gets sensitivity
+# for free. These tests validate `dsigma_cap / dE_r` against a
+# finite-difference reference and demonstrate the pattern.
+# ============================================================
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_autodiff_dsigma_cap_dEr_matches_finite_difference():
+    """d sigma_cap / d E_r at a single query energy, computed by
+    :func:`jax.grad`, agrees with a central finite difference.
+
+    This is the sensitivity-workflow smoke test: if this ever
+    fires, the differentiability of the sketch through the
+    JAX backend is broken."""
+    import jax
+    import jax.numpy as jnp
+
+    xp = array_ns.get_backend('jax')
+
+    def cap_at(er_value, e_query):
+        # Rebuild the dataclass with the perturbed er inside the
+        # traced function so JAX sees er_value as a tracer.
+        data = mlbw.MLBWData(
+            abn=1.0, spi=0.5, ki=1e-4, qx=0.0,
+            r_a=_constant_tab1(0.6),
+            r_ap=_constant_tab1(0.6),
+            ch_l=np.array([0], dtype=np.int32),
+            ch_g=np.array([1.0], dtype=np.float64),
+            res_channel=np.array([0], dtype=np.int32),
+            res_l=np.array([0], dtype=np.int32),
+            res_er=jnp.array([er_value], dtype=jnp.float64),
+            res_gn=jnp.array([0.5], dtype=jnp.float64),
+            res_gg=jnp.array([0.3], dtype=jnp.float64),
+            res_gf=jnp.array([0.0], dtype=jnp.float64),
+            res_gx=jnp.array([0.0], dtype=jnp.float64),
+        )
+        xs = mlbw.reconstruct(data, jnp.array([e_query]), xp)
+        return xs['cap'][0]
+
+    # Evaluate the derivative at three points around the resonance:
+    # left slope, peak, right slope. All three should agree with FD.
+    er_0 = 100.0
+    for e_query in (99.5, 100.0, 100.5):
+        # Autodiff: gradient with respect to the first argument (E_r).
+        grad_fn = jax.grad(cap_at, argnums=0)
+        dcap_dEr_ad = float(grad_fn(er_0, e_query))
+
+        # Central finite difference reference.
+        h = 1e-4
+        dcap_dEr_fd = (
+            float(cap_at(er_0 + h, e_query))
+            - float(cap_at(er_0 - h, e_query))
+        ) / (2 * h)
+
+        assert abs(dcap_dEr_ad - dcap_dEr_fd) < 1e-4 * max(
+            abs(dcap_dEr_fd), 1.0,
+        ), (
+            f'autodiff vs FD disagree at E={e_query} eV: '
+            f'ad={dcap_dEr_ad:.6e} fd={dcap_dEr_fd:.6e}'
+        )
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_jacobian_across_widths_matches_finite_difference():
+    """Full Jacobian d sigma_cap / d (E_r, Gamma_n, Gamma_g) at one
+    incident energy via :func:`jax.jacrev`, validated against
+    central finite differences component-by-component. This is
+    what a fitting workflow actually consumes; if this passes,
+    autodiff is trustworthy for MLBW."""
+    import jax
+    import jax.numpy as jnp
+
+    xp = array_ns.get_backend('jax')
+
+    def cap_scalar(theta):
+        er, gn, gg = theta[0], theta[1], theta[2]
+        data = mlbw.MLBWData(
+            abn=1.0, spi=0.5, ki=1e-4, qx=0.0,
+            r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+            ch_l=np.array([0], dtype=np.int32),
+            ch_g=np.array([1.0], dtype=np.float64),
+            res_channel=np.array([0], dtype=np.int32),
+            res_l=np.array([0], dtype=np.int32),
+            res_er=jnp.stack([er]),
+            res_gn=jnp.stack([gn]),
+            res_gg=jnp.stack([gg]),
+            res_gf=jnp.array([0.0], dtype=jnp.float64),
+            res_gx=jnp.array([0.0], dtype=jnp.float64),
+        )
+        return mlbw.reconstruct(data, jnp.array([100.0]), xp)['cap'][0]
+
+    theta0 = jnp.array([100.0, 0.5, 0.3], dtype=jnp.float64)
+    J_ad = jax.jacrev(cap_scalar)(theta0)
+    assert J_ad.shape == (3,)
+    assert bool(jnp.all(jnp.isfinite(J_ad)))
+
+    # Component-wise central finite differences with parameter-relative
+    # steps (Er ~ 100, widths ~ 1e-1, so a common absolute step would
+    # be badly scaled).
+    steps = jnp.array([1e-3, 1e-6, 1e-6])
+    for i in range(3):
+        h = steps[i]
+        e_i = jnp.zeros(3).at[i].set(h)
+        f_plus = float(cap_scalar(theta0 + e_i))
+        f_minus = float(cap_scalar(theta0 - e_i))
+        fd = (f_plus - f_minus) / (2 * float(h))
+        ad = float(J_ad[i])
+        rel = abs(ad - fd) / max(abs(fd), 1e-6)
+        assert rel < 1e-3, (
+            f'component {i}: ad={ad:.6e} fd={fd:.6e} rel={rel:.2e}'
+        )
