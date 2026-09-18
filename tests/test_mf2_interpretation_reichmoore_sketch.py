@@ -80,6 +80,46 @@ def _single_res_with_fission(
 # ============================================================
 
 
+def test_rm_hard_sphere_phase_uses_scattering_radius():
+    """The hard-sphere phase in Ω_c uses the SCATTERING radius R'
+    (r_ap), not the channel radius a (r_a). When r_a and r_ap differ
+    (NAPS=2 evaluations), sct in the no-resonance limit must be
+    driven by r_ap alone: `sct == 4π/k² g_J sin²(φ_L(rho_ap))`.
+
+    Regression: earlier versions of this sketch used r_a for the
+    hard-sphere phase, which gives the wrong potential-scattering
+    limit when r_a != r_ap. Since MLBW already gets this right and
+    all previous RM tests happened to use r_a = r_ap = 0.6, the
+    bug was invisible."""
+    r_a_val, r_ap_val = 0.5, 0.9      # distinct
+    data = rm.RMData(
+        abn=1.0, spi=0.5, ki=1e-4,
+        r_a=_constant_tab1(r_a_val),
+        r_ap=_constant_tab1(r_ap_val),
+        group_l=np.array([0], dtype=np.int32),
+        group_g=np.array([1.0], dtype=np.float64),
+        group_nfis=np.array([0], dtype=np.int32),
+        res_group=np.array([], dtype=np.int32),
+        res_er=np.array([], dtype=np.float64),
+        res_gn=np.array([], dtype=np.float64),
+        res_gg=np.array([], dtype=np.float64),
+        res_gf1=np.array([], dtype=np.float64),
+        res_gf2=np.array([], dtype=np.float64),
+    )
+    xp = array_ns.get_backend('numpy')
+    einc = np.array([1.0, 100.0, 1e4], dtype=np.float64)
+    xs = rm.reconstruct(data, einc, xp)
+    # sct should equal pot, and both should be driven by r_ap.
+    np.testing.assert_allclose(xs['sct'], xs['pot'], rtol=1e-10, atol=1e-30)
+    # And the value must match the r_ap-based expectation, not the
+    # r_a one (the pre-fix bug gave the latter).
+    ki = data.ki
+    k2 = (ki * ki) * einc
+    rho_ap = ki * np.sqrt(einc) * r_ap_val
+    expected = 4.0 * np.pi / k2 * np.sin(rho_ap) ** 2
+    np.testing.assert_allclose(xs['sct'], expected, rtol=1e-10, atol=1e-30)
+
+
 def test_rm_no_resonances_off_peak_is_potential():
     """With no resonances, elastic reduces to potential (4π/k² g_J
     sin²φ), and capture / fission are zero."""

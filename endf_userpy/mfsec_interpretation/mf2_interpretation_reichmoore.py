@@ -215,8 +215,14 @@ def _reconstruct_group(
     X = xp.linalg.solve(W, R)
 
     # --- U-matrix. Only need the row U_{0, :} (incident = elastic). ---
-    # Ω_c: elastic gets exp(-i phi_L), fission gets 1.
-    phi_e = factors.phase(rho_e, L_scalar, xp)                 # (ne,)
+    # Ω_c = exp(-i phi_L(rho_{ap}(E))): elastic gets the hard-sphere
+    # phase evaluated at the SCATTERING radius R' (r_ap), NOT at the
+    # channel radius a (r_a). The two coincide for NAPS in {0, 1} but
+    # differ for NAPS=2, where a is derived from AWRI while R'=AP is
+    # tabulated separately. Fission channels have no hard-sphere phase
+    # in the external region -- they get Ω = 1.
+    rho_ap = _rho(e_safe, ki, r_ap, xp)                        # (ne,)
+    phi_e = factors.phase(rho_ap, L_scalar, xp)                # (ne,)
     omega_c = xp.exp(-1j * phi_e)                              # (ne,)
     # omega_row for the fission channels are 1 (no hard-sphere phase).
     # U_{0,c} = omega_0 * omega_c * [δ_{0c} + 2 i sqrt(P_0) sqrt(P_c) X_{0,c}]
