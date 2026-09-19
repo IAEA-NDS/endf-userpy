@@ -23,12 +23,11 @@ Scope
   under ``parallel=True`` (which serialises through LAPACK) and
   keeps the whole kernel in numba-native arithmetic.
 
-The scalar factor helpers ``_low_L_pnt_shf`` and ``_low_L_phase``
-are numerically identical to the ones in
-:mod:`mf2_interpretation_mlbw_numba`. They are duplicated here
-rather than shared to keep the two numba modules independent
-until a third formalism (SLBW, RML) shows up and motivates a
-dedicated ``mf2_interpretation_factors_numba`` module.
+The scalar factor helpers ``low_L_pnt_shf`` and ``low_L_phase``
+live in :mod:`mf2_interpretation_factors_numba`, shared with the
+MLBW numba path. ``@njit(inline='always')`` fuses each call into
+the per-energy kernel body at compile time, so importing them
+from a shared module costs nothing at runtime.
 """
 from __future__ import annotations
 
@@ -38,6 +37,10 @@ import numpy as np
 
 from ..primitives import array_ns
 from ..primitives import tab1 as tab1_mod
+from .mf2_interpretation_factors_numba import (
+    low_L_pnt_shf as _low_L_pnt_shf,
+    low_L_phase as _low_L_phase,
+)
 
 try:
     from numba import njit, prange
@@ -54,71 +57,6 @@ except ImportError:
 
 
 _EPS = 1e-38
-
-
-@njit(cache=True, inline='always')
-def _low_L_pnt_shf(rho, L):
-    """Scalar closed-form (P_L, S_L) for L in 0..5.
-
-    Duplicated from :func:`mf2_interpretation_mlbw_numba._low_L_pnt_shf`;
-    keep the two in sync.
-    """
-    r2 = rho * rho
-    if L == 0:
-        return rho, 0.0
-    elif L == 1:
-        d = 1.0 + r2
-        return rho * r2 / d, -1.0 / d
-    elif L == 2:
-        d = 9.0 + r2 * (3.0 + r2)
-        return rho * r2 * r2 / d, -(18.0 + 3.0 * r2) / d
-    elif L == 3:
-        d = 225.0 + r2 * (45.0 + r2 * (6.0 + r2))
-        return (rho * r2 * r2 * r2 / d,
-                -(675.0 + r2 * (90.0 + 6.0 * r2)) / d)
-    elif L == 4:
-        d = 11025.0 + r2 * (1575.0 + r2 * (135.0 + r2 * (10.0 + r2)))
-        return (rho * r2 ** 4 / d,
-                -(44100.0 + r2 * (4725.0 + r2 * (270.0 + 10.0 * r2))) / d)
-    elif L == 5:
-        d = 893025.0 + r2 * (
-            99225.0 + r2 * (6300.0 + r2 * (315.0 + r2 * (15.0 + r2)))
-        )
-        p = rho * r2 ** 5 / d
-        s = -(4465125.0 + r2 * (
-            396900.0 + r2 * (18900.0 + r2 * (630.0 + 15.0 * r2))
-        )) / d
-        return p, s
-    else:
-        return float('nan'), float('nan')
-
-
-@njit(cache=True, inline='always')
-def _low_L_phase(rho, L):
-    """Scalar hard-sphere phase φ_L for L in 0..5.
-
-    Duplicated from :func:`mf2_interpretation_mlbw_numba._low_L_phase`.
-    """
-    r2 = rho * rho
-    if L == 0:
-        return rho
-    elif L == 1:
-        return rho - math.atan(rho)
-    elif L == 2:
-        return rho - math.atan2(3.0 * rho, 3.0 - r2)
-    elif L == 3:
-        return rho - math.atan2(rho * (15.0 - r2), 15.0 - 6.0 * r2)
-    elif L == 4:
-        return rho - math.atan2(
-            rho * (105.0 - 10.0 * r2), 105.0 - r2 * (45.0 - r2),
-        )
-    elif L == 5:
-        return rho - math.atan2(
-            rho * (945.0 - r2 * (105.0 - r2)),
-            945.0 - r2 * (420.0 - 15.0 * r2),
-        )
-    else:
-        return float('nan')
 
 
 @njit(cache=True, parallel=True, fastmath=True)
