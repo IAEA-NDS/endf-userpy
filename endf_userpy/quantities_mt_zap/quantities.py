@@ -1,9 +1,12 @@
+import contextlib
+import contextvars
 import numpy as np
 from ..primitives import properties
 from ..primitives import reactions as reaction
 from ..primitives.physical_constants import get_zap_for_particle
 from ..mfsec_interpretation import mf1_interpretation as mf1_interp
 from ..mfsec_interpretation import mf3_interpretation as mf3_interp
+from . import resonance_composition as _res_comp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf8_interpretation as mf8_interp
@@ -167,7 +170,47 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in):
     return xs_mt5 * yield_mt5
 
 
+# Context-inherited flag: when True, `compute_xs` returns the
+# physical cross section including MF2 resolved-resonance
+# reconstruction (composed with MF3 as an additive background), on
+# whichever backend was set via `resonance_backend_ctx`. Set by the
+# top-level `get_*` APIs when the user passes `include_resonance=True`;
+# defaults to False everywhere else so legacy callers keep the raw
+# MF3 behaviour and the resonance-range policy machinery in
+# `mf3_interpretation`.
+_include_resonance_var = contextvars.ContextVar(
+    '_include_resonance', default=False,
+)
+_resonance_backend_var = contextvars.ContextVar(
+    '_resonance_backend', default=None,
+)
+
+
+@contextlib.contextmanager
+def resonance_reconstruction_ctx(include, backend=None):
+    """Context manager toggling MF2 resonance reconstruction inside
+    every :func:`compute_xs` call in the ``with`` block. ``backend``
+    is a backend name understood by
+    :func:`endf_userpy.primitives.array_ns.get_backend`
+    (``'numpy'`` / ``'numba'`` / ``'jax'``); ``None`` means numpy.
+    """
+    tok_i = _include_resonance_var.set(bool(include))
+    tok_b = _resonance_backend_var.set(backend)
+    try:
+        yield
+    finally:
+        _include_resonance_var.reset(tok_i)
+        _resonance_backend_var.reset(tok_b)
+
+
 def compute_xs(endf_dict, mt, energies_in):
+    if _include_resonance_var.get():
+        from ..primitives import array_ns
+        backend_name = _resonance_backend_var.get() or 'numpy'
+        xp = array_ns.get_backend(backend_name)
+        return np.asarray(_res_comp.compute_reconstructed_cross_section(
+            endf_dict, mt, energies_in, xp,
+        ))
     return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
 
 

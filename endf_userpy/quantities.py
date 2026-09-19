@@ -1,3 +1,4 @@
+import contextlib
 import numpy as np
 import warnings
 from .primitives import physical_constants as physconst
@@ -31,6 +32,11 @@ from .mfsec_interpretation.mf6_law7_integrals import (
 # than once per call. id() can be reused after garbage collection but
 # the worst case is a missed warning, never a wrong result.
 _isomer_warning_seen = set()
+
+
+@contextlib.contextmanager
+def _noop_ctx():
+    yield
 
 
 def _warn_if_missing_isomer_routing(
@@ -293,6 +299,7 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
 def get_reaction_xs(
     endf_dict, reaction, energies_in, mt5_contrib=True,
     above_range='warn_nan', resonance_range='warn',
+    include_resonance=False, resonance_backend=None,
 ):
     """Cross section for `reaction` on the incident energy grid.
 
@@ -305,13 +312,41 @@ def get_reaction_xs(
 
     `resonance_range` (default ``'warn'``) controls the handling of
     Ein points inside the file's resolved-resonance region (LRU=1
-    in MF2/MT151). MF3 there is a subtractive background that the
-    library cannot reconstruct against MF2, so raw MF3 in the RRR
-    is not the physical cross section and can be negative (issue
-    #84). Policies: ``'warn' | 'warn_nan' | 'nan' | 'raise'``.
-    Silent on files without an LRU=1 range.
+    in MF2/MT151). MF3 there is a subtractive background that must
+    be added to the resonance reconstruction from MF2; see
+    ``include_resonance`` below to do that composition here.
+    Otherwise raw MF3 in the RRR is not the physical cross section
+    and can be negative (issue #84). Policies:
+    ``'warn' | 'warn_nan' | 'nan' | 'raise'``. Silent on files
+    without an LRU=1 range.
+
+    `include_resonance` (default ``False``): when True, the MF2
+    resolved-resonance reconstruction (MLBW / Reich-Moore, per
+    ``quantities_mt_zap.resonance_composition``) is added to the
+    MF3 background wherever the query energy falls inside an
+    LRU=1 range, giving the physical cross section directly. In
+    this mode the ``resonance_range`` policy is inactive (there
+    is no "raw MF3 in RRR" to warn about). Unresolved-resonance
+    ranges (LRU=2), LRF=4 Adler-Adler, and LRF=7 R-matrix limited
+    ranges are not reconstructed yet and contribute zero.
+
+    `resonance_backend` (default ``None``: numpy): backend name
+    understood by :func:`endf_userpy.primitives.array_ns.get_backend`
+    for the resonance reconstruction. ``'numba'`` is typically
+    30-40x faster on real actinide files after the first-call
+    warm-up; ``'jax'`` enables autodiff through the resonance
+    parameters.
     """
-    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
+    ctx = (
+        quant_mt_zap.resonance_reconstruction_ctx(
+            include_resonance, resonance_backend,
+        )
+        if include_resonance
+        else _noop_ctx()
+    )
+    with above_range_ctx(above_range), \
+            resonance_range_ctx(resonance_range), \
+            ctx:
         return _get_reaction_xs_impl(
             endf_dict, reaction, energies_in, mt5_contrib,
         )
@@ -366,14 +401,25 @@ def _get_reaction_xs_impl(endf_dict, reaction, energies_in, mt5_contrib):
 def get_residual_production_xs(
     endf_dict, residual_nucleus, energies_in, mt5_contrib=True,
     above_range='warn_nan', resonance_range='warn',
+    include_resonance=False, resonance_backend=None,
 ):
     """Residual-production cross section for `residual_nucleus`.
 
-    `above_range` (default ``'warn_nan'``) and `resonance_range`
-    (default ``'warn'``) match ``get_reaction_xs``; see its
-    docstring for the policy sets.
+    `above_range` (default ``'warn_nan'``), `resonance_range`
+    (default ``'warn'``), `include_resonance` (default ``False``)
+    and `resonance_backend` (default ``None``: numpy) match
+    :func:`get_reaction_xs`; see its docstring.
     """
-    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
+    ctx = (
+        quant_mt_zap.resonance_reconstruction_ctx(
+            include_resonance, resonance_backend,
+        )
+        if include_resonance
+        else _noop_ctx()
+    )
+    with above_range_ctx(above_range), \
+            resonance_range_ctx(resonance_range), \
+            ctx:
         return _get_residual_production_xs_impl(
             endf_dict, residual_nucleus, energies_in, mt5_contrib,
         )
@@ -421,14 +467,25 @@ def _get_residual_production_xs_impl(
 def get_particle_production_xs(
     endf_dict, reaction, particle, energies_in,
     above_range='warn_nan', resonance_range='warn',
+    include_resonance=False, resonance_backend=None,
 ):
     """Particle-production cross section on the incident energy grid.
 
-    `above_range` (default ``'warn_nan'``) and `resonance_range`
-    (default ``'warn'``) match ``get_reaction_xs``; see its
-    docstring for the policy sets.
+    `above_range` (default ``'warn_nan'``), `resonance_range`
+    (default ``'warn'``), `include_resonance` (default ``False``)
+    and `resonance_backend` (default ``None``: numpy) match
+    :func:`get_reaction_xs`; see its docstring.
     """
-    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
+    ctx = (
+        quant_mt_zap.resonance_reconstruction_ctx(
+            include_resonance, resonance_backend,
+        )
+        if include_resonance
+        else _noop_ctx()
+    )
+    with above_range_ctx(above_range), \
+            resonance_range_ctx(resonance_range), \
+            ctx:
         return _get_particle_production_xs_impl(
             endf_dict, reaction, particle, energies_in,
         )
