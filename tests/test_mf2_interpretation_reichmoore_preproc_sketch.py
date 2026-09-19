@@ -210,29 +210,41 @@ def test_u235_structural_counts():
 
 
 @pytest.mark.skipif(not _u235_available(), reason='U-235 ENDF not available')
-def test_u235_reconstruction_runs_and_returns_finite_values():
-    """The preprocessor + reconstruction runs end-to-end on U-235
-    without errors, and returns finite numbers.
+def test_u235_thermal_capture_and_fission_match_ENDF():
+    """End-to-end sanity: preprocessor + R-M reconstruction on
+    U-235 must give the widely-tabulated thermal cross sections
+    to reasonable precision.
 
-    Physical accuracy is a SEPARATE concern from preprocessor
-    correctness: at U-235 thermal (~0.025 eV) the reconstruction
-    can return NEGATIVE capture because the R-M sketch uses
-    ``L̃_c(E) = i P_c(E)`` (LSSF=0-with-shift-absorbed
-    approximation) which breaks down in the strong-interference
-    thermal region of fissile actinides. Fixing that needs the
-    per-resonance shift-anchoring documented as future work in
-    :mod:`mf2_interpretation_reichmoore` -- not in scope for the
-    preprocessor. This test just pins that the preprocessing +
-    reconstruction pipeline runs end-to-end and the numbers are
-    finite (not NaN / Inf)."""
+    Expected at 0.0253 eV (ENDF/B-VIII.1, JEFF-4.0, EXFOR consensus):
+      σ_cap ≈ 99   b
+      σ_fis ≈ 584  b
+      σ_sct ≈ 14   b
+
+    We pass at 20% tolerance because the sketch still uses the
+    shift-absorbed L̃_c = i P_c approximation (LSSF=0) which
+    can nudge thermal-region values by a few percent, and the
+    file's tabulated values are the RECONSTRUCTED ones anyway --
+    a discrepancy of a couple percent is expected and fine here.
+
+    Historical note: an earlier version of the sketch had a
+    double-subtraction bug in σ_cap = σ_reaction - σ_fission
+    that gave σ_cap = -483 b at thermal. See commit that fixes it.
+    """
     from endf_parserpy import EndfParserCpp
     p = EndfParserCpp()
     d = p.parsefile(_U235, include=[1, 2])
     data = pre.rm_data_from_endf_dict(d)
     xp = array_ns.get_backend('numpy')
-    # A handful of energies across the U-235 RRR.
+    xs = rm.reconstruct(data, np.array([0.0253]), xp)
+    sct, cap, fis = float(xs['sct'][0]), float(xs['cap'][0]), float(xs['fis'][0])
+    assert 80.0 < cap < 130.0, f'thermal capture {cap} b (expected ~99)'
+    assert 500.0 < fis < 700.0, f'thermal fission {fis} b (expected ~584)'
+    assert 5.0 < sct < 25.0, f'thermal scattering {sct} b (expected ~14)'
+    # Also pin finite/positive everywhere across the RRR.
     einc = np.array([0.025, 0.1, 1.0, 100.0, 1000.0], dtype=np.float64)
     xs = rm.reconstruct(data, einc, xp)
     for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
         arr = np.asarray(xs[key])
         assert np.all(np.isfinite(arr)), f'{key} has non-finite values'
+    assert np.all(np.asarray(xs['cap']) >= 0.0), 'capture went negative'
+    assert np.all(np.asarray(xs['fis']) >= 0.0), 'fission went negative'

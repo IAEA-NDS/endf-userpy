@@ -307,6 +307,17 @@ def _reconstruct_group(
     sct = pi_k2 * group_g * xp.abs(1.0 - U00) ** 2
 
     # |U_{0,c}|^2 sum, splitting fission and total.
+    #
+    # In R-M, capture is the ONLY implicit channel (fission is
+    # explicit through the U-matrix, elastic is c=0). By Lane-Thomas:
+    #   σ_reaction  = (π/k²) g_J (1 - |U_{0,0}|²)
+    #   σ_0->fis    = (π/k²) g_J Σ_{c∈fis} |U_{0,c}|²
+    #   σ_capture   = σ_reaction - Σ_c!=0 σ_{0->c}
+    #               = (π/k²) g_J (1 - Σ_c |U_{0,c}|²)
+    # so `(1 - Σ_c |U|²)` IS σ_capture directly. An earlier version
+    # of this code subtracted σ_fis from that expression, which
+    # double-subtracted the fission contribution and produced
+    # negative capture whenever fission was strong.
     sumsq = xp.abs(U_row) ** 2
     sumsq_total = xp.sum(sumsq, axis=1)                        # (ne,)
     if nfis > 0:
@@ -314,8 +325,7 @@ def _reconstruct_group(
     else:
         sumsq_fis = xp.zeros_like(sumsq_total)
     fis = pi_k2 * group_g * sumsq_fis
-    abs_ = pi_k2 * group_g * (1.0 - sumsq_total)
-    cap = abs_ - fis
+    cap = pi_k2 * group_g * (1.0 - sumsq_total)
 
     # Positive-energy mask: below zero energy, contributions are 0.
     zero = xp.zeros_like(sct)

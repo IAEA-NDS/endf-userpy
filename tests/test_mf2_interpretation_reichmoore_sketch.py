@@ -430,6 +430,146 @@ def test_rm_jax_jit_matches_direct_call():
         )
 
 
+def _level_matrix_reference(data, energies):
+    """Independent R-M implementation via the LEVEL-MATRIX
+    formulation (SAMMY eq A.63). Used as ground truth to catch
+    formula bugs in the sketch's R-matrix path.
+
+    Formulation (LSSF=0 shift-absorbed, s-wave):
+        A^{-1}_{λμ} = (E_λ - E - iΓ_γ,λ/2) δ_{λμ}
+                      - Σ_c γ_λc γ_μc L̃_c(E),   L̃_c = i P_c
+        U_{cc'}      = Ω_c Ω_c' [δ_{cc'} + 2i √P_c √P_c'
+                                   Σ_{λμ} γ_λc γ_μc' A_{λμ}]
+
+    Same physics as the R-matrix path — different arithmetic. Any
+    disagreement points at a bug in one of them.
+    """
+    import math
+    energies = np.asarray(energies, dtype=np.float64)
+    ne = energies.shape[0]
+    ki = data.ki
+    r_a_val = float(data.r_a.y[0])
+    r_ap_val = float(data.r_ap.y[0])
+
+    nres = data.res_er.shape[0]
+    L = int(data.group_l[0])
+    assert L == 0, 'this reference is s-wave only'
+    nfis = int(data.group_nfis[0])
+    g_J = float(data.group_g[0])
+
+    er = np.asarray(data.res_er, dtype=np.float64)
+    gg = np.asarray(data.res_gg, dtype=np.float64)
+    gn = np.asarray(data.res_gn, dtype=np.float64)
+    gfa = np.asarray(data.res_gf1, dtype=np.float64)
+
+    rho_r = ki * np.sqrt(np.abs(er)) * r_a_val
+    P_r = rho_r
+    gamma_e = np.where(
+        P_r > 0, np.sqrt(gn / (2 * np.maximum(P_r, 1e-38))), 0.0,
+    )
+    gamma_f = np.sign(gfa) * np.sqrt(np.abs(gfa) / 2.0)
+
+    sct = np.zeros(ne); cap = np.zeros(ne); fis = np.zeros(ne); pot = np.zeros(ne)
+    for i in range(ne):
+        E = float(energies[i])
+        if E <= 0:
+            continue
+        k2 = ki * ki * E
+        pi_k2 = np.pi / k2
+        rho_e = ki * math.sqrt(E) * r_a_val
+        P_e = rho_e
+        rho_s = ki * math.sqrt(E) * r_ap_val
+        phi_e = rho_s
+        omega_0 = complex(math.cos(-phi_e), math.sin(-phi_e))
+
+        A_inv = np.zeros((nres, nres), dtype=np.complex128)
+        for lam in range(nres):
+            for mu in range(nres):
+                cross = 1j * P_e * gamma_e[lam] * gamma_e[mu]
+                if nfis >= 1:
+                    cross = cross + 1j * gamma_f[lam] * gamma_f[mu]
+                A_inv[lam, mu] = -cross
+                if lam == mu:
+                    A_inv[lam, lam] = A_inv[lam, lam] + (
+                        er[lam] - E - 0.5j * gg[lam]
+                    )
+        A = np.linalg.inv(A_inv)
+
+        SqP_e = math.sqrt(P_e)
+        sum_00 = gamma_e @ A @ gamma_e
+        U_00 = (omega_0 ** 2) * (1.0 + 2j * SqP_e * SqP_e * sum_00)
+        if nfis >= 1:
+            sum_01 = gamma_e @ A @ gamma_f
+            U_01 = omega_0 * (2j * SqP_e * 1.0 * sum_01)
+            fis_i = pi_k2 * g_J * (U_01.real ** 2 + U_01.imag ** 2)
+            sumsq_total = (U_00.real ** 2 + U_00.imag ** 2
+                           + U_01.real ** 2 + U_01.imag ** 2)
+        else:
+            fis_i = 0.0
+            sumsq_total = U_00.real ** 2 + U_00.imag ** 2
+
+        sct[i] = pi_k2 * g_J * (abs(1.0 - U_00)) ** 2
+        cap[i] = pi_k2 * g_J * (1.0 - sumsq_total)
+        fis[i] = fis_i
+        pot[i] = 4.0 * pi_k2 * g_J * (math.sin(phi_e)) ** 2
+    return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot,
+            'tot': sct + cap + fis}
+
+
+def test_rm_r_matrix_matches_level_matrix_reference_across_sign_patterns():
+    """Two-resonance, one-fission-channel synthetic cases feed the
+    sketch's R-matrix formulation against an independent level-matrix
+    reference computed here. Pins agreement at rtol<=1e-10 across a
+    grid of energies (on-peak, off-peak, between-peaks).
+
+    Cases chosen to trigger interference-heavy conditions:
+
+    - same-sign GFA: straightforward
+    - opposite-sign GFA: destructive interference in R_01 (mimics
+      the U-235 sign pattern of GFA/GFB)
+    - bound-pole + active resonance with opposite GFA: closer to
+      real actinide RRR shape
+
+    Historical note: this test was written to lock in the fix for a
+    σ_cap double-subtraction bug that gave σ_cap = -483 b for U-235
+    thermal. If it ever fires, chances are someone reintroduced the
+    same class of error.
+    """
+    def data_two_res(er_pair, gn_pair, gg_pair, gfa_pair):
+        return rm.RMData(
+            abn=1.0, spi=0.5, ki=1e-4,
+            r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+            group_l=np.array([0], dtype=np.int32),
+            group_g=np.array([1.0], dtype=np.float64),
+            group_nfis=np.array([1], dtype=np.int32),
+            res_group=np.zeros(2, dtype=np.int32),
+            res_er=np.array(er_pair, dtype=np.float64),
+            res_gn=np.array(gn_pair, dtype=np.float64),
+            res_gg=np.array(gg_pair, dtype=np.float64),
+            res_gf1=np.array(gfa_pair, dtype=np.float64),
+            res_gf2=np.array([0.0, 0.0], dtype=np.float64),
+        )
+
+    xp = array_ns.get_backend('numpy')
+    einc = np.array([50.0, 95.0, 100.0, 105.0, 150.0, 195.0, 200.0, 205.0, 300.0])
+
+    cases = [
+        ('same-sign GFA', [100.0, 200.0], [1.0, 1.0], [0.05, 0.05], [0.5, 0.5]),
+        ('opposite-sign GFA', [100.0, 200.0], [1.0, 1.0], [0.05, 0.05], [0.5, -0.5]),
+        ('bound-pole + active', [-500.0, 100.0], [1.0, 1.0], [0.05, 0.05], [-0.5, 0.5]),
+    ]
+    for label, er, gn, gg, gfa in cases:
+        data = data_two_res(er, gn, gg, gfa)
+        ref = _level_matrix_reference(data, einc)
+        got = rm.reconstruct(data, einc, xp)
+        for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+            np.testing.assert_allclose(
+                np.asarray(got[key]), ref[key],
+                rtol=1e-10, atol=1e-30,
+                err_msg=f'[{label}] {key}: sketch vs level-matrix disagree',
+            )
+
+
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
 def test_rm_jax_grad_matches_finite_difference():
     """`jax.grad` through the R-M reconstruction produces gradients

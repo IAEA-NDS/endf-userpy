@@ -14,10 +14,10 @@ Scope
 - L in 0..5 (closed forms for P_L, S_L, φ_L); higher L is
   rejected at the wrapper with a clear message pointing at the
   numpy / jax backends.
-- Same physics simplifications as the numpy sketch: LSSF=0 with
-  the shift term ``S_c(E) - S_c(|E_r|)`` absorbed (i.e.
-  ``L̃_c(E) = i P_c(E)``); acceptable for narrow resonances and
-  regions far from strong s-wave interferences.
+- Same physics as the numpy path: LSSF=0 handled via the
+  ``E_r - γ_n^2 (S_L(E) - S_L(|E_r|))`` level shift on the R-matrix
+  denominator (matches SAMMY convention). ``shf_r`` is
+  precomputed per resonance in the wrapper and passed in.
 - Hand-coded 1×1 / 2×2 / 3×3 solves for ``(I - i R P) X = R``.
   Faster than calling numba's ``np.linalg.solve`` per (E, group)
   under ``parallel=True`` (which serialises through LAPACK) and
@@ -137,6 +137,7 @@ def _reconstruct_kernel(
     gamma_n,               # (nres,) float  -- signed reduced-width amps, precomputed
     gamma_f1,              # (nres,) float
     gamma_f2,              # (nres,) float
+    shf_r,                 # (nres,) float  -- S_L(rho(|E_r|)) per resonance
 ):
     ne = e.shape[0]
     ngroups = group_l.shape[0]
@@ -177,7 +178,10 @@ def _reconstruct_kernel(
             # the channel radius (rho_a); the hard-sphere phase in Ω
             # uses the scattering radius (rho_ap). These differ only
             # for NAPS=2 evaluations but the physics is identical.
-            p_e, _ = _low_L_pnt_shf(rho_a_i, L)
+            # `shf_e` is used below to build the S(E) - S(|E_r|) level
+            # shift correction on the R-matrix denominator (LSSF=0
+            # handling, matches the numpy path).
+            p_e, shf_e = _low_L_pnt_shf(rho_a_i, L)
             phi_e = _low_L_phase(rho_ap_i, L)
 
             # Potential scattering contribution: 4π/k² Σ_J g_J sin²(φ_L).
@@ -198,10 +202,16 @@ def _reconstruct_kernel(
             r_start = group_res_start[g]
             r_end = group_res_end[g]
             for r in range(r_start, r_end):
-                # 1 / (E_r - E - i Γ_γ / 2)
-                denom = complex(res_er[r] - E_safe, -0.5 * res_gg[r])
-                inv_d = 1.0 / denom
+                # Level shift on the effective resonance energy:
+                #   E_r^eff = E_r - γ_n^2 (S_L(E) - S_L(|E_r|))
+                # Only the elastic channel contributes (S=0 for fission).
+                # For s-wave the shift is identically 0.
                 gn_r = gamma_n[r]
+                delta_r = -(gn_r * gn_r) * (shf_e - shf_r[r])
+                er_eff = res_er[r] + delta_r
+                # 1 / (E_r^eff - E - i Γ_γ / 2)
+                denom = complex(er_eff - E_safe, -0.5 * res_gg[r])
+                inv_d = 1.0 / denom
 
                 R00 = R00 + (gn_r * gn_r) * inv_d
                 if nfis >= 1:
@@ -247,7 +257,7 @@ def _reconstruct_kernel(
                 sumsq = U00.real * U00.real + U00.imag * U00.imag + s01
                 abs_g = pi_k2 * gJ * (1.0 - sumsq)
                 fis_g = pi_k2 * gJ * s01
-                cap_g = abs_g - fis_g
+                cap_g = abs_g   # `abs_` is already σ_cap in R-M (see numpy path)
             else:
                 # nch = 3: 3×3 inverse via cofactor expansion.
                 W00 = 1.0 - 1j * R00 * p_e
@@ -281,7 +291,7 @@ def _reconstruct_kernel(
                 sumsq = U00.real * U00.real + U00.imag * U00.imag + s01 + s02
                 abs_g = pi_k2 * gJ * (1.0 - sumsq)
                 fis_g = pi_k2 * gJ * (s01 + s02)
-                cap_g = abs_g - fis_g
+                cap_g = abs_g   # `abs_` is already σ_cap in R-M (see numpy path)
 
             sct_sum += sct_g
             cap_sum += cap_g
@@ -372,11 +382,13 @@ def reconstruct(data, energies_in):
     gamma_n = np.zeros(nres, dtype=np.float64)
     gamma_f1 = np.zeros(nres, dtype=np.float64)
     gamma_f2 = np.zeros(nres, dtype=np.float64)
+    shf_r = np.zeros(nres, dtype=np.float64)
     for r in range(nres):
         g_idx = int(res_group_s[r])
         L = int(group_l[g_idx])
         rho_at_er = data.ki * math.sqrt(abs(er_s[r])) * r_a_at_er_s[r]
-        p_r, _ = _pnt_shf_scalar(rho_at_er, L)
+        p_r, s_r = _pnt_shf_scalar(rho_at_er, L)
+        shf_r[r] = s_r
         if p_r > _EPS:
             gamma_n[r] = math.copysign(
                 math.sqrt(abs(gn_s[r]) / (2.0 * p_r)), gn_s[r],
@@ -395,7 +407,7 @@ def reconstruct(data, energies_in):
         float(data.abn), float(data.ki),
         group_l, group_g, group_nfis,
         group_res_start, group_res_end,
-        er_s, gg_s, gamma_n, gamma_f1, gamma_f2,
+        er_s, gg_s, gamma_n, gamma_f1, gamma_f2, shf_r,
     )
     tot = sct + cap + fis
     return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot, 'tot': tot}
