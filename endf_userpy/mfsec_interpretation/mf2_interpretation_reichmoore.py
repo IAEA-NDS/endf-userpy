@@ -52,6 +52,24 @@ Not covered by this sketch (deliberate scope):
 - **ENDF-6 -> RMData preprocessing**: the caller supplies the
   natural-size dataclass. A helper that lifts ``d2_151`` into
   ``RMData`` is the natural next step.
+
+JIT / autodiff notes
+--------------------
+
+The per-J·π group loop uses a fixed-shape ``(nres, ngroups)``
+indicator mask (Option A) rather than Python-side boolean
+indexing to select each group's resonances. That is what makes
+``jax.jit(reconstruct)`` and ``jax.grad(...)`` work as expected:
+every intermediate has a shape known at trace time. Trade-off:
+every resonance contributes to every group's R-matrix sum (masked
+to zero for non-members), so per-(c,c') work grows by a factor of
+``ngroups`` (2-3 for typical actinide RM files). Memory for the
+``(ne, nres)`` inv_denom intermediate is the same either way.
+
+Sensitivity workflows built on top of this (``jax.grad`` /
+``jax.jacrev`` for parameter fits, ``chunked_chi2`` for
+memory-bounded gradients under fitting loops) therefore work
+without a fork of the physics code.
 """
 from __future__ import annotations
 
@@ -138,13 +156,24 @@ def _reconstruct_group(
     e_safe, e_pos, k_e2, pi_k2,
     group_l, group_g, group_nfis,
     res_er, res_gn, res_gg, res_gf1, res_gf2,
+    group_mask,
     ki, r_a, r_ap, xp,
 ):
     """Reconstruct one J·π group's contribution to sct/cap/fis.
 
-    ``res_*`` arrays here are ALREADY restricted to the resonances in
-    this group. ``group_l``, ``group_g``, ``group_nfis`` are group
-    scalars.
+    ``res_*`` arrays here are the FULL-LENGTH ``(nres,)`` per-resonance
+    arrays across all groups. ``group_mask`` is a ``(nres,)`` indicator
+    (0.0 / 1.0) marking which resonances belong to THIS group; the
+    reduced-width amplitudes for out-of-group resonances get zeroed
+    via this mask so their R-matrix contributions vanish.
+
+    Keeping full-length arrays here (instead of Python-side boolean
+    indexing to slice out this group's rows) is what lets the whole
+    ``reconstruct`` traced under ``jax.jit`` -- data-dependent shapes
+    from a boolean mask are the exact thing JAX's tracer refuses.
+
+    ``group_l``, ``group_g``, ``group_nfis`` are group scalars
+    (Python-level ints/floats at trace time).
 
     Returns three ``(ne,)`` arrays: ``sct``, ``cap``, ``fis``, each
     already multiplied by the group statistical weight and the
@@ -165,20 +194,33 @@ def _reconstruct_group(
 
     # Elastic reduced-width amplitude gamma_n0. Sign of GN matters.
     # gamma_{r,0} = sign(gn) * sqrt(|gn| / (2 * P_L(|E_r|))).
+    #
+    # Multiply by `group_mask` at the end: for resonances not in this
+    # group we compute P_L with this group's L and (potentially wrong)
+    # r_a, so the intermediate gamma is meaningless, but the mask
+    # zeros it out before it can pollute the R-matrix sum. The extra
+    # `xp.where` on the mask side lets us avoid dividing by whatever
+    # tiny P_L we computed for out-of-group rows.
     denom = xp.where(p_r > _EPS, 2.0 * p_r, 1.0)
     gamma0 = xp.where(
         p_r > _EPS,
         _signed_sqrt(res_gn, xp) / xp.sqrt(denom),
         0.0,
     )   # (nres,)
+    gamma0 = gamma0 * group_mask
 
     # --- Fission reduced-width amplitudes (P=1 for fission channels). ---
-    # Build as list to keep the code readable at nch=1..3.
+    # Build as list to keep the code readable at nch=1..3. Fission
+    # widths are per-channel and each is also masked to this group.
     gammas = [gamma0]
     if nfis >= 1:
-        gammas.append(_signed_sqrt(res_gf1, xp) / xp.sqrt(2.0))
+        gammas.append(
+            (_signed_sqrt(res_gf1, xp) / xp.sqrt(2.0)) * group_mask
+        )
     if nfis >= 2:
-        gammas.append(_signed_sqrt(res_gf2, xp) / xp.sqrt(2.0))
+        gammas.append(
+            (_signed_sqrt(res_gf2, xp) / xp.sqrt(2.0)) * group_mask
+        )
     # gammas: list of (nres,) arrays, length nch
 
     # --- R-matrix (ne, nch, nch) complex. ---
@@ -344,23 +386,27 @@ def reconstruct(data: RMData, energies_in, xp):
     pot_tot = 4.0 * pi_k2 * pot_tot
 
     # --- Per-group loop for the resonant contribution. ---
-    for g in range(ngroups):
-        mask = res_group == g
-        # Mask contents: use numpy-side boolean indexing (both numpy
-        # and JAX support this on non-traced arrays; if this reconstruct
-        # ever gets jitted, replace with a fixed-shape scan.)
-        mask_np = np.asarray(mask)
-        er_g = np.asarray(res_er)[mask_np]
-        gn_g = np.asarray(res_gn)[mask_np]
-        gg_g = np.asarray(res_gg)[mask_np]
-        gf1_g = np.asarray(res_gf1)[mask_np]
-        gf2_g = np.asarray(res_gf2)[mask_np]
+    # Fixed-shape membership mask: `res_mask[r, g] == 1.0` iff
+    # resonance `r` belongs to group `g`. Keeping all `(nres,)` arrays
+    # full-length inside the group loop (instead of Python-side boolean
+    # indexing to slice each group's rows out) is what makes this
+    # `reconstruct` traceable under `jax.jit`; JAX refuses the
+    # data-dependent shape a boolean mask would produce. The extra
+    # cost is `ngroups`x more per-(c,c') work in the R-matrix sum,
+    # since every resonance contributes to every group's sum (zeroed
+    # out via the mask for non-members); for the typical actinide RM
+    # file with 2-3 J·π groups this is a small constant factor.
+    group_idx = xp.arange(ngroups, dtype=xp.int32)
+    res_mask = (
+        res_group.reshape(-1, 1) == group_idx.reshape(1, -1)
+    ).astype(xp.float64)                                       # (nres, ngroups)
 
+    for g in range(ngroups):
         sct_g, cap_g, fis_g = _reconstruct_group(
             e_safe, e_pos, k_e2, pi_k2,
             data.group_l[g], data.group_g[g], data.group_nfis[g],
-            xp.asarray(er_g), xp.asarray(gn_g), xp.asarray(gg_g),
-            xp.asarray(gf1_g), xp.asarray(gf2_g),
+            res_er, res_gn, res_gg, res_gf1, res_gf2,
+            res_mask[:, g],
             data.ki, data.r_a, data.r_ap, xp,
         )
         sct_tot = sct_tot + sct_g

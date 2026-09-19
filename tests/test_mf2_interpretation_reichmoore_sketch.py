@@ -374,3 +374,92 @@ def test_rm_numba_rejects_high_L():
     einc = np.array([100.0])
     with pytest.raises(NotImplementedError, match='L<=5'):
         rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+
+
+# ============================================================
+# jax.jit compatibility (Option A: fixed-shape indicator mask).
+# The R-M reconstruct now traces cleanly, which is what makes
+# it usable with `chunked_chi2` and `jax.grad` for sensitivity
+# / fitting workflows.
+# ============================================================
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_rm_jax_jit_matches_direct_call():
+    """`jax.jit`-wrapped R-M reconstruction matches the un-jitted
+    numpy result to floating precision. If this ever fires, some
+    piece of the physics slipped back into Python-side control flow
+    that the tracer can't follow."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+
+    # Multi-group case with both no-fission and one-fission groups,
+    # so the mask actually does distinguish resonances.
+    data = rm.RMData(
+        abn=1.0, spi=0.5, ki=1e-4,
+        r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+        group_l=np.array([0, 0], dtype=np.int32),
+        group_g=np.array([0.4, 0.6], dtype=np.float64),
+        group_nfis=np.array([0, 1], dtype=np.int32),
+        res_group=np.array([0, 1, 1, 0], dtype=np.int32),
+        res_er=np.array([80.0, 100.0, 120.0, 200.0], dtype=np.float64),
+        res_gn=np.array([0.5, 0.4, 0.3, 0.6], dtype=np.float64),
+        res_gg=np.array([0.3, 0.3, 0.3, 0.3], dtype=np.float64),
+        res_gf1=np.array([0.0, 0.1, 0.05, 0.0], dtype=np.float64),
+        res_gf2=np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+    )
+    einc = np.linspace(50.0, 250.0, 51)
+
+    # Non-jit reference on numpy.
+    ref = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+
+    # jit-wrapped JAX path.
+    @jax.jit
+    def _jit(e):
+        return rm.reconstruct(data, e, xp)
+
+    out = _jit(jnp.asarray(einc))
+    jax.block_until_ready(out['tot'])
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(out[key]),
+            np.asarray(ref[key]),
+            rtol=1e-8, atol=1e-30,
+            err_msg=f'jit vs direct disagree on {key}',
+        )
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_rm_jax_grad_matches_finite_difference():
+    """`jax.grad` through the R-M reconstruction produces gradients
+    that match central FD -- the payoff for the jit-compatibility
+    fix. Enables `chunked_chi2` on R-M for fitting workflows."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+
+    e_query = 100.5
+
+    def cap_at(er_value):
+        data = rm.RMData(
+            abn=1.0, spi=0.5, ki=1e-4,
+            r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+            group_l=np.array([0], dtype=np.int32),
+            group_g=np.array([1.0], dtype=np.float64),
+            group_nfis=np.array([1], dtype=np.int32),
+            res_group=np.array([0], dtype=np.int32),
+            res_er=jnp.stack([er_value]),
+            res_gn=jnp.array([0.5], dtype=jnp.float64),
+            res_gg=jnp.array([0.3], dtype=jnp.float64),
+            res_gf1=jnp.array([0.2], dtype=jnp.float64),
+            res_gf2=jnp.array([0.0], dtype=jnp.float64),
+        )
+        xs = rm.reconstruct(data, jnp.array([e_query]), xp)
+        return xs['cap'][0]
+
+    grad_ad = float(jax.grad(cap_at)(100.0))
+    h = 1e-4
+    grad_fd = (float(cap_at(100.0 + h)) - float(cap_at(100.0 - h))) / (2 * h)
+    rel = abs(grad_ad - grad_fd) / max(abs(grad_fd), 1.0)
+    assert rel < 1e-3, f'ad={grad_ad:.6e} fd={grad_fd:.6e}'
