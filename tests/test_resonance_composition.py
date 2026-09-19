@@ -23,7 +23,6 @@ still passes.
 """
 from __future__ import annotations
 
-import os
 import warnings
 
 import numpy as np
@@ -41,20 +40,7 @@ from endf_userpy.mfsec_interpretation import (
     mf2_interpretation_reichmoore_preproc as rm_pre,
 )
 
-
-NB93 = "/home/gschnabel/Seafile/Development/codeproj/playground/daniel_jax/n-041_Nb_093.endf"
-U235 = os.path.join(
-    os.path.dirname(__file__),
-    'data_law1_adhoc', 'tendl21_n_U-235.endf',
-)
-
-
-def _nb93_available():
-    return os.path.exists(NB93)
-
-
-def _u235_available():
-    return os.path.exists(U235)
+from _corpus import resolve_nb93, resolve_u235
 
 
 def _numba_available():
@@ -111,10 +97,15 @@ def test_compute_reconstructed_equals_mf3_without_mf2():
 
 @pytest.fixture
 def nb93_dict():
-    if not _nb93_available():
-        pytest.skip('Nb-93 ENDF file not available')
+    path = resolve_nb93()
+    if path is None:
+        pytest.skip(
+            'Nb-93 ENDF file not available (set NB93_ENDF, run '
+            'tests/data_law1_adhoc/fetch.sh, or place the file at '
+            'tests/data_law1_adhoc/endfb81_n_Nb-93.endf)'
+        )
     from endf_parserpy import EndfParserCpp
-    return EndfParserCpp().parsefile(NB93)
+    return EndfParserCpp().parsefile(path)
 
 
 def test_nb93_composition_mt2_matches_manual_sum(nb93_dict):
@@ -205,13 +196,15 @@ def test_nb93_get_reaction_xs_include_resonance_matches_composition(
 
 @pytest.fixture
 def u235_dict():
-    if not _u235_available():
+    path = resolve_u235()
+    if path is None:
         pytest.skip(
             'U-235 corpus file not available (run '
-            'tests/data_law1_adhoc/fetch.sh to populate)'
+            'tests/data_law1_adhoc/fetch.sh to populate, or set '
+            'U235_ENDF)'
         )
     from endf_parserpy import EndfParserCpp
-    return EndfParserCpp().parsefile(U235)
+    return EndfParserCpp().parsefile(path)
 
 
 def test_u235_composition_mt1_matches_manual_sum(u235_dict):

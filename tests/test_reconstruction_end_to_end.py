@@ -21,7 +21,6 @@ personal path outside the repo, on the maintainer's box).
 """
 from __future__ import annotations
 
-import os
 import numpy as np
 import pytest
 
@@ -32,11 +31,11 @@ from endf_userpy.mfsec_interpretation import (
 )
 
 
-NB93 = "/home/gschnabel/Seafile/Development/codeproj/playground/daniel_jax/n-041_Nb_093.endf"
+from _corpus import resolve_nb93
 
 
 def _nb93_available():
-    return os.path.exists(NB93)
+    return resolve_nb93() is not None
 
 
 def _jax_available():
@@ -49,11 +48,16 @@ def _numba_available():
 
 @pytest.fixture
 def nb93_data():
-    if not _nb93_available():
-        pytest.skip('Nb-93 ENDF file not available')
+    path = resolve_nb93()
+    if path is None:
+        pytest.skip(
+            'Nb-93 ENDF file not available (set NB93_ENDF, run '
+            'tests/data_law1_adhoc/fetch.sh, or place the file at '
+            'tests/data_law1_adhoc/endfb81_n_Nb-93.endf)'
+        )
     from endf_parserpy import EndfParserCpp
     p = EndfParserCpp()
-    d = p.parsefile(NB93, include=[1, 2])
+    d = p.parsefile(path, include=[1, 2])
     return pre.mlbw_data_from_endf_dict(d)
 
 

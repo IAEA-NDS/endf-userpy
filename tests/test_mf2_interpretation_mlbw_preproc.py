@@ -13,7 +13,6 @@ Two kinds of coverage:
 """
 from __future__ import annotations
 
-import os
 import numpy as np
 import pytest
 
@@ -206,11 +205,11 @@ def test_radius_tab1_covers_beyond_rrr_upper_bound():
 # ============================================================
 
 
-_NB93 = "/home/gschnabel/Seafile/Development/codeproj/playground/daniel_jax/n-041_Nb_093.endf"
+from _corpus import resolve_nb93
 
 
 def _nb93_available():
-    return os.path.exists(_NB93)
+    return resolve_nb93() is not None
 
 
 @pytest.mark.skipif(not _nb93_available(), reason='Nb-93 ENDF file not available')
@@ -225,7 +224,7 @@ def test_nb93_channel_and_resonance_counts_match_reference():
     dummy-channel accounting broke."""
     from endf_parserpy import EndfParserCpp
     p = EndfParserCpp()
-    d = p.parsefile(_NB93, include=[1, 2])
+    d = p.parsefile(resolve_nb93(), include=[1, 2])
     data = pre.mlbw_data_from_endf_dict(d)
     assert data.ch_l.shape[0] == 7
     assert data.res_er.shape[0] == 202
@@ -247,7 +246,7 @@ def test_nb93_reconstruction_matches_reference_at_a_few_energies():
     available -- these are self-checks on our own output."""
     from endf_parserpy import EndfParserCpp
     p = EndfParserCpp()
-    d = p.parsefile(_NB93, include=[1, 2])
+    d = p.parsefile(resolve_nb93(), include=[1, 2])
     data = pre.mlbw_data_from_endf_dict(d)
 
     xp = array_ns.get_backend('numpy')
