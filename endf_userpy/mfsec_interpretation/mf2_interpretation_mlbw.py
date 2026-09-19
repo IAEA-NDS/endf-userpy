@@ -115,6 +115,25 @@ def _safe_sqrt(x, xp):
     return xp.where(x_pos, xp.sqrt(x_safe), 0.0)
 
 
+# Memory-safety cap on the (chunk, nres) complex128 intermediate the
+# numpy path materialises inside reconstruct. 512 MB → peak working set
+# of ~2-3 GB with all the transient tensors (inv_denom, ratio, A_r, ...)
+# on top; fits any reasonable machine and never freezes a laptop. Users
+# who want tighter control can monkey-patch this or pass a custom cap
+# via the private `_max_intermediate_bytes` arg of ``reconstruct``.
+NUMPY_MAX_INTERMEDIATE_BYTES = 512 * 1024 * 1024
+
+
+def _numpy_chunk_size(ne: int, nres: int, max_bytes: int) -> int:
+    """Chunk size in NE that keeps `(chunk, nres) complex128` under
+    `max_bytes`. Returns `ne` (no chunking) if the whole grid fits.
+    """
+    bytes_per_row = max(nres * 16, 1)
+    if bytes_per_row * ne <= max_bytes:
+        return ne
+    return max(1, max_bytes // bytes_per_row)
+
+
 def _rho(e, ki, r_tab, xp):
     """Channel radius parameter rho = k(|E|) * radius(|E|)."""
     ee = xp.abs(e)
@@ -127,7 +146,11 @@ def _rho_competitive(e, qx, ki, r_a_tab, xp):
     return ki * _safe_sqrt(ee, xp) * tab1.interp(r_a_tab, ee, xp)
 
 
-def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
+def reconstruct(
+    data: MLBWData, energies_in, xp, nl_max: int = 8,
+    _max_intermediate_bytes: int = None,
+    _skip_chunk: bool = False,
+):
     """MLBW cross sections at ``energies_in`` (any 1D array).
 
     Returns a dict with keys sct, cap, fis, pot, rxx, tot, each of
@@ -149,6 +172,26 @@ def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
         with higher L in their resonance table (rare) need this
         raised. Ignored on the numba backend, which supports L<=5
         only (closed forms; raises for higher L).
+
+    Notes
+    -----
+    On the numpy backend, ``reconstruct`` automatically chunks
+    ``energies_in`` if the ``(NE, nres)`` complex128 intermediate
+    the vectorised formula would materialise exceeds
+    :data:`NUMPY_MAX_INTERMEDIATE_BYTES` (default 512 MB).
+    Transparent to the caller; result is bit-comparable to a
+    single-shot reconstruction on a machine with enough RAM.
+    Neither the JAX nor the numba path triggers this: numba
+    processes per-energy in parallel with no ``(NE, nres)``
+    materialisation, and JAX users should reach for
+    :func:`endf_userpy.primitives.fit_helpers.chunked_chi2` for
+    memory-bounded gradient workflows.
+
+    Private args
+    ------------
+    ``_max_intermediate_bytes`` and ``_skip_chunk`` are for
+    testing the chunking behaviour with a small threshold; users
+    shouldn't rely on them.
     """
     if getattr(xp, 'name', None) == 'numba':
         # Route to the hand-written @njit kernel. Same physics, same
@@ -158,6 +201,27 @@ def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
         return _numba.reconstruct(data, energies_in)
 
     e = xp.asarray(energies_in, dtype=xp.float64)
+
+    # Numpy memory safety: split NE into slices whose (chunk, nres)
+    # intermediate fits under the cap, recurse into ourselves with
+    # `_skip_chunk` to bypass the wrapper on each slice.
+    if not _skip_chunk and getattr(xp, 'name', None) == 'numpy':
+        max_bytes = (_max_intermediate_bytes
+                     if _max_intermediate_bytes is not None
+                     else NUMPY_MAX_INTERMEDIATE_BYTES)
+        nres = int(data.res_er.shape[0])
+        chunk = _numpy_chunk_size(int(e.shape[0]), nres, max_bytes)
+        if chunk < e.shape[0]:
+            parts: dict = {}
+            for start in range(0, int(e.shape[0]), chunk):
+                sub = reconstruct(
+                    data, e[start:start + chunk], xp, nl_max,
+                    _max_intermediate_bytes=max_bytes,
+                    _skip_chunk=True,
+                )
+                for k, v in sub.items():
+                    parts.setdefault(k, []).append(v)
+            return {k: np.concatenate(v) for k, v in parts.items()}
 
     er = xp.asarray(data.res_er, dtype=xp.float64)
     gn = xp.asarray(data.res_gn, dtype=xp.float64)

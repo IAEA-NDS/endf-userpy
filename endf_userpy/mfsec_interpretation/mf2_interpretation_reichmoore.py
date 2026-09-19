@@ -353,7 +353,11 @@ def _put_col(mat, j, val, xp):
     return mat
 
 
-def reconstruct(data: RMData, energies_in, xp):
+def reconstruct(
+    data: RMData, energies_in, xp,
+    _max_intermediate_bytes: int = None,
+    _skip_chunk: bool = False,
+):
     """Reich-Moore cross sections at ``energies_in`` (any 1D array).
 
     Returns a dict with keys ``sct``, ``cap``, ``fis``, ``pot``,
@@ -378,6 +382,15 @@ def reconstruct(data: RMData, energies_in, xp):
     expression used by MLBW, kept as a diagnostic output.
 
     ``tot`` is ``sct + cap + fis`` (no competitive channel in R-M).
+
+    On the numpy backend, ``reconstruct`` automatically chunks
+    ``energies_in`` if the ``(NE, nres)`` complex128 intermediate
+    would exceed :data:`mf2_interpretation_mlbw.NUMPY_MAX_INTERMEDIATE_BYTES`
+    (default 512 MB). Transparent to the caller; result is
+    bit-comparable to a single-shot reconstruction on a machine
+    with enough RAM. Neither the JAX nor the numba path triggers
+    this. Private args ``_max_intermediate_bytes`` and
+    ``_skip_chunk`` are for testing the chunking behaviour.
     """
     if getattr(xp, 'name', None) == 'numba':
         # Route to the hand-written @njit kernel. Same physics, same
@@ -387,6 +400,29 @@ def reconstruct(data: RMData, energies_in, xp):
         return _numba.reconstruct(data, energies_in)
 
     e = xp.asarray(energies_in, dtype=xp.float64)
+
+    # Numpy memory safety: same chunking wrapper as MLBW. Shares the
+    # global cap and helper from :mod:`mf2_interpretation_mlbw`.
+    if not _skip_chunk and getattr(xp, 'name', None) == 'numpy':
+        from . import mf2_interpretation_mlbw as _mlbw
+        max_bytes = (_max_intermediate_bytes
+                     if _max_intermediate_bytes is not None
+                     else _mlbw.NUMPY_MAX_INTERMEDIATE_BYTES)
+        # R-M's per-group inv_denom is (ne, nres_total) since we mask
+        # rather than slice; use total nres, not per-group max.
+        nres = int(data.res_er.shape[0])
+        chunk = _mlbw._numpy_chunk_size(int(e.shape[0]), nres, max_bytes)
+        if chunk < e.shape[0]:
+            parts: dict = {}
+            for start in range(0, int(e.shape[0]), chunk):
+                sub = reconstruct(
+                    data, e[start:start + chunk], xp,
+                    _max_intermediate_bytes=max_bytes,
+                    _skip_chunk=True,
+                )
+                for k, v in sub.items():
+                    parts.setdefault(k, []).append(v)
+            return {k: np.concatenate(v) for k, v in parts.items()}
     e_pos = e > 0.0
     e_safe = xp.maximum(e, 0.0)
     k_e2 = (data.ki ** 2) * e_safe                             # (ne,)

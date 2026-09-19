@@ -396,6 +396,76 @@ def test_numpy_numba_agree_single_resonance():
         )
 
 
+# ============================================================
+# Numpy memory-safety chunking (Item 1 of the production-readiness
+# roadmap): reconstruct auto-chunks NE when the (NE, nres)
+# intermediate exceeds NUMPY_MAX_INTERMEDIATE_BYTES.
+# ============================================================
+
+
+def test_numpy_chunk_size_helper_bounds():
+    """Simple sanity on the chunk-size helper."""
+    from endf_userpy.mfsec_interpretation.mf2_interpretation_mlbw import (
+        _numpy_chunk_size,
+    )
+    # nres=100 -> 1600 bytes per row. max_bytes=16000 -> chunk=10.
+    assert _numpy_chunk_size(1000, 100, 16000) == 10
+    # If the whole grid fits, chunk is NE.
+    assert _numpy_chunk_size(100, 100, 10 ** 9) == 100
+    # Degenerate nres=0 still returns a positive chunk.
+    assert _numpy_chunk_size(1000, 0, 1000) >= 1
+
+
+def test_numpy_chunking_output_bit_identical_to_unchunked():
+    """Force chunking by passing a tiny max-intermediate-bytes cap.
+    The result must be bit-identical to the unchunked path (both
+    are pure numpy arithmetic on the same energies, only the loop
+    granularity differs)."""
+    xp = array_ns.get_backend('numpy')
+    data = _single_resonance_data(er=100.0, gn=0.5, gg=0.3)
+    einc = np.linspace(95.0, 105.0, 501)
+    xs_full = mlbw.reconstruct(data, einc, xp)
+    # Tiny cap -> chunk every ~1 point (bytes_per_row = 1 * 16 = 16;
+    # max_bytes=64 -> chunk=4).
+    xs_chunked = mlbw.reconstruct(
+        data, einc, xp, _max_intermediate_bytes=64,
+    )
+    for key in ('sct', 'cap', 'fis', 'pot', 'rxx', 'tot'):
+        np.testing.assert_array_equal(
+            np.asarray(xs_full[key]),
+            np.asarray(xs_chunked[key]),
+            err_msg=f'chunked vs unchunked disagree on {key}',
+        )
+
+
+def test_numpy_chunking_activates_when_grid_would_be_too_big():
+    """Chunking must actually trigger when the intermediate exceeds
+    the cap — otherwise the safety net is toothless. Detect by
+    monkey-patching the sub-call to record how many times it was
+    invoked."""
+    from unittest import mock
+    from endf_userpy.mfsec_interpretation import mf2_interpretation_mlbw as m
+    xp = array_ns.get_backend('numpy')
+    data = _single_resonance_data(er=100.0, gn=0.5, gg=0.3)
+    einc = np.linspace(95.0, 105.0, 40)
+
+    original = m.reconstruct
+    call_count = {'n': 0}
+    def counting(*a, **kw):
+        call_count['n'] += 1
+        return original(*a, **kw)
+
+    # Fresh call with tight cap -> must recurse into sub-chunks.
+    with mock.patch.object(m, 'reconstruct', counting):
+        # Wire the recursion through the mock, then invoke the real.
+        original(data, einc, xp, _max_intermediate_bytes=64)
+    # 1 outer call + Nchunks sub-calls, each with _skip_chunk=True.
+    # Chunk size = 64/16 = 4; NE=40 -> 10 sub-chunks.
+    assert call_count['n'] >= 5, (
+        f'expected chunking to trigger multiple sub-calls; got {call_count["n"]}'
+    )
+
+
 @pytest.mark.skipif(not _numba_available(), reason='numba not installed')
 def test_numba_rejects_high_L():
     """Numba path uses closed forms only for L<=5; callers with

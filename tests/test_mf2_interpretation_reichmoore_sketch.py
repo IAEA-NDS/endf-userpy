@@ -366,6 +366,24 @@ def test_numpy_numba_agree_with_two_fission_channels():
         )
 
 
+def test_rm_numpy_chunking_output_bit_identical_to_unchunked():
+    """R-M's numpy path auto-chunks NE when the (NE, nres)
+    intermediate would exceed NUMPY_MAX_INTERMEDIATE_BYTES. Force
+    chunking with a tiny cap and verify bit-identity vs
+    unchunked."""
+    xp = array_ns.get_backend('numpy')
+    data = _single_res_with_fission(er=100.0, gn=0.5, gg=0.3, gf1=0.2)
+    einc = np.linspace(90.0, 110.0, 201)
+    xs_full = rm.reconstruct(data, einc, xp)
+    xs_chunked = rm.reconstruct(data, einc, xp, _max_intermediate_bytes=64)
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_array_equal(
+            np.asarray(xs_full[key]),
+            np.asarray(xs_chunked[key]),
+            err_msg=f'chunked vs unchunked disagree on {key}',
+        )
+
+
 @pytest.mark.skipif(not _numba_available(), reason='numba not installed')
 def test_rm_numba_rejects_high_L():
     """L>=6 is out of the RM numba scope; caller gets a clear
