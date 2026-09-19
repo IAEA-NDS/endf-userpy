@@ -156,36 +156,58 @@ def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0):
     `xp.select`. Wasted arithmetic on the branches not taken is
     dominated by the resonance-summation cost downstream and is
     the same order-of-magnitude as one extra ufunc pass.
+
+    Backward-pass safety
+    --------------------
+
+    Reverse-mode autodiff (`jax.grad`) still evaluates the gradient
+    of every branch even for elements that `xp.select` discards, then
+    zeros it via the branch-mask cotangent. If any discarded branch
+    can produce ``Inf`` (log of 0, division by 0) the multiplication
+    with the 0-cotangent gives ``NaN`` and pollutes the gradient of
+    elements that were routed to a completely different, well-behaved
+    branch.
+
+    To keep this safe: replace every unsafe input to a log or a
+    division by a strictly positive constant BEFORE the arithmetic,
+    not just after the fact. `x` is clamped to `EPS` before entering
+    any log ratio; `x1` and `x2` are separated by at least
+    `x1_safe * (1 + EPS)`; y-values are floored to `EPS`. The
+    discarded branch's numerical value doesn't matter (select masks
+    it out); what matters is that its VJP graph never touches Inf.
     """
     EPS = 1e-30
 
-    # Small guards to keep divisions/logs finite in the branches
-    # that will be discarded by `select`. The `where` values only
-    # affect the branch value, which is then not chosen.
-    x1_safe = xp.where(x1 == 0.0, EPS, x1)
-    x2_safe = xp.where(x2 == x1_safe, x1_safe * (1 + EPS), x2)
-    y1_safe = xp.where(y1 == 0.0, EPS, y1)
-    y2_safe = xp.where(y2 == 0.0, EPS, y2)
+    # Strictly positive inputs for the log / division branches. `x`
+    # can legitimately be 0 (below-mesh queries, out-of-range routed
+    # to law=0); we still need a positive stand-in for the log
+    # branch so the reverse-mode graph stays finite.
+    x_safe = xp.maximum(x, EPS)
+    x1_safe = xp.where(x1 <= 0.0, EPS, x1)
+    x2_safe = xp.where(
+        x2 <= x1_safe, x1_safe * (1.0 + EPS), x2,
+    )
+    y1_safe = xp.where(y1 <= 0.0, EPS, y1)
+    y2_safe = xp.where(y2 <= 0.0, EPS, y2)
 
     const_law = y1
-    lin_lin = y1 + (x - x1) * (y2 - y1) / (x2 - x1)
-    # Silence divide-by-zero warnings from the branches that xp.select
-    # discards. The result of the discarded branch is never used but
-    # numpy still evaluates it; masking at the log inputs would work but
-    # complicates the arithmetic. Numpy: use errstate. JAX: no warnings.
-    if getattr(xp, 'name', None) == 'numpy':
-        with xp._np.errstate(divide='ignore', invalid='ignore'):
-            lin_log = y1 + xp.log(x / x1_safe) * (y2 - y1) / xp.log(x2_safe / x1_safe)
-            log_lin = y1_safe * xp.exp((x - x1) * xp.log(y2_safe / y1_safe) / (x2 - x1))
-            log_log = y1_safe * xp.exp(
-                xp.log(x / x1_safe) * xp.log(y2_safe / y1_safe) / xp.log(x2_safe / x1_safe)
-            )
-    else:
-        lin_log = y1 + xp.log(x / x1_safe) * (y2 - y1) / xp.log(x2_safe / x1_safe)
-        log_lin = y1_safe * xp.exp((x - x1) * xp.log(y2_safe / y1_safe) / (x2 - x1))
-        log_log = y1_safe * xp.exp(
-            xp.log(x / x1_safe) * xp.log(y2_safe / y1_safe) / xp.log(x2_safe / x1_safe)
-        )
+    # For lin-lin the denominator `x2 - x1` is 0 only when the panel
+    # is degenerate, which we route to law=1 anyway; guard for both
+    # forward NaN and backward Inf with a safe denominator.
+    x2m1_safe = x2_safe - x1_safe                                  # > 0
+    lin_lin = y1 + (x - x1) * (y2 - y1) / x2m1_safe
+
+    log_x_over_x1 = xp.log(x_safe / x1_safe)
+    log_x2_over_x1 = xp.log(x2_safe / x1_safe)                     # > 0
+    log_y2_over_y1 = xp.log(y2_safe / y1_safe)
+
+    lin_log = y1 + log_x_over_x1 * (y2 - y1) / log_x2_over_x1
+    log_lin = y1_safe * xp.exp(
+        (x - x1) * log_y2_over_y1 / x2m1_safe,
+    )
+    log_log = y1_safe * xp.exp(
+        log_x_over_x1 * log_y2_over_y1 / log_x2_over_x1,
+    )
 
     outside = xp.full_like(x, float(outside_value))
     return xp.select(

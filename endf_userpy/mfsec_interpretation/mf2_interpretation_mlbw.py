@@ -101,16 +101,30 @@ def _lx_values(l_vec, spi, xp):
     return l_vec + (xp.abs(l_vec - 2) - l_vec) * (spi == 0)
 
 
+_EPS_SQRT = 1e-38
+
+
+def _safe_sqrt(x, xp):
+    """Backward-safe ``sqrt``: returns 0 at x <= 0 and its gradient
+    is 0 there too. Plain ``xp.sqrt(x)`` produces Inf backward at
+    x=0 which combines with the zero subgradient of ``max(x, 0)``
+    upstream to give NaN under ``jax.grad``.
+    """
+    x_pos = x > _EPS_SQRT
+    x_safe = xp.where(x_pos, x, 1.0)
+    return xp.where(x_pos, xp.sqrt(x_safe), 0.0)
+
+
 def _rho(e, ki, r_tab, xp):
     """Channel radius parameter rho = k(|E|) * radius(|E|)."""
     ee = xp.abs(e)
-    return ki * xp.sqrt(ee) * tab1.interp(r_tab, ee, xp)
+    return ki * _safe_sqrt(ee, xp) * tab1.interp(r_tab, ee, xp)
 
 
 def _rho_competitive(e, qx, ki, r_a_tab, xp):
     """Rho for the competitive channel: uses E + Q shifted argument."""
     ee = xp.maximum(e + qx, 0.0)
-    return ki * xp.sqrt(ee) * tab1.interp(r_a_tab, ee, xp)
+    return ki * _safe_sqrt(ee, xp) * tab1.interp(r_a_tab, ee, xp)
 
 
 def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
@@ -169,8 +183,15 @@ def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
     rho_xr = _rho_competitive(er, data.qx, data.ki, data.r_a, xp)
     pntx_r, _ = factors.pnt_shf(rho_xr, lx, xp, nl_max)     # (nres,)
 
-    gn0 = xp.where(pnt_r > _EPS, gn / pnt_r, 0.0)
-    gx0 = xp.where(pntx_r > _EPS, gx / pntx_r, 0.0)
+    # `xp.where(cond, a/b, 0)` leaks NaN through the backward pass
+    # when `b==0` even where `cond` is False -- the "unused" branch
+    # of `where` still contributes to the gradient. Standard "double
+    # where" idiom: replace the divisor with 1 wherever the guard
+    # would discard the result anyway.
+    pnt_r_safe = xp.where(pnt_r > _EPS, pnt_r, 1.0)
+    pntx_r_safe = xp.where(pntx_r > _EPS, pntx_r, 1.0)
+    gn0 = xp.where(pnt_r > _EPS, gn / pnt_r_safe, 0.0)
+    gx0 = xp.where(pntx_r > _EPS, gx / pntx_r_safe, 0.0)
 
     # --- Per-energy factors (broadcast to (ne, nres) below). ---
 
@@ -207,7 +228,11 @@ def reconstruct(data: MLBWData, energies_in, xp, nl_max: int = 8):
 
     de = 2.0 * (e_safe.reshape(-1, 1) - erp)
     denom = gt ** 2 + de ** 2
-    ratio = xp.where(denom > _EPS, 2.0 * gn_e / denom, 0.0)
+    # Same double-where guard as for gn0/gx0 above: keeps `where`'s
+    # backward pass finite when denom happens to hit zero (dummy
+    # resonances with all widths and de=0).
+    denom_safe = xp.where(denom > _EPS, denom, 1.0)
+    ratio = xp.where(denom > _EPS, 2.0 * gn_e / denom_safe, 0.0)
 
     A_r = ratio * gt
     B_r = ratio * de
