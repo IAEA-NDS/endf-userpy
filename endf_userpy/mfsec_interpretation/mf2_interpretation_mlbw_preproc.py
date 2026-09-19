@@ -159,6 +159,25 @@ def _radius_tab1_from_ape(ape: dict, emax: float) -> TAB1:
     )
 
 
+def _get_l_group(d_range: dict) -> dict:
+    """Return the per-``L`` group table from a MF2/MT151 range dict.
+
+    ``endf_parserpy`` calls this table ``l_group`` from 0.17
+    onwards; older releases (<= 0.13) named it ``spingroup`` for
+    the same content. Try the new name first and fall back to the
+    old one, so both parser versions work without pinning.
+    """
+    grp = d_range.get('l_group')
+    if grp is None:
+        grp = d_range.get('spingroup')
+    if grp is None:
+        raise KeyError(
+            "range record has neither 'l_group' (endf_parserpy >= 0.17) "
+            "nor 'spingroup' (older) key; parser output shape unrecognised"
+        )
+    return grp
+
+
 def _channel_radius(ap: float, awri: float, naps: int) -> float:
     """Channel radius ``a`` per ENDF-6 conventions.
 
@@ -227,7 +246,7 @@ def mlbw_data_from_endf_dict(
     ap = float(d_range.get('AP', 0.0))
     nls = int(d_range['NLS'])
     emax = float(d_range['EH'])
-    d_grp = d_range['spingroup']
+    d_grp = _get_l_group(d_range)
 
     # --- Sweep L-groups to build the channel table + per-resonance rows.
     #

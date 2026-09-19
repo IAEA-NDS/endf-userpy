@@ -41,6 +41,7 @@ from .mf2_interpretation_reichmoore import RMData
 from .mf2_interpretation_mlbw_preproc import (
     _KN,
     _channel_radius,
+    _get_l_group,
     _incident_particle_from_endf,
     _radius_tab1_from_ap,
     _radius_tab1_from_ape,
@@ -100,7 +101,7 @@ def rm_data_from_endf_dict(
     ap = float(d_range.get('AP', 0.0))
     nls = int(d_range['NLS'])
     emax = float(d_range['EH'])
-    d_grp = d_range['spingroup']
+    d_grp = _get_l_group(d_range)
 
     # Collate resonances by (L, |J|). endf_parserpy renders LRF=3
     # spingroups one-per-L; individual resonances inside carry their
