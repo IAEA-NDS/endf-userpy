@@ -98,9 +98,23 @@ def _incident_particle_from_endf(endf_dict):
 
 def _radius_tab1_from_ap(ap: float, emax: float) -> TAB1:
     """Constant scattering radius packaged as a two-point TAB1
-    (lin-lin), matching the format the reconstruction expects."""
+    (lin-lin), matching the format the reconstruction expects.
+
+    The upper x bound is 1e11 eV (well past any physical energy),
+    not the RRR ``emax``. The reconstruction evaluates the radius
+    at each resonance's |E_r|, and R-M evaluations routinely list
+    bound-state or extension poles with |E_r| several times the
+    RRR's EH; clipping the radius TAB1 to ``emax`` would silently
+    zero those resonances' penetration factor (via
+    ``tab1.interp``'s outside-value=0 default), dropping their
+    contribution to the R-matrix sum and shifting the elastic
+    cross section by a few percent (see the U-235 vs NJOY
+    comparison landing in this branch). Radius is truly constant
+    across the wide range anyway, so extending is physically
+    correct.
+    """
     return TAB1(
-        x=np.array([1e-5, emax], dtype=np.float64),
+        x=np.array([1e-5, 1e11], dtype=np.float64),
         y=np.array([ap, ap], dtype=np.float64),
         nbt=np.array([1], dtype=np.int32),      # 0-indexed, one region
         intp=np.array([2], dtype=np.int32),     # lin-lin
@@ -110,7 +124,10 @@ def _radius_tab1_from_ap(ap: float, emax: float) -> TAB1:
 def _radius_tab1_from_ape(ape: dict, emax: float) -> TAB1:
     """Energy-dependent scattering radius from an APE-style dict
     (``{'Eint': [...], 'AP': [...], 'NBT': [...], 'INT': [...]}``).
-    Padded at both ends to cover [1e-5, emax] with constant fill.
+    Padded at both ends with constant fill so queries beyond the
+    tabulated range (bound / extension poles at |E_r| > EH) return
+    the boundary value rather than zero. See the note in
+    :func:`_radius_tab1_from_ap` for why this matters.
     """
     x = list(ape['Eint'])
     y = list(ape['AP'])
@@ -121,8 +138,9 @@ def _radius_tab1_from_ape(ape: dict, emax: float) -> TAB1:
         y = [y[0]] + y
         # Shift NBT indices by one to account for the prepended point.
         nbt = [n + 1 for n in nbt]
-    if x[-1] < emax:
-        x = x + [emax]
+    hi = max(emax, 1e11)
+    if x[-1] < hi:
+        x = x + [hi]
         y = y + [y[-1]]
         nbt[-1] += 1
     return TAB1(

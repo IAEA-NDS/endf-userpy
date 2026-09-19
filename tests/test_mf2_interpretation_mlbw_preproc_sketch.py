@@ -166,6 +166,41 @@ def test_radii_naps_one_uses_ap_for_channel_too():
     assert data.r_ap.y[0] == pytest.approx(0.9)
 
 
+def test_radius_tab1_covers_beyond_rrr_upper_bound():
+    """The radius TAB1's upper x-bound must be far beyond the RRR's
+    EH so that resonances with |E_r| > EH (bound-state and extension
+    poles that R-M / MLBW evaluations routinely list) don't get
+    silently zeroed via out-of-range interpolation.
+
+    Regression: an earlier version of the preproc used x2 = emax
+    (= EH) for the radius TAB1s. Any resonance with |E_r| > EH then
+    hit the outside-value=0.0 path in `tab1.interp`, which zeroed
+    that resonance's penetration factor and hence its reduced-width
+    amplitude, silently dropping its contribution to the R-matrix
+    sum. Manifested as a ~3% U-235 elastic disagreement against
+    NJOY reconr. The fix is to extend x2 to ~1e11 eV (constant
+    fill; radii are physically constant across the range anyway).
+    """
+    d = _minimal_endf_dict(emax=1000.0, ap=0.85, naps=1)
+    data = pre.mlbw_data_from_endf_dict(d)
+    from endf_userpy.primitives import tab1 as tab1_mod
+    xp = array_ns.get_backend('numpy')
+    # Query at energies BEYOND the file's EH.
+    einc = np.array([1000.0, 2500.0, 5000.0, 1e7], dtype=np.float64)
+    r_a = np.asarray(tab1_mod.interp(data.r_a, einc, xp))
+    r_ap = np.asarray(tab1_mod.interp(data.r_ap, einc, xp))
+    # All queries must return the constant radius, not 0.
+    for i in range(einc.shape[0]):
+        assert r_ap[i] == pytest.approx(0.85), (
+            f'r_ap at E={einc[i]} returned {r_ap[i]}; expected 0.85. '
+            f'radius TAB1 is clipping resonances beyond EH.'
+        )
+        assert r_a[i] > 0.0, (
+            f'r_a at E={einc[i]} returned {r_a[i]}; radius TAB1 is '
+            f'clipping resonances beyond EH.'
+        )
+
+
 # ============================================================
 # End-to-end round-trip on real Nb-93 (skipped if file absent).
 # ============================================================
