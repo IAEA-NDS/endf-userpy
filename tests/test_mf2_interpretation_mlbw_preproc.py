@@ -165,6 +165,51 @@ def test_radii_naps_one_uses_ap_for_channel_too():
     assert data.r_ap.y[0] == pytest.approx(0.9)
 
 
+def test_radius_tab1_from_ape_narrow_range_extends_to_1e11():
+    """Same failure mode as ``test_radius_tab1_covers_beyond_rrr_upper_bound``
+    but on the energy-dependent APE code path. An APE table that
+    only spans (say) 1 eV to 5000 eV must be padded up to 1e11 eV
+    with a constant fill of the last tabulated AP value; otherwise
+    a resonance with |E_r| > 5000 eV (bound / extension pole) hits
+    the outside-value=0.0 path and drops out of the R-matrix sum.
+
+    Unit-tests ``_radius_tab1_from_ape`` directly with a synthetic
+    dict, then queries via ``tab1.interp`` to confirm the extended
+    region returns the boundary value, not zero.
+    """
+    from endf_userpy.mfsec_interpretation import (
+        mf2_interpretation_mlbw_preproc as _pre,
+    )
+    from endf_userpy.primitives import tab1 as tab1_mod
+
+    ape = {
+        'Eint': [1.0, 5000.0],
+        'AP':   [0.7, 0.9],
+        'NBT':  [2],
+        'INT':  [2],   # lin-lin
+    }
+    tab = _pre._radius_tab1_from_ape(ape, emax=5000.0)
+    assert float(tab.x[-1]) >= 1e11, (
+        f'APE radius TAB1 upper bound is {tab.x[-1]}, expected >= 1e11'
+    )
+
+    xp = array_ns.get_backend('numpy')
+    # Below the APE range: boundary fill (0.7).
+    val_lo = float(tab1_mod.interp(tab, np.array([1e-4]), xp)[0])
+    assert val_lo == pytest.approx(0.7), (
+        f'below-range query returned {val_lo}, expected boundary 0.7'
+    )
+    # Inside the tabulated range: interpolated.
+    val_mid = float(tab1_mod.interp(tab, np.array([2500.5]), xp)[0])
+    assert 0.7 < val_mid < 0.9
+    # Well above the tabulated range: last-value fill (0.9), NOT 0.
+    val_hi = float(tab1_mod.interp(tab, np.array([1e10]), xp)[0])
+    assert val_hi == pytest.approx(0.9), (
+        f'above-range query returned {val_hi}, expected last-value 0.9. '
+        f'APE radius TAB1 is clipping resonances beyond its tabulated range.'
+    )
+
+
 def test_radius_tab1_covers_beyond_rrr_upper_bound():
     """The radius TAB1's upper x-bound must be far beyond the RRR's
     EH so that resonances with |E_r| > EH (bound-state and extension

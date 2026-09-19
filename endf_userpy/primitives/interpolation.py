@@ -1,3 +1,19 @@
+"""ENDF-6 interpolation primitives (numpy-only, dict-of-arrays layout).
+
+The older / broader of the two interpolation modules in
+``endf_userpy.primitives``. Works on the ``endf_parserpy`` nested
+dict-of-arrays representation (records reached by name, e.g.
+``tab1['E']`` / ``tab1['xs']``, with parallel ``NBT`` / ``INT``
+arrays) and is used by every MF3 / MF5 / MF13 / MF15 code path.
+
+Numpy-only by design: these are the reader-facing helpers that
+operate on the parsed ENDF dict, not the differentiable numerical
+kernel. Callers that need TAB1 interpolation on a JAX / numba
+backend (typically for the MF2 resonance-reconstruction work) use
+:mod:`endf_userpy.primitives.tab1` instead, whose ``TAB1``
+dataclass and :func:`interp` function run through the
+:mod:`array_ns` adapter and support autodiff.
+"""
 import numpy as np
 from numpy.polynomial.legendre import Legendre
 from .helpers import (
