@@ -453,7 +453,8 @@ def _level_matrix_reference(data, energies):
     formulation (SAMMY eq A.63). Used as ground truth to catch
     formula bugs in the sketch's R-matrix path.
 
-    Formulation (LSSF=0 shift-absorbed, s-wave):
+    Formulation (SAMMY shift-eliminated ``B_c = S_c(|E_r|)``,
+    s-wave):
         A^{-1}_{λμ} = (E_λ - E - iΓ_γ,λ/2) δ_{λμ}
                       - Σ_c γ_λc γ_μc L̃_c(E),   L̃_c = i P_c
         U_{cc'}      = Ω_c Ω_c' [δ_{cc'} + 2i √P_c √P_c'

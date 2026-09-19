@@ -14,9 +14,10 @@ Scope
 - L in 0..5 (closed forms for P_L, S_L, φ_L); higher L is
   rejected at the wrapper with a clear message pointing at the
   numpy / jax backends.
-- Same physics as the numpy path: LSSF=0 handled via the
+- Same physics as the numpy path: shift-eliminated boundary
+  condition (``B_c = S_c(|E_r|)``) handled via the
   ``E_r - γ_n^2 (S_L(E) - S_L(|E_r|))`` level shift on the R-matrix
-  denominator (matches SAMMY convention). ``shf_r`` is
+  denominator (SAMMY / NJOY-reconr convention). ``shf_r`` is
   precomputed per resonance in the wrapper and passed in.
 - Hand-coded 1×1 / 2×2 / 3×3 solves for ``(I - i R P) X = R``.
   Faster than calling numba's ``np.linalg.solve`` per (E, group)
@@ -117,8 +118,9 @@ def _reconstruct_kernel(
             # uses the scattering radius (rho_ap). These differ only
             # for NAPS=2 evaluations but the physics is identical.
             # `shf_e` is used below to build the S(E) - S(|E_r|) level
-            # shift correction on the R-matrix denominator (LSSF=0
-            # handling, matches the numpy path).
+            # shift correction on the R-matrix denominator
+            # (SAMMY shift-eliminated boundary condition; matches
+            # the numpy path).
             p_e, shf_e = _low_L_pnt_shf(rho_a_i, L)
             phi_e = _low_L_phase(rho_ap_i, L)
 

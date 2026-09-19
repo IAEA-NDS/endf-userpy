@@ -18,10 +18,18 @@ low-level physical-constants / TAB1 plumbing.
 
 Non-goals (deliberate scope):
 
-- LSSF != 0: the sketch's R-M reconstruction uses
-  ``L̃_c(E) = i P_c(E)`` (LSSF=0 with shift absorbed), so alternate
-  boundary conditions are not read here.
-- URR (LRU=2): separate module.
+- Alternate ``B_c`` boundary condition on the R-matrix. The R-M
+  reconstruction uses SAMMY / NJOY-reconr's shift-eliminated
+  convention (``B_c = S_c(|E_r|)``, equivalently ``L̃_c(E) = i P_c(E)``
+  after the level shift is absorbed into ``E_r``). Every real
+  LRU=1 ENDF-6 evaluation follows this convention; the format
+  does not carry a boundary-condition flag on LRU=1 range
+  records. Earlier drafts of this docstring called this
+  "``LSSF != 0``", which is a URR-only flag (see LRU=2 below) and
+  a misnomer here.
+- URR (LRU=2): separate module. When implemented, LSSF=1 URR
+  (MF3 already carries the average XS) is a no-op; LSSF=0 URR
+  needs actual URR reconstruction.
 """
 from __future__ import annotations
 

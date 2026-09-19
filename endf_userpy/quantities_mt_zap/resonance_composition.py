@@ -78,6 +78,28 @@ def _iter_lru1_ranges(endf_dict):
             yield iso_i, rng_i, rng
 
 
+def _lssf0_urr_ranges(endf_dict):
+    """Return ``[(iso_idx, rng_idx), ...]`` for every LRU=2 URR
+    range with ``LSSF=0`` (i.e., MF3 is a *background* to an
+    average-XS reconstruction we don't implement yet). Empty
+    list if the file has no URR, only LSSF=1 URR, or no MF2 at
+    all.
+    """
+    if 2 not in endf_dict or 151 not in endf_dict[2]:
+        return []
+    hits = []
+    isotopes = endf_dict[2][151].get('isotope', {})
+    for iso_i in sorted(isotopes):
+        d_iso = isotopes[iso_i]
+        for rng_i in sorted(d_iso.get('range', {})):
+            rng = d_iso['range'][rng_i]
+            if int(rng.get('LRU', 0)) != 2:
+                continue
+            if int(rng.get('LSSF', 0)) == 0:
+                hits.append((iso_i, rng_i))
+    return hits
+
+
 def _reconstruct_range(endf_dict, iso_i, rng_i, rng, energies, xp):
     """Preprocess + reconstruct a single supported range.
 
@@ -116,6 +138,16 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
     are skipped. If the file has no supported range at all, a
     :class:`UserWarning` is emitted (once per call) naming which
     formalism was seen.
+
+    URR (LRU=2) handling: URR ranges never enter the MF2 sum
+    (the resolved-resonance reconstruction is not applicable
+    there). For ``LSSF=1`` URR that is silently correct, since
+    MF3 in the URR already carries the (self-shielded) average
+    cross section. For ``LSSF=0`` URR one :class:`UserWarning`
+    per call fires, naming the range: MF3 in the URR is then a
+    *background* to an average-XS reconstruction this library
+    does not implement yet, so the returned value is only the
+    MF3 background rather than the physical average XS.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -167,6 +199,27 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
             f'R-matrix limited (LRF=7) are not implemented yet.',
             UserWarning, stacklevel=2,
         )
+
+    # URR with LSSF=0: MF3 in the URR is a background to an
+    # average-XS reconstruction that this library does not
+    # implement yet (LSSF=1 URR, where MF3 IS the physical
+    # average XS, is silently correct because the LRU=1 filter
+    # above already drops URR entirely).
+    lssf0_urr = _lssf0_urr_ranges(endf_dict)
+    if lssf0_urr:
+        parts = ', '.join(f'iso={i} rng={j}' for i, j in lssf0_urr)
+        warnings.warn(
+            f'reconstruct_resonance_xs: file has LRU=2 URR range(s) '
+            f'with LSSF=0 ({parts}). MF3 in the URR is a background '
+            f'to an average-XS reconstruction that is not implemented '
+            f'yet, so the returned XS is only the MF3 background in '
+            f'the URR energy range, not the physical average XS. '
+            f'For LSSF=1 URR (MF3 already carries the average XS) '
+            f'the result would be correct without any URR '
+            f'reconstruction.',
+            UserWarning, stacklevel=2,
+        )
+
     return total
 
 

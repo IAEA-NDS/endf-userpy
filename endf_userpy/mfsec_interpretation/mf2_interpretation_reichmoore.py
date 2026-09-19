@@ -10,8 +10,10 @@ Formulation
 -----------
 
 Follows the SAMMY / NJOY-reconr convention with boundary condition
-``B_c = 0`` (LSSF=0, which is the default and covers the majority
-of ENDF-6 R-M evaluations). Per J·π group at energy E:
+``B_c = S_c(|E_r|)`` (the shift-eliminated convention that covers
+every real ENDF-6 R-M evaluation; the format carries no
+boundary-condition flag on LRU=1 range records). Per J·π group
+at energy E:
 
 - **Reduced-width amplitudes.** For the elastic channel (c=0),
   ``γ_{r,0} = sign(GN_r) * sqrt(GN_r / (2 * P_L(|E_r|)))``.
@@ -40,9 +42,18 @@ of ENDF-6 R-M evaluations). Per J·π group at energy E:
 
 Not covered by this sketch (deliberate scope):
 
-- **``LSSF != 0``**: alternate boundary condition. Adds one term to
-  the L-matrix diagonal; can be added when a real case demands it.
-- **URR (LRU=2)**: unresolved region; separate module.
+- **Alternate ``B_c`` boundary condition** on the R-matrix
+  denominator. The default (SAMMY / NJOY-reconr convention,
+  shift-eliminated) is the only one ENDF-6 R-M files use in
+  practice, and the format carries no boundary-condition flag on
+  LRU=1 range records. Adding an alternate ``B_c`` would put one
+  extra term on the L-matrix diagonal; can be added if a real
+  case ever demands it. (Earlier drafts of this docstring called
+  this "``LSSF != 0``", which is a URR-only flag and a misnomer
+  in the LRU=1 context.)
+- **URR (LRU=2)**: unresolved region; separate module. When
+  implemented, LSSF=1 URR (MF3 already carries the average XS)
+  is a no-op; LSSF=0 URR needs actual URR reconstruction.
 - **ENDF-6 -> RMData preprocessing**: the caller supplies the
   natural-size dataclass. A helper that lifts ``d2_151`` into
   ``RMData`` is the natural next step.
@@ -182,7 +193,8 @@ def _reconstruct_group(
     # --- Elastic-channel factors at E and at |E_r|.
     # Now also keep the SHIFT factors; used below for the
     # ``S(E) - S(|E_r|)`` correction on the R-matrix denominator
-    # (LSSF=0 handling; see the "level shift" note further down).
+    # (SAMMY shift-eliminated convention; see the "level shift"
+    # note further down).
     rho_e = _rho(e_safe, ki, r_a, xp)                          # (ne,)
     p_e, shf_e = factors.pnt_shf(rho_e, L_scalar, xp)          # (ne,)
 
@@ -222,10 +234,11 @@ def _reconstruct_group(
 
     # --- Level-shift correction on the R-matrix denominator.
     #
-    # For fixed channel boundary condition B_c = 0, the ENDF-6
-    # LSSF=0 convention (parameters given at B_c = S_c(|E_r|)) is
-    # handled by adjusting the effective resonance energy in the
-    # R-matrix denominator (SAMMY manual, section II.B):
+    # ENDF-6 R-M parameters are given at the shift-eliminated
+    # boundary ``B_c = S_c(|E_r|)`` (SAMMY / NJOY-reconr
+    # convention; see section II.B of the SAMMY manual). Recover
+    # the R-matrix at arbitrary E by adjusting the effective
+    # resonance energy in the denominator:
     #
     #     E_r^eff(E) = E_r - Σ_c γ_{r,c}^2 (S_c(E) - S_c(|E_r|))
     #

@@ -13,12 +13,18 @@ for now.
 
 Non-goals (deliberate scope):
 
-- LSSF != 0 (alternate boundary condition; MLBW doesn't need shift
-  subtraction in the sketch, so LSSF is not a concern here).
+- Alternate ``B_c`` boundary condition on the resonance-parameter
+  interpretation. MLBW as defined in ENDF-6 does not carry a
+  boundary-condition flag on LRU=1 range records; every real
+  file follows the standard convention. Earlier drafts of this
+  docstring called this "``LSSF != 0``", which is a URR-only
+  flag (see LRU=2 below) and a misnomer here.
 - Energy-dependent scattering radius (APE / NRO=1): supported by
   falling back to the tabulated ``AP_table`` when present, else
   the scalar ``AP``.
-- URR (LRU=2): separate module.
+- URR (LRU=2): separate module. When implemented, LSSF=1 URR
+  (MF3 already carries the average XS) is a no-op; LSSF=0 URR
+  needs actual URR reconstruction.
 - Preprocessing of MF3 background (already handled by
   :func:`mf3_interpretation.compute_cross_section_agnostic`).
 

@@ -89,6 +89,85 @@ def test_compute_reconstructed_equals_mf3_without_mf2():
     np.testing.assert_allclose(np.asarray(composed), mf3_only, rtol=1e-10)
 
 
+# ------------------------------------------------------------
+# 1b. URR handling: LSSF=0 must warn; LSSF=1 must be silent.
+# ------------------------------------------------------------
+
+
+def _dict_with_urr(lssf):
+    """Minimal dict with MF3 + one LRU=2 URR range at ``lssf``."""
+    d = _synthetic_mf3_only_dict()
+    d[2] = {
+        151: {
+            'isotope': {
+                1: {
+                    'ABN': 1.0,
+                    'range': {
+                        1: {
+                            'LRU': 2, 'LRF': 2, 'LSSF': int(lssf),
+                            'EL': 1e3, 'EH': 1e5,
+                            'NAPS': 0, 'NRO': 0,
+                            'SPI': 0.0, 'AP': 0.8, 'NLS': 0,
+                        }
+                    },
+                }
+            }
+        }
+    }
+    return d
+
+
+def test_lssf1_urr_is_silent():
+    """LSSF=1 URR: MF3 IS the physical XS in the URR, no
+    reconstruction expected. Our LRU=1 filter drops URR entirely,
+    which is silently correct for LSSF=1 -- no warning must
+    fire."""
+    d = _dict_with_urr(lssf=1)
+    e_query = np.array([1e-3, 1.0, 1e4])
+    xp = array_ns.get_backend('numpy')
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        out = res_comp.reconstruct_resonance_xs(d, 102, e_query, xp)
+    assert np.array_equal(np.asarray(out), np.zeros(3))
+    lssf_warnings = [w for w in caught if 'LSSF' in str(w.message)]
+    assert not lssf_warnings, (
+        f'LSSF=1 URR must not warn; got: {[str(w.message) for w in lssf_warnings]}'
+    )
+
+
+def test_lssf0_urr_warns_once_naming_the_range():
+    """LSSF=0 URR: MF3 is a background to a URR reconstruction
+    we don't implement. Emit exactly one UserWarning per call
+    naming the iso/rng."""
+    d = _dict_with_urr(lssf=0)
+    e_query = np.array([1e-3, 1.0, 1e4])
+    xp = array_ns.get_backend('numpy')
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        res_comp.reconstruct_resonance_xs(d, 102, e_query, xp)
+    lssf_warnings = [w for w in caught if 'LSSF' in str(w.message)]
+    assert len(lssf_warnings) == 1, (
+        f'expected exactly 1 LSSF=0 URR warning, got {len(lssf_warnings)}: '
+        f'{[str(w.message) for w in lssf_warnings]}'
+    )
+    msg = str(lssf_warnings[0].message)
+    assert 'LSSF=0' in msg
+    assert 'iso=1' in msg and 'rng=1' in msg
+
+
+def test_no_urr_stays_silent():
+    """A file with only LRU=1 (no URR) must not fire any
+    LSSF warning path."""
+    d = _synthetic_mf3_only_dict()
+    e_query = np.array([1e-3, 1.0])
+    xp = array_ns.get_backend('numpy')
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        res_comp.reconstruct_resonance_xs(d, 102, e_query, xp)
+    lssf_warnings = [w for w in caught if 'LSSF' in str(w.message)]
+    assert not lssf_warnings
+
+
 # ============================================================
 # 2. Nb-93 (MLBW). Real file, so we skip when it is not
 #    on disk.

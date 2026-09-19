@@ -220,11 +220,13 @@ def test_u235_thermal_capture_and_fission_match_ENDF():
       σ_fis ≈ 584  b
       σ_sct ≈ 14   b
 
-    We pass at 20% tolerance because the sketch still uses the
-    shift-absorbed L̃_c = i P_c approximation (LSSF=0) which
-    can nudge thermal-region values by a few percent, and the
-    file's tabulated values are the RECONSTRUCTED ones anyway --
-    a discrepancy of a couple percent is expected and fine here.
+    We pass at 20% tolerance because the sketch uses the
+    shift-absorbed ``L̃_c = i P_c`` approximation (SAMMY
+    shift-eliminated boundary condition, ``B_c = S_c(|E_r|)``)
+    which can nudge thermal-region values by a few percent, and
+    the file's tabulated values are the RECONSTRUCTED ones
+    anyway -- a discrepancy of a couple percent is expected and
+    fine here.
 
     Historical note: an earlier version of the sketch had a
     double-subtraction bug in σ_cap = σ_reaction - σ_fission
