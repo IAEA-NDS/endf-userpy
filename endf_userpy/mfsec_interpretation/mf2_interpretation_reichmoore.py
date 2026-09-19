@@ -40,12 +40,6 @@ of ENDF-6 R-M evaluations). Per J·π group at energy E:
 
 Not covered by this sketch (deliberate scope):
 
-- **Shift-factor subtraction ``S_c(E) - S_c(|E_r|)``**: the sketch
-  uses ``L̃_c(E) = i P_c(E)`` (LSSF=0-with-shift-absorbed
-  approximation). Adequate for narrow resonances / regions far
-  from strong s-wave interferences; can be extended by adding a
-  per-resonance ``E_r``-anchored shift when a real case shows a
-  visible discrepancy against NJOY / SAMMY.
 - **``LSSF != 0``**: alternate boundary condition. Adds one term to
   the L-matrix diagonal; can be added when a real case demands it.
 - **URR (LRU=2)**: unresolved region; separate module.
@@ -185,12 +179,15 @@ def _reconstruct_group(
     nch = 1 + nfis
     L_scalar = xp.asarray(L)   # 0-d array; factors.pnt_shf broadcasts against it
 
-    # --- Elastic-channel factors at E and at |E_r|. ---
+    # --- Elastic-channel factors at E and at |E_r|.
+    # Now also keep the SHIFT factors; used below for the
+    # ``S(E) - S(|E_r|)`` correction on the R-matrix denominator
+    # (LSSF=0 handling; see the "level shift" note further down).
     rho_e = _rho(e_safe, ki, r_a, xp)                          # (ne,)
-    p_e, _ = factors.pnt_shf(rho_e, L_scalar, xp)              # (ne,)
+    p_e, shf_e = factors.pnt_shf(rho_e, L_scalar, xp)          # (ne,)
 
     rho_r = _rho(xp.abs(res_er), ki, r_a, xp)                  # (nres,)
-    p_r, _ = factors.pnt_shf(rho_r, L_scalar, xp)              # (nres,)
+    p_r, shf_r = factors.pnt_shf(rho_r, L_scalar, xp)          # (nres,)
 
     # Elastic reduced-width amplitude gamma_n0. Sign of GN matters.
     # gamma_{r,0} = sign(gn) * sqrt(|gn| / (2 * P_L(|E_r|))).
@@ -223,15 +220,38 @@ def _reconstruct_group(
         )
     # gammas: list of (nres,) arrays, length nch
 
+    # --- Level-shift correction on the R-matrix denominator.
+    #
+    # For fixed channel boundary condition B_c = 0, the ENDF-6
+    # LSSF=0 convention (parameters given at B_c = S_c(|E_r|)) is
+    # handled by adjusting the effective resonance energy in the
+    # R-matrix denominator (SAMMY manual, section II.B):
+    #
+    #     E_r^eff(E) = E_r - Σ_c γ_{r,c}^2 (S_c(E) - S_c(|E_r|))
+    #
+    # Only the elastic channel contributes: fission channels have
+    # S_c(E) = 0, so their sum term vanishes. The MLBW sketch does
+    # the same thing via its `erp = er + 0.5 * (shf_r - shf_e) *
+    # gn0` construction; here it's just spelled out per resonance.
+    #
+    # Reduced-width-amplitude-squared:
+    #     γ_{r,elastic}^2 = |gamma0|^2   (already zeroed for
+    #     out-of-group resonances by the group mask above).
+    gamma_n_sq = gamma0 * gamma0                                # (nres,)
+    delta_r = -gamma_n_sq.reshape(1, -1) * (
+        shf_e.reshape(-1, 1) - shf_r.reshape(1, -1)
+    )   # (ne, nres)
+
     # --- R-matrix (ne, nch, nch) complex. ---
-    #   R_{cc'}(E) = Σ_r gamma_{r,c} gamma_{r,c'} / (E_r - E - i Γ_γ / 2)
+    #   R_{cc'}(E) = Σ_r gamma_{r,c} gamma_{r,c'} /
+    #                     (E_r^eff(E) - E - i Γ_γ / 2)
     # Build the (ne, nres) denominator once and pool contributions per
     # (c, c') pair. Complex arithmetic throughout.
     e_col = e_safe.reshape(-1, 1)                              # (ne, 1)
     er_row = res_er.reshape(1, -1)                             # (1, nres)
     gg_row = res_gg.reshape(1, -1)
-    # denom_er[i, r] = E_r - E_i - i * Gamma_gamma_r / 2
-    denom_er = (er_row - e_col) - 1j * 0.5 * gg_row            # (ne, nres) complex
+    er_eff = er_row + delta_r                                  # (ne, nres)
+    denom_er = (er_eff - e_col) - 1j * 0.5 * gg_row            # (ne, nres) complex
     inv_denom = 1.0 / denom_er                                 # (ne, nres)
 
     R = xp.zeros((ne, nch, nch), dtype=xp.complex128)
