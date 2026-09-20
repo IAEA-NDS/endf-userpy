@@ -20,12 +20,12 @@ evaluation, division) into a tight, thread-parallel loop without
 materialising the ``(ne, nres)`` intermediate matrices that the
 vectorised numpy path pays for.
 
-Limitation vs the adapter path: only L in 0..5 is supported (closed
-forms for penetration / shift / phase). Higher L would need the Newton
-recurrence; not implemented until a real case shows up. The wrapper
-:func:`reconstruct` validates ``max(res_l, ch_l) <= 5`` and raises a
-clear error otherwise, so callers get pointed at the numpy backend
-which handles arbitrary L.
+Supports arbitrary non-negative L. Closed forms for L in 0..5 stay
+in the inline fast path; L >= 6 goes through
+:func:`pnt_shf_any_L` / :func:`phase_any_L` in
+:mod:`mf2_interpretation_factors_numba` which run the Newton
+recurrence from L=5 up to the target L, matching
+:mod:`mf2_interpretation_factors`'s numpy / JAX path.
 """
 from __future__ import annotations
 
@@ -36,8 +36,8 @@ import numpy as np
 from ..primitives import array_ns
 from ..primitives import tab1 as tab1_mod
 from .mf2_interpretation_factors_numba import (
-    low_L_pnt_shf as _low_L_pnt_shf,
-    low_L_phase as _low_L_phase,
+    pnt_shf_any_L as _pnt_shf,
+    phase_any_L as _phase,
 )
 
 try:
@@ -86,7 +86,7 @@ def _reconstruct_kernel(
     for r in range(nres):
         er_abs = abs(res_er[r])
         rho_r = ki * math.sqrt(er_abs) * r_a_at_er[r]
-        p, s = _low_L_pnt_shf(rho_r, res_l[r])
+        p, s = _pnt_shf(rho_r, res_l[r])
         pnt_r[r] = p
         shf_r[r] = s
 
@@ -96,7 +96,7 @@ def _reconstruct_kernel(
         rho_xr = ki * math.sqrt(e_x) * r_a_at_er_qx[r]
         L = res_l[r]
         lx = L if spi != 0.0 else abs(L - 2)
-        px, _ = _low_L_pnt_shf(rho_xr, lx)
+        px, _ = _pnt_shf(rho_xr, lx)
         pntx_r[r] = px
 
     gn0 = np.zeros(nres)
@@ -142,11 +142,11 @@ def _reconstruct_kernel(
         for r in range(nres):
             L = res_l[r]
             rho_e = ki * math.sqrt(E_safe) * r_a_i
-            p_e, s_e = _low_L_pnt_shf(rho_e, L)
+            p_e, s_e = _pnt_shf(rho_e, L)
             e_x_scalar = E_safe + qx if (E + qx) > 0.0 else 0.0
             rho_xe = ki * math.sqrt(e_x_scalar) * r_a_i
             lx = L if spi != 0.0 else abs(L - 2)
-            px_e, _ = _low_L_pnt_shf(rho_xe, lx)
+            px_e, _ = _pnt_shf(rho_xe, lx)
 
             gn_e = p_e * gn0[r]
             gx_e = px_e * gx0[r]
@@ -172,7 +172,7 @@ def _reconstruct_kernel(
         rxx_sum = 0.0
         for c in range(nch):
             rho_s = ki * math.sqrt(E_safe) * r_ap_i
-            phi2 = 2.0 * _low_L_phase(rho_s, ch_l[c])
+            phi2 = 2.0 * _phase(rho_s, ch_l[c])
             pot_c = 1.0 - math.cos(phi2)
             sin_phi2 = math.sin(phi2)
             sct_c = (pot_c - A_ch[c]) ** 2 + (sin_phi2 + B_ch[c]) ** 2
@@ -223,14 +223,6 @@ def reconstruct(data, energies_in):
     r_a_at_er = np.asarray(tab1_mod.interp(data.r_a, np.abs(er), xp))
     e_x = np.maximum(er + data.qx, 0.0)
     r_a_at_er_qx = np.asarray(tab1_mod.interp(data.r_a, e_x, xp))
-
-    max_L = int(max(int(np.max(data.res_l)), int(np.max(data.ch_l))))
-    if max_L > 5:
-        raise NotImplementedError(
-            f"MLBW numba kernel supports L<=5; got L={max_L}. "
-            f"Use the numpy or jax backend for higher L "
-            f"(they handle up to nl_max=8 via the Newton recurrence)."
-        )
 
     sct, cap, fis, pot, rxx = _reconstruct_kernel(
         e, r_a_e, r_ap_e, r_a_at_er, r_a_at_er_qx,

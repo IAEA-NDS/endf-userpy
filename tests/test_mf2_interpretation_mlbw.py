@@ -467,16 +467,35 @@ def test_numpy_chunking_activates_when_grid_would_be_too_big():
 
 
 @pytest.mark.skipif(not _numba_available(), reason='numba not installed')
-def test_numba_rejects_high_L():
-    """Numba path uses closed forms only for L<=5; callers with
-    higher L should hit a clear NotImplementedError pointing at the
-    numpy / jax backends that support the Newton recurrence."""
-    data = _single_resonance_data(er=100.0, gn=0.5, gg=0.3)
-    # bump one channel to L=6
-    data.ch_l[0] = 6
-    einc = np.array([100.0])
-    with pytest.raises(NotImplementedError, match='L<=5'):
-        mlbw.reconstruct(data, einc, array_ns.get_backend('numba'))
+@pytest.mark.parametrize('L', [0, 1, 2, 3, 4, 5, 6, 7])
+def test_numpy_numba_agree_all_L_single_resonance(L):
+    """Numba MLBW must reproduce the numpy path for arbitrary L,
+    including L>=6 (which uses the Newton recurrence rather than
+    closed forms). Regression guard on the L>5 numba extension.
+
+    Uses a single s-wave-shaped resonance and rewrites both ``res_l``
+    and ``ch_l`` to the target L; ki / r_a are tuned so rho stays in
+    a numerically comfortable range at the resonance energy for every
+    L (larger L needs larger rho to lift the tail penetration factor
+    above ``_EPS``, otherwise the width normalization gn / P_L(|E_r|)
+    underflows and both backends collapse to zero in the same way,
+    passing the assertion but proving nothing)."""
+    # ki=0.1, r_a=5 -> rho ~ 5 at Er=100, well above the P_L
+    # underflow boundary for L up to 8.
+    data = _single_resonance_data(er=100.0, gn=0.5, gg=0.3,
+                                  ki=1e-1, r_a=5.0, r_ap=5.0)
+    data.res_l[0] = L
+    data.ch_l[0] = L
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = mlbw.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = mlbw.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'rxx', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-9, atol=1e-30,
+            err_msg=f'L={L}: numpy vs numba disagree on {key}',
+        )
 
 
 # ============================================================

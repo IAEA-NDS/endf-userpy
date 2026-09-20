@@ -30,7 +30,8 @@ def _constant_tab1(value: float) -> TAB1:
     )
 
 
-def _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3, L=0, spi=0.5):
+def _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3, L=0, spi=0.5,
+                                 ki=1e-4, r_a=0.6):
     """One J^π group, one resonance, no fission. Statistical weight
     g_J = 1 for simplicity (spi = 0.5, take J = 0.5 → 2J+1 = 2,
     2(2I+1) = 4 → g_J = 0.5). We override g_J to 1.0 to make the
@@ -38,9 +39,9 @@ def _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3, L=0, spi=0.5):
     return rm.RMData(
         abn=1.0,
         spi=spi,
-        ki=1e-4,
-        r_a=_constant_tab1(0.6),
-        r_ap=_constant_tab1(0.6),
+        ki=ki,
+        r_a=_constant_tab1(r_a),
+        r_ap=_constant_tab1(r_a),
         group_l=np.array([L], dtype=np.int32),
         group_g=np.array([1.0], dtype=np.float64),
         group_nfis=np.array([0], dtype=np.int32),
@@ -385,13 +386,25 @@ def test_rm_numpy_chunking_output_bit_identical_to_unchunked():
 
 
 @pytest.mark.skipif(not _numba_available(), reason='numba not installed')
-def test_rm_numba_rejects_high_L():
-    """L>=6 is out of the RM numba scope; caller gets a clear
-    NotImplementedError pointing at numpy/jax."""
-    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3, L=6)
-    einc = np.array([100.0])
-    with pytest.raises(NotImplementedError, match='L<=5'):
-        rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+@pytest.mark.parametrize('L', [0, 1, 2, 3, 4, 5, 6, 7])
+def test_rm_numpy_numba_agree_all_L_single_resonance(L):
+    """R-M numba must reproduce the numpy path for arbitrary L,
+    including L>=6 (Newton recurrence, not closed forms).
+    Regression guard on the L>5 numba extension. ki and r_a
+    tuned so rho stays comfortable at the resonance energy across
+    the whole L range."""
+    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3,
+                                        L=L, ki=1e-1, r_a=5.0)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-9, atol=1e-30,
+            err_msg=f'L={L}: RM numpy vs numba disagree on {key}',
+        )
 
 
 # ============================================================

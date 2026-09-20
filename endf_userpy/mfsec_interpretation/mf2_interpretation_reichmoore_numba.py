@@ -11,9 +11,13 @@ Scope
 
 - Elastic + capture + up to 2 fission channels per J·π group,
   matching the sketch's :class:`RMData` layout.
-- L in 0..5 (closed forms for P_L, S_L, φ_L); higher L is
-  rejected at the wrapper with a clear message pointing at the
-  numpy / jax backends.
+- Arbitrary non-negative L: closed forms for L in 0..5 stay
+  inline for hot-path speed; L >= 6 goes through the Newton
+  recurrence in :func:`pnt_shf_any_L` /
+  :func:`phase_any_L` (:mod:`mf2_interpretation_factors_numba`),
+  matching the numpy / jax path via
+  :func:`mf2_interpretation_factors.newton_step_pnt_shf` /
+  :func:`newton_step_phase`.
 - Same physics as the numpy path: shift-eliminated boundary
   condition (``B_c = S_c(|E_r|)``) handled via the
   ``E_r - γ_n^2 (S_L(E) - S_L(|E_r|))`` level shift on the R-matrix
@@ -39,9 +43,19 @@ import numpy as np
 from ..primitives import array_ns
 from ..primitives import tab1 as tab1_mod
 from .mf2_interpretation_factors_numba import (
-    low_L_pnt_shf as _low_L_pnt_shf,
-    low_L_phase as _low_L_phase,
+    pnt_shf_any_L as _pnt_shf,
+    phase_any_L as _phase,
 )
+
+
+# Newton-recurrence step (pure Python; identical formula to
+# :func:`mf2_interpretation_factors.newton_step_pnt_shf`). Used
+# by the wrapper's ``_pnt_shf_scalar`` for L >= 6 so the wrapper
+# does not require numba to be installed at import time.
+def _newton_step_pnt_shf_py(p_prev, s_prev, r2, L):
+    sdif = L - s_prev
+    ratio = r2 / (sdif * sdif + p_prev * p_prev)
+    return ratio * p_prev, ratio * sdif - L
 
 try:
     from numba import njit, prange
@@ -121,8 +135,8 @@ def _reconstruct_kernel(
             # shift correction on the R-matrix denominator
             # (SAMMY shift-eliminated boundary condition; matches
             # the numpy path).
-            p_e, shf_e = _low_L_pnt_shf(rho_a_i, L)
-            phi_e = _low_L_phase(rho_ap_i, L)
+            p_e, shf_e = _pnt_shf(rho_a_i, L)
+            phi_e = _phase(rho_ap_i, L)
 
             # Potential scattering contribution: 4π/k² Σ_J g_J sin²(φ_L).
             sin_phi = math.sin(phi_e)
@@ -283,13 +297,6 @@ def reconstruct(data, energies_in):
     group_nfis = np.asarray(data.group_nfis, dtype=np.int64)
     ngroups = group_l.shape[0]
 
-    max_L = int(group_l.max()) if group_l.size else 0
-    if max_L > 5:
-        raise NotImplementedError(
-            f"RM numba kernel supports L<=5; got L={max_L}. "
-            f"Use the numpy or jax backend for higher L."
-        )
-
     # --- Pre-interpolate radii on the query grid. ---
     xp = array_ns.get_backend('numpy')
     e_safe = np.maximum(e, 0.0)
@@ -382,4 +389,19 @@ def _pnt_shf_scalar(rho, L):
                 -(4465125.0 + r2 * (
                     396900.0 + r2 * (18900.0 + r2 * (630.0 + 15.0 * r2))
                 )) / d)
-    raise NotImplementedError(f'RM numba wrapper: L<=5 only, got L={L}')
+    # L >= 6: Newton recurrence from L=5 upward. Matches
+    # :func:`mf2_interpretation_factors.newton_step_pnt_shf` step
+    # by step, so this stays numerically equivalent to the numpy
+    # / jax path at arbitrary L.
+    r2 = rho * rho
+    # Seed at L=5 from the closed form we just fell through.
+    d5 = 893025.0 + r2 * (
+        99225.0 + r2 * (6300.0 + r2 * (315.0 + r2 * (15.0 + r2)))
+    )
+    p_prev = rho * r2 ** 5 / d5
+    s_prev = -(4465125.0 + r2 * (
+        396900.0 + r2 * (18900.0 + r2 * (630.0 + 15.0 * r2))
+    )) / d5
+    for LL in range(6, L + 1):
+        p_prev, s_prev = _newton_step_pnt_shf_py(p_prev, s_prev, r2, LL)
+    return p_prev, s_prev

@@ -97,3 +97,60 @@ def low_L_phase(rho, L):
         )
     else:
         return float('nan')
+
+
+# ------------------------------------------------------------
+# L>=6: Newton recurrence, scalar / @njit form.
+# ------------------------------------------------------------
+#
+# Matches :func:`mf2_interpretation_factors.newton_step_pnt_shf`
+# and :func:`mf2_interpretation_factors.newton_step_phase` step by
+# step, so the numba path is numerically equivalent to the numpy
+# / JAX paths at arbitrary L.
+#
+# One recurrence step, per ENDF-6 Formats Manual D.1.3.3:
+#
+#     sdif  = L - S_{L-1}
+#     ratio = rho^2 / (sdif^2 + P_{L-1}^2)
+#     P_L   = ratio * P_{L-1}
+#     S_L   = ratio * sdif - L
+#     phi_L = phi_{L-1} - atan2(P_{L-1}, sdif)
+
+
+@njit(cache=True, inline='always')
+def pnt_shf_any_L(rho, L):
+    """Scalar (P_L, S_L) for any non-negative L.
+
+    L in 0..5 goes through the closed-form :func:`low_L_pnt_shf`;
+    L >= 6 runs the Newton recurrence from L=5 upward.
+    """
+    if L <= 5:
+        return low_L_pnt_shf(rho, L)
+    r2 = rho * rho
+    p_prev, s_prev = low_L_pnt_shf(rho, 5)
+    for LL in range(6, L + 1):
+        sdif = LL - s_prev
+        ratio = r2 / (sdif * sdif + p_prev * p_prev)
+        p_prev, s_prev = ratio * p_prev, ratio * sdif - LL
+    return p_prev, s_prev
+
+
+@njit(cache=True, inline='always')
+def phase_any_L(rho, L):
+    """Scalar hard-sphere phase phi_L for any non-negative L.
+
+    L in 0..5 goes through the closed-form :func:`low_L_phase`;
+    L >= 6 threads the phase alongside the (P, S) Newton
+    recurrence.
+    """
+    if L <= 5:
+        return low_L_phase(rho, L)
+    r2 = rho * rho
+    p_prev, s_prev = low_L_pnt_shf(rho, 5)
+    ph_prev = low_L_phase(rho, 5)
+    for LL in range(6, L + 1):
+        sdif = LL - s_prev
+        ratio = r2 / (sdif * sdif + p_prev * p_prev)
+        ph_prev = ph_prev - math.atan2(p_prev, sdif)
+        p_prev, s_prev = ratio * p_prev, ratio * sdif - LL
+    return ph_prev
