@@ -192,6 +192,7 @@ def _reconstruct_kernel(
             R_nfis_val = 0.0
             R_ncomp_val = 0.0
             R_nn_val = 0.0
+            R_int_val = 0.0
             for q in range(Nq):
                 t = t_nodes[q]
                 w = w_t[q]
@@ -215,17 +216,24 @@ def _reconstruct_kernel(
                 R_nfis_val  += w * g1_n * g0_g * g1_f * g0_x
                 R_ncomp_val += w * g1_n * g0_g * g0_f * g1_x
                 R_nn_val    += w * g2_n * g0_g * g0_f * g0_x
+                # Interference integral: one power of Γ_n in the
+                # numerator (order 1), rest at order 0.
+                R_int_val   += w * g1_n * g0_g * g0_f * g0_x
 
             R_ncap_val  *= alpha_n * alpha_g
             R_nfis_val  *= alpha_n * alpha_f
             R_ncomp_val *= alpha_n * alpha_x
             R_nn_val    *= alpha_n * alpha_n
+            R_int_val   *= alpha_n * alpha_n
 
             # ---- Assemble per-group contribution.
             D_safe = D if D > _EPS else 1.0
             factor = (2.0 * math.pi / D_safe) * gJ
+            sin_2phi = math.sin(2.0 * phi_L)
 
-            sct_i += R_nn_val   * factor
+            # Resonance elastic minus interference correction (same
+            # sign / coefficient as the numpy path).
+            sct_i += (R_nn_val - 2.0 * sin_2phi * R_int_val) * factor
             cap_i += R_ncap_val * factor
             fis_i += R_nfis_val * factor
             rxx_i += R_ncomp_val * factor

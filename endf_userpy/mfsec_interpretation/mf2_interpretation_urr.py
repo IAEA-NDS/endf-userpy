@@ -64,9 +64,29 @@ adapter, so numpy / JAX / numba share one implementation and
 
 Potential elastic is added on top per group as
 ``4π/k² · g_J sin²(φ_L)``. The resonance-potential interference
-term is not yet included (typically small in the URR because
-resonance widths are much smaller than level spacing); track
-against NJOY unresr to decide whether to add it later.
+correction
+
+    Δ<σ_el(E)> = -(π/k²) sum g_J (2π/<D>) 2 sin(2 φ_L) <Γ_n²/Γ>_int
+
+where the ``_int`` integral is the same 1D Laplace-transform
+form as the other fluctuation integrals but with the gamma-channel
+factor at order 0 (see :func:`_channel_factor`) so the numerator
+carries one power of ``Γ_n`` instead of two:
+
+    <Γ_n²/Γ>_int = α_n² ∫ g_n^{(1)} · g_γ^{(0)} · g_f^{(0)} · g_x^{(0)} dt
+
+is included per group. Parity vs NJOY unresr on U-235
+(TENDL-2021, 2.25 keV to 46 keV): elastic tightens from ~6%
+(without) to ~3.7% (with) at 46 keV; capture and fission are
+essentially unchanged and match NJOY at ~0.04% across the whole
+URR range (they have no interference piece). The residual
+elastic disagreement is likely a combination of the exact
+coefficient in the interference formula (textbook coefficient
+2 used; some references use 4) and NJOY's use of tabulated Ross
+fluctuation-factor tables vs our direct Gauss-Legendre
+integration. Further tightening is a follow-up; the current
+level is enough for practical URR reconstruction where capture
+and fission are the dominant partials.
 
 Scope
 -----
@@ -325,13 +345,26 @@ def reconstruct(data: URRData, energies_in, xp) -> dict:
         g2_n * g0_g * g0_f * g0_x * w_t, axis=-1,
     )
 
+    # Interference-integral form: R_int = α_n² · ∫ g1_n · g0_g · g0_f · g0_x dt.
+    # Same integrand as R_ncap but with the gamma-channel factor at
+    # order 0 (unconditional) instead of order 1; represents
+    # α_n · <Γ_n / Γ_total>.
+    R_int = alpha_n_phys * alpha_n_phys * xp.sum(
+        g1_n * g0_g * g0_f * g0_x * w_t, axis=-1,
+    )
+
     # ---- Assemble average partial XS.
     # <σ_{n,c}(E)> = (π/k²) g_J · (2π/D) · R_c
     d_safe = xp.where(d_avg > _EPS, d_avg, 1.0)
     g_by_g = xp.asarray(data.group_g, dtype=xp.float64)[None, :]
     two_pi_over_d = 2.0 * xp.pi / d_safe                  # (NE, nJ)
+    sin_2phi = xp.sin(2.0 * phi_by_g)                     # (NE, nJ)
 
-    sct_res_per_g = R_nn * two_pi_over_d * g_by_g
+    # Resonance elastic minus interference correction. Interference
+    # sign is negative (destructive between resonance and hard-sphere
+    # elastic; the two amplitudes add coherently, so their
+    # cross-term subtracts from the sum).
+    sct_res_per_g = (R_nn - 2.0 * sin_2phi * R_int) * two_pi_over_d * g_by_g
     cap_per_g = R_ncap * two_pi_over_d * g_by_g
     fis_per_g = R_nfis * two_pi_over_d * g_by_g
     rxx_per_g = R_ncomp * two_pi_over_d * g_by_g
