@@ -63,6 +63,12 @@ files=(
   # coverage of the NK=1 branch on a distinct data shape.
   "tendl21_n_N-14.endf   TENDL-2021     n_007-N-14_0725   1f29bf7206a014a0c82272d83d032a80cc115d332cbeefb99e72acd81c03528c"
   "jendl5_n_N-14.endf    JENDL-5        n_007-N-14_0725   1e23b9c02627a58a3cb718b087acbf0a5b0016629a9347eb735d659a2e7cc00f"
+  # Nb-93 for MLBW resonance-reconstruction integration tests. Clean
+  # mid-mass MLBW range with LRX competitive channels above the
+  # inelastic threshold, so it exercises both the plain-MLBW and
+  # LRX-competitive branches. Used by the array-agnostic MF2
+  # reconstruction and end-to-end composition tests.
+  "endfb81_n_Nb-93.endf  ENDF-B-VIII.1  n_041-Nb-93_4125  6ae5b6e7ee35b1d7e9460a9067b986de057ea632a7673a8bfc3125dbd3a222bd"
 )
 
 ua='Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)'

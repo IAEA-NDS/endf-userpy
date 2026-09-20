@@ -478,3 +478,51 @@ def compute_cross_section(
             if overwrite_mask.any():
                 xs = np.where(overwrite_mask, rrr_fill, xs)
     return xs
+
+
+def compute_cross_section_agnostic(
+    endf_dict, mt, energies_in, xp, outside_value=0.0,
+):
+    """Backend-agnostic MF3 cross-section reconstruction.
+
+    Same physics as :func:`compute_cross_section` (TAB1 interp)
+    minus the above_range / resonance_range policies. Runs
+    unchanged on the numpy, JAX, and numba backends via the
+    :mod:`endf_userpy.primitives.array_ns` adapter; enables MF3
+    to participate in sensitivity workflows (``jax.grad`` through
+    tabulated cross-section values) and in composed pipelines with
+    the array-agnostic MF2 reconstructions.
+
+    The policy machinery (above_range, resonance_range, warnings,
+    context-variable defaults) is intentionally not replicated
+    here -- those are user-facing decisions that don't belong in
+    a differentiable / jit-friendly numerical kernel. Callers
+    that want them should stay on :func:`compute_cross_section`;
+    callers that want backend-agnostic reconstruction (and are
+    happy to enforce range policies themselves) use this.
+
+    Parameters
+    ----------
+    endf_dict : dict
+        Parsed ENDF-6 dict from ``endf_parserpy``.
+    mt : int
+        MT number to reconstruct. Raises ``KeyError`` if MF3/MT
+        is not present.
+    energies_in : array_like
+        Incident-neutron energies. Cast to the backend's float64
+        via ``xp.asarray`` inside :func:`primitives.tab1.interp`.
+    xp : backend
+        As returned by :func:`endf_userpy.primitives.array_ns.get_backend`.
+    outside_value : float, optional
+        Fill for query energies outside the tabulated mesh.
+        Default 0.0 matches :func:`compute_cross_section` below
+        the file's lowest tabulated Ein. Pass ``float('nan')`` for
+        the flag convention used by the higher-level quantities
+        API.
+    """
+    # Local import avoids pulling primitives.tab1 at module import
+    # time; keeps the existing MF3 code path free of extra deps.
+    from ..primitives import tab1 as tab1_mod
+    sec = endf_dict[3][mt]['xstable']
+    t = tab1_mod.from_endf_dict(sec, x_key='E', y_key='xs')
+    return tab1_mod.interp(t, energies_in, xp, outside_value=outside_value)

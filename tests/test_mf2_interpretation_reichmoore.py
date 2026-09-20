@@ -1,0 +1,637 @@
+"""Sketch tests for Reich-Moore reconstruction.
+
+Same style as ``test_mf2_interpretation_mlbw_sketch.py``: synthetic
+one-group / one-resonance cases where the answer is either analytic
+or is well-known to match a simpler formalism (MLBW here).
+"""
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from endf_userpy.primitives import array_ns
+from endf_userpy.primitives.tab1 import TAB1
+from endf_userpy.mfsec_interpretation import mf2_interpretation_reichmoore as rm
+from endf_userpy.mfsec_interpretation import mf2_interpretation_mlbw as mlbw
+
+
+# ============================================================
+# Helpers.
+# ============================================================
+
+
+def _constant_tab1(value: float) -> TAB1:
+    """TAB1 with a single lin-lin panel that is effectively constant."""
+    return TAB1(
+        x=np.array([1e-5, 1e10], dtype=np.float64),
+        y=np.array([value, value], dtype=np.float64),
+        nbt=np.array([1], dtype=np.int32),
+        intp=np.array([2], dtype=np.int32),
+    )
+
+
+def _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3, L=0, spi=0.5,
+                                 ki=1e-4, r_a=0.6):
+    """One J^π group, one resonance, no fission. Statistical weight
+    g_J = 1 for simplicity (spi = 0.5, take J = 0.5 → 2J+1 = 2,
+    2(2I+1) = 4 → g_J = 0.5). We override g_J to 1.0 to make the
+    normalisation match a trivial MLBW test case."""
+    return rm.RMData(
+        abn=1.0,
+        spi=spi,
+        ki=ki,
+        r_a=_constant_tab1(r_a),
+        r_ap=_constant_tab1(r_a),
+        group_l=np.array([L], dtype=np.int32),
+        group_g=np.array([1.0], dtype=np.float64),
+        group_nfis=np.array([0], dtype=np.int32),
+        res_group=np.array([0], dtype=np.int32),
+        res_er=np.array([er], dtype=np.float64),
+        res_gn=np.array([gn], dtype=np.float64),
+        res_gg=np.array([gg], dtype=np.float64),
+        res_gf1=np.array([0.0], dtype=np.float64),
+        res_gf2=np.array([0.0], dtype=np.float64),
+    )
+
+
+def _single_res_with_fission(
+    er=100.0, gn=0.5, gg=0.3, gf1=0.2, L=0, spi=0.5,
+):
+    """One J^π group, one resonance, 1 fission channel."""
+    return rm.RMData(
+        abn=1.0,
+        spi=spi,
+        ki=1e-4,
+        r_a=_constant_tab1(0.6),
+        r_ap=_constant_tab1(0.6),
+        group_l=np.array([L], dtype=np.int32),
+        group_g=np.array([1.0], dtype=np.float64),
+        group_nfis=np.array([1], dtype=np.int32),
+        res_group=np.array([0], dtype=np.int32),
+        res_er=np.array([er], dtype=np.float64),
+        res_gn=np.array([gn], dtype=np.float64),
+        res_gg=np.array([gg], dtype=np.float64),
+        res_gf1=np.array([gf1], dtype=np.float64),
+        res_gf2=np.array([0.0], dtype=np.float64),
+    )
+
+
+# ============================================================
+# Physics tests.
+# ============================================================
+
+
+def test_rm_hard_sphere_phase_uses_scattering_radius():
+    """The hard-sphere phase in Ω_c uses the SCATTERING radius R'
+    (r_ap), not the channel radius a (r_a). When r_a and r_ap differ
+    (NAPS=2 evaluations), sct in the no-resonance limit must be
+    driven by r_ap alone: `sct == 4π/k² g_J sin²(φ_L(rho_ap))`.
+
+    Regression: earlier versions of this sketch used r_a for the
+    hard-sphere phase, which gives the wrong potential-scattering
+    limit when r_a != r_ap. Since MLBW already gets this right and
+    all previous RM tests happened to use r_a = r_ap = 0.6, the
+    bug was invisible."""
+    r_a_val, r_ap_val = 0.5, 0.9      # distinct
+    data = rm.RMData(
+        abn=1.0, spi=0.5, ki=1e-4,
+        r_a=_constant_tab1(r_a_val),
+        r_ap=_constant_tab1(r_ap_val),
+        group_l=np.array([0], dtype=np.int32),
+        group_g=np.array([1.0], dtype=np.float64),
+        group_nfis=np.array([0], dtype=np.int32),
+        res_group=np.array([], dtype=np.int32),
+        res_er=np.array([], dtype=np.float64),
+        res_gn=np.array([], dtype=np.float64),
+        res_gg=np.array([], dtype=np.float64),
+        res_gf1=np.array([], dtype=np.float64),
+        res_gf2=np.array([], dtype=np.float64),
+    )
+    xp = array_ns.get_backend('numpy')
+    einc = np.array([1.0, 100.0, 1e4], dtype=np.float64)
+    xs = rm.reconstruct(data, einc, xp)
+    # sct should equal pot, and both should be driven by r_ap.
+    np.testing.assert_allclose(xs['sct'], xs['pot'], rtol=1e-10, atol=1e-30)
+    # And the value must match the r_ap-based expectation, not the
+    # r_a one (the pre-fix bug gave the latter).
+    ki = data.ki
+    k2 = (ki * ki) * einc
+    rho_ap = ki * np.sqrt(einc) * r_ap_val
+    expected = 4.0 * np.pi / k2 * np.sin(rho_ap) ** 2
+    np.testing.assert_allclose(xs['sct'], expected, rtol=1e-10, atol=1e-30)
+
+
+def test_rm_no_resonances_off_peak_is_potential():
+    """With no resonances, elastic reduces to potential (4π/k² g_J
+    sin²φ), and capture / fission are zero."""
+    data = rm.RMData(
+        abn=1.0, spi=0.5, ki=1e-4,
+        r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+        group_l=np.array([0], dtype=np.int32),
+        group_g=np.array([1.0], dtype=np.float64),
+        group_nfis=np.array([0], dtype=np.int32),
+        res_group=np.array([], dtype=np.int32),
+        res_er=np.array([], dtype=np.float64),
+        res_gn=np.array([], dtype=np.float64),
+        res_gg=np.array([], dtype=np.float64),
+        res_gf1=np.array([], dtype=np.float64),
+        res_gf2=np.array([], dtype=np.float64),
+    )
+    xp = array_ns.get_backend('numpy')
+    einc = np.array([1.0, 100.0, 1e4], dtype=np.float64)
+    xs = rm.reconstruct(data, einc, xp)
+    # Cap and fis should be zero. Complex-arithmetic roundoff in the
+    # unitarity check (|U|^2 ~ 1 ± 1e-8) can leak into `cap` as a tiny
+    # residue; hence atol rather than array_equal.
+    np.testing.assert_allclose(
+        np.asarray(xs['cap']), 0.0, atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(xs['fis']), 0.0, atol=1e-30,
+    )
+    # sct should equal pot (elastic-only, no absorption).
+    np.testing.assert_allclose(
+        np.asarray(xs['sct']), np.asarray(xs['pot']),
+        rtol=1e-10, atol=1e-30,
+    )
+
+
+def test_rm_capture_peaks_at_er():
+    """Single s-wave resonance, capture cross section has its peak
+    at E = E_r."""
+    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3)
+    xp = array_ns.get_backend('numpy')
+    einc = np.linspace(95.0, 105.0, 201)
+    xs = rm.reconstruct(data, einc, xp)
+    cap = np.asarray(xs['cap'])
+    i_peak = int(np.argmax(cap))
+    e_peak = einc[i_peak]
+    assert abs(e_peak - 100.0) < 0.1, (
+        f'capture peak at {e_peak} eV, expected ~100 eV'
+    )
+    # Capture must be positive at the peak (sanity).
+    assert cap[i_peak] > 0.0
+
+
+def test_rm_capture_positive_definite():
+    """Reich-Moore capture cross section is nonnegative everywhere:
+    ``σ_cap = (π/k²) g_J [1 - Σ_c |U_{0c}|²]`` is manifestly
+    nonnegative from unitarity. Numerical roundoff can flip the sign
+    slightly; here we check |negative| is at machine level of the peak."""
+    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3)
+    xp = array_ns.get_backend('numpy')
+    einc = np.linspace(50.0, 150.0, 501)
+    xs = rm.reconstruct(data, einc, xp)
+    cap = np.asarray(xs['cap'])
+    peak = float(np.max(cap))
+    assert np.all(cap > -1e-12 * peak), 'capture went negative beyond roundoff'
+
+
+def test_rm_matches_mlbw_in_elastic_capture_limit():
+    """For a single non-fission resonance, R-M and MLBW give
+    nearly identical results. R-M folds Γ_γ into the complex
+    denominator; MLBW keeps it real. The two agree to a few %
+    near the peak for moderate widths (in the narrow-resonance
+    limit exactly)."""
+    xp = array_ns.get_backend('numpy')
+    er, gn, gg = 100.0, 0.5, 0.3
+    rm_data = _single_res_elastic_capture(er=er, gn=gn, gg=gg)
+    mlbw_data = mlbw.MLBWData(
+        abn=1.0, spi=0.5, ki=1e-4, qx=0.0,
+        r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+        ch_l=np.array([0], dtype=np.int32),
+        ch_g=np.array([1.0], dtype=np.float64),
+        res_channel=np.array([0], dtype=np.int32),
+        res_l=np.array([0], dtype=np.int32),
+        res_er=np.array([er], dtype=np.float64),
+        res_gn=np.array([gn], dtype=np.float64),
+        res_gg=np.array([gg], dtype=np.float64),
+        res_gf=np.array([0.0], dtype=np.float64),
+        res_gx=np.array([0.0], dtype=np.float64),
+    )
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_rm = rm.reconstruct(rm_data, einc, xp)
+    xs_mlbw = mlbw.reconstruct(mlbw_data, einc, xp)
+
+    cap_rm = np.asarray(xs_rm['cap'])
+    cap_mlbw = np.asarray(xs_mlbw['cap'])
+    peak = float(np.max(cap_mlbw))
+    # 5% is a generous bound; the two formulations differ by O(Γ²/E²)
+    # away from the peak. Not-so-narrow (gn+gg=0.8 eV at Er=100 eV) so
+    # small percent differences are expected.
+    np.testing.assert_allclose(cap_rm, cap_mlbw, rtol=0.05, atol=0.01 * peak)
+
+
+def test_rm_with_fission_produces_fission_cross_section():
+    """One resonance with a fission channel: fission peaks at Er,
+    fission > 0."""
+    data = _single_res_with_fission(er=100.0, gn=0.5, gg=0.3, gf1=0.2)
+    xp = array_ns.get_backend('numpy')
+    einc = np.linspace(95.0, 105.0, 201)
+    xs = rm.reconstruct(data, einc, xp)
+    fis = np.asarray(xs['fis'])
+    i_peak = int(np.argmax(fis))
+    assert abs(einc[i_peak] - 100.0) < 0.1
+    assert fis[i_peak] > 0.0
+    # Total should equal sct + cap + fis identically.
+    np.testing.assert_allclose(
+        np.asarray(xs['tot']),
+        np.asarray(xs['sct']) + np.asarray(xs['cap']) + np.asarray(xs['fis']),
+        rtol=1e-14, atol=1e-30,
+    )
+
+
+def test_rm_unitarity_bound():
+    """R-M cross sections respect the unitary bound:
+    ``σ_scat + σ_cap + σ_fis <= (4π / k²) Σ_J g_J`` per J·π group
+    (up to |1-U_00|² <= 4 which saturates at π/k² per group).
+    Here we do a coarser check: total ≤ 5 × the unitary bound to
+    catch gross sign / factor errors."""
+    data = _single_res_with_fission(er=100.0, gn=0.5, gg=0.3, gf1=0.2)
+    xp = array_ns.get_backend('numpy')
+    einc = np.linspace(50.0, 150.0, 501)
+    xs = rm.reconstruct(data, einc, xp)
+    tot = np.asarray(xs['tot'])
+    ki = data.ki
+    e_safe = np.maximum(einc, 0.0)
+    k2 = (ki * ki) * e_safe
+    # 4π/k² per group with g_J = 1
+    bound = 4.0 * np.pi / np.where(k2 > 0, k2, 1e30)
+    assert np.all(tot <= 5.0 * bound + 1e-6)
+
+
+# ============================================================
+# Backend equivalence.
+# ============================================================
+
+
+def _jax_available() -> bool:
+    return 'jax' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_numpy_jax_agree_single_resonance():
+    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_jax = rm.reconstruct(data, einc, array_ns.get_backend('jax'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_jax[key]),
+            rtol=1e-10, atol=1e-30,
+            err_msg=f'numpy vs jax disagree on {key}',
+        )
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_numpy_jax_agree_with_fission():
+    data = _single_res_with_fission(er=100.0, gn=0.5, gg=0.3, gf1=0.2)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_jax = rm.reconstruct(data, einc, array_ns.get_backend('jax'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_jax[key]),
+            rtol=1e-10, atol=1e-30,
+        )
+
+
+# ============================================================
+# Backend equivalence: numpy vs numba.
+# ============================================================
+
+
+def _numba_available() -> bool:
+    return 'numba' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_numpy_numba_agree_single_resonance():
+    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-10, atol=1e-30,
+            err_msg=f'numpy vs numba disagree on {key}',
+        )
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_numpy_numba_agree_with_fission():
+    """One fission channel: exercises the 2×2 branch in the numba
+    hand-coded inverse."""
+    data = _single_res_with_fission(er=100.0, gn=0.5, gg=0.3, gf1=0.2)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-10, atol=1e-30,
+        )
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_numpy_numba_agree_with_two_fission_channels():
+    """Two fission channels: exercises the 3×3 branch in the numba
+    hand-coded inverse (cofactor expansion)."""
+    data = rm.RMData(
+        abn=1.0, spi=0.5, ki=1e-4,
+        r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+        group_l=np.array([0], dtype=np.int32),
+        group_g=np.array([1.0], dtype=np.float64),
+        group_nfis=np.array([2], dtype=np.int32),
+        res_group=np.array([0], dtype=np.int32),
+        res_er=np.array([100.0], dtype=np.float64),
+        res_gn=np.array([0.5], dtype=np.float64),
+        res_gg=np.array([0.3], dtype=np.float64),
+        res_gf1=np.array([0.2], dtype=np.float64),
+        res_gf2=np.array([-0.15], dtype=np.float64),   # signed
+    )
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-10, atol=1e-30,
+            err_msg=f'numpy vs numba disagree on {key}',
+        )
+
+
+def test_rm_numpy_chunking_output_bit_identical_to_unchunked():
+    """R-M's numpy path auto-chunks NE when the (NE, nres)
+    intermediate would exceed NUMPY_MAX_INTERMEDIATE_BYTES. Force
+    chunking with a tiny cap and verify bit-identity vs
+    unchunked."""
+    xp = array_ns.get_backend('numpy')
+    data = _single_res_with_fission(er=100.0, gn=0.5, gg=0.3, gf1=0.2)
+    einc = np.linspace(90.0, 110.0, 201)
+    xs_full = rm.reconstruct(data, einc, xp)
+    xs_chunked = rm.reconstruct(data, einc, xp, _max_intermediate_bytes=64)
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_array_equal(
+            np.asarray(xs_full[key]),
+            np.asarray(xs_chunked[key]),
+            err_msg=f'chunked vs unchunked disagree on {key}',
+        )
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+@pytest.mark.parametrize('L', [0, 1, 2, 3, 4, 5, 6, 7])
+def test_rm_numpy_numba_agree_all_L_single_resonance(L):
+    """R-M numba must reproduce the numpy path for arbitrary L,
+    including L>=6 (Newton recurrence, not closed forms).
+    Regression guard on the L>5 numba extension. ki and r_a
+    tuned so rho stays comfortable at the resonance energy across
+    the whole L range."""
+    data = _single_res_elastic_capture(er=100.0, gn=0.5, gg=0.3,
+                                        L=L, ki=1e-1, r_a=5.0)
+    einc = np.linspace(95.0, 105.0, 51)
+    xs_np = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = rm.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[key]),
+            np.asarray(xs_nb[key]),
+            rtol=1e-9, atol=1e-30,
+            err_msg=f'L={L}: RM numpy vs numba disagree on {key}',
+        )
+
+
+# ============================================================
+# jax.jit compatibility (Option A: fixed-shape indicator mask).
+# The R-M reconstruct now traces cleanly, which is what makes
+# it usable with `chunked_chi2` and `jax.grad` for sensitivity
+# / fitting workflows.
+# ============================================================
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_rm_jax_jit_matches_direct_call():
+    """`jax.jit`-wrapped R-M reconstruction matches the un-jitted
+    numpy result to floating precision. If this ever fires, some
+    piece of the physics slipped back into Python-side control flow
+    that the tracer can't follow."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+
+    # Multi-group case with both no-fission and one-fission groups,
+    # so the mask actually does distinguish resonances.
+    data = rm.RMData(
+        abn=1.0, spi=0.5, ki=1e-4,
+        r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+        group_l=np.array([0, 0], dtype=np.int32),
+        group_g=np.array([0.4, 0.6], dtype=np.float64),
+        group_nfis=np.array([0, 1], dtype=np.int32),
+        res_group=np.array([0, 1, 1, 0], dtype=np.int32),
+        res_er=np.array([80.0, 100.0, 120.0, 200.0], dtype=np.float64),
+        res_gn=np.array([0.5, 0.4, 0.3, 0.6], dtype=np.float64),
+        res_gg=np.array([0.3, 0.3, 0.3, 0.3], dtype=np.float64),
+        res_gf1=np.array([0.0, 0.1, 0.05, 0.0], dtype=np.float64),
+        res_gf2=np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+    )
+    einc = np.linspace(50.0, 250.0, 51)
+
+    # Non-jit reference on numpy.
+    ref = rm.reconstruct(data, einc, array_ns.get_backend('numpy'))
+
+    # jit-wrapped JAX path.
+    @jax.jit
+    def _jit(e):
+        return rm.reconstruct(data, e, xp)
+
+    out = _jit(jnp.asarray(einc))
+    jax.block_until_ready(out['tot'])
+    for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(out[key]),
+            np.asarray(ref[key]),
+            rtol=1e-8, atol=1e-30,
+            err_msg=f'jit vs direct disagree on {key}',
+        )
+
+
+def _level_matrix_reference(data, energies):
+    """Independent R-M implementation via the LEVEL-MATRIX
+    formulation (SAMMY eq A.63). Used as ground truth to catch
+    formula bugs in the sketch's R-matrix path.
+
+    Formulation (SAMMY shift-eliminated ``B_c = S_c(|E_r|)``,
+    s-wave):
+        A^{-1}_{λμ} = (E_λ - E - iΓ_γ,λ/2) δ_{λμ}
+                      - Σ_c γ_λc γ_μc L̃_c(E),   L̃_c = i P_c
+        U_{cc'}      = Ω_c Ω_c' [δ_{cc'} + 2i √P_c √P_c'
+                                   Σ_{λμ} γ_λc γ_μc' A_{λμ}]
+
+    Same physics as the R-matrix path — different arithmetic. Any
+    disagreement points at a bug in one of them.
+    """
+    import math
+    energies = np.asarray(energies, dtype=np.float64)
+    ne = energies.shape[0]
+    ki = data.ki
+    r_a_val = float(data.r_a.y[0])
+    r_ap_val = float(data.r_ap.y[0])
+
+    nres = data.res_er.shape[0]
+    L = int(data.group_l[0])
+    assert L == 0, 'this reference is s-wave only'
+    nfis = int(data.group_nfis[0])
+    g_J = float(data.group_g[0])
+
+    er = np.asarray(data.res_er, dtype=np.float64)
+    gg = np.asarray(data.res_gg, dtype=np.float64)
+    gn = np.asarray(data.res_gn, dtype=np.float64)
+    gfa = np.asarray(data.res_gf1, dtype=np.float64)
+
+    rho_r = ki * np.sqrt(np.abs(er)) * r_a_val
+    P_r = rho_r
+    gamma_e = np.where(
+        P_r > 0, np.sqrt(gn / (2 * np.maximum(P_r, 1e-38))), 0.0,
+    )
+    gamma_f = np.sign(gfa) * np.sqrt(np.abs(gfa) / 2.0)
+
+    sct = np.zeros(ne); cap = np.zeros(ne); fis = np.zeros(ne); pot = np.zeros(ne)
+    for i in range(ne):
+        E = float(energies[i])
+        if E <= 0:
+            continue
+        k2 = ki * ki * E
+        pi_k2 = np.pi / k2
+        rho_e = ki * math.sqrt(E) * r_a_val
+        P_e = rho_e
+        rho_s = ki * math.sqrt(E) * r_ap_val
+        phi_e = rho_s
+        omega_0 = complex(math.cos(-phi_e), math.sin(-phi_e))
+
+        A_inv = np.zeros((nres, nres), dtype=np.complex128)
+        for lam in range(nres):
+            for mu in range(nres):
+                cross = 1j * P_e * gamma_e[lam] * gamma_e[mu]
+                if nfis >= 1:
+                    cross = cross + 1j * gamma_f[lam] * gamma_f[mu]
+                A_inv[lam, mu] = -cross
+                if lam == mu:
+                    A_inv[lam, lam] = A_inv[lam, lam] + (
+                        er[lam] - E - 0.5j * gg[lam]
+                    )
+        A = np.linalg.inv(A_inv)
+
+        SqP_e = math.sqrt(P_e)
+        sum_00 = gamma_e @ A @ gamma_e
+        U_00 = (omega_0 ** 2) * (1.0 + 2j * SqP_e * SqP_e * sum_00)
+        if nfis >= 1:
+            sum_01 = gamma_e @ A @ gamma_f
+            U_01 = omega_0 * (2j * SqP_e * 1.0 * sum_01)
+            fis_i = pi_k2 * g_J * (U_01.real ** 2 + U_01.imag ** 2)
+            sumsq_total = (U_00.real ** 2 + U_00.imag ** 2
+                           + U_01.real ** 2 + U_01.imag ** 2)
+        else:
+            fis_i = 0.0
+            sumsq_total = U_00.real ** 2 + U_00.imag ** 2
+
+        sct[i] = pi_k2 * g_J * (abs(1.0 - U_00)) ** 2
+        cap[i] = pi_k2 * g_J * (1.0 - sumsq_total)
+        fis[i] = fis_i
+        pot[i] = 4.0 * pi_k2 * g_J * (math.sin(phi_e)) ** 2
+    return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot,
+            'tot': sct + cap + fis}
+
+
+def test_rm_r_matrix_matches_level_matrix_reference_across_sign_patterns():
+    """Two-resonance, one-fission-channel synthetic cases feed the
+    sketch's R-matrix formulation against an independent level-matrix
+    reference computed here. Pins agreement at rtol<=1e-10 across a
+    grid of energies (on-peak, off-peak, between-peaks).
+
+    Cases chosen to trigger interference-heavy conditions:
+
+    - same-sign GFA: straightforward
+    - opposite-sign GFA: destructive interference in R_01 (mimics
+      the U-235 sign pattern of GFA/GFB)
+    - bound-pole + active resonance with opposite GFA: closer to
+      real actinide RRR shape
+
+    Historical note: this test was written to lock in the fix for a
+    σ_cap double-subtraction bug that gave σ_cap = -483 b for U-235
+    thermal. If it ever fires, chances are someone reintroduced the
+    same class of error.
+    """
+    def data_two_res(er_pair, gn_pair, gg_pair, gfa_pair):
+        return rm.RMData(
+            abn=1.0, spi=0.5, ki=1e-4,
+            r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+            group_l=np.array([0], dtype=np.int32),
+            group_g=np.array([1.0], dtype=np.float64),
+            group_nfis=np.array([1], dtype=np.int32),
+            res_group=np.zeros(2, dtype=np.int32),
+            res_er=np.array(er_pair, dtype=np.float64),
+            res_gn=np.array(gn_pair, dtype=np.float64),
+            res_gg=np.array(gg_pair, dtype=np.float64),
+            res_gf1=np.array(gfa_pair, dtype=np.float64),
+            res_gf2=np.array([0.0, 0.0], dtype=np.float64),
+        )
+
+    xp = array_ns.get_backend('numpy')
+    einc = np.array([50.0, 95.0, 100.0, 105.0, 150.0, 195.0, 200.0, 205.0, 300.0])
+
+    cases = [
+        ('same-sign GFA', [100.0, 200.0], [1.0, 1.0], [0.05, 0.05], [0.5, 0.5]),
+        ('opposite-sign GFA', [100.0, 200.0], [1.0, 1.0], [0.05, 0.05], [0.5, -0.5]),
+        ('bound-pole + active', [-500.0, 100.0], [1.0, 1.0], [0.05, 0.05], [-0.5, 0.5]),
+    ]
+    for label, er, gn, gg, gfa in cases:
+        data = data_two_res(er, gn, gg, gfa)
+        ref = _level_matrix_reference(data, einc)
+        got = rm.reconstruct(data, einc, xp)
+        for key in ('sct', 'cap', 'fis', 'pot', 'tot'):
+            np.testing.assert_allclose(
+                np.asarray(got[key]), ref[key],
+                rtol=1e-10, atol=1e-30,
+                err_msg=f'[{label}] {key}: sketch vs level-matrix disagree',
+            )
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_rm_jax_grad_matches_finite_difference():
+    """`jax.grad` through the R-M reconstruction produces gradients
+    that match central FD -- the payoff for the jit-compatibility
+    fix. Enables `chunked_chi2` on R-M for fitting workflows."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+
+    e_query = 100.5
+
+    def cap_at(er_value):
+        data = rm.RMData(
+            abn=1.0, spi=0.5, ki=1e-4,
+            r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
+            group_l=np.array([0], dtype=np.int32),
+            group_g=np.array([1.0], dtype=np.float64),
+            group_nfis=np.array([1], dtype=np.int32),
+            res_group=np.array([0], dtype=np.int32),
+            res_er=jnp.stack([er_value]),
+            res_gn=jnp.array([0.5], dtype=jnp.float64),
+            res_gg=jnp.array([0.3], dtype=jnp.float64),
+            res_gf1=jnp.array([0.2], dtype=jnp.float64),
+            res_gf2=jnp.array([0.0], dtype=jnp.float64),
+        )
+        xs = rm.reconstruct(data, jnp.array([e_query]), xp)
+        return xs['cap'][0]
+
+    grad_ad = float(jax.grad(cap_at)(100.0))
+    h = 1e-4
+    grad_fd = (float(cap_at(100.0 + h)) - float(cap_at(100.0 - h))) / (2 * h)
+    rel = abs(grad_ad - grad_fd) / max(abs(grad_fd), 1.0)
+    assert rel < 1e-3, f'ad={grad_ad:.6e} fd={grad_fd:.6e}'
