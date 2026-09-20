@@ -372,3 +372,61 @@ def test_jax_grad_flows_through_urr_wrt_gamma_gamma():
         f'A serious mismatch here indicates the autodiff graph is '
         f'not connected the way the physics is.'
     )
+
+
+# ============================================================
+# Numba backend parity: identical numerics to the numpy path.
+# ============================================================
+
+
+def _numba_available():
+    from endf_userpy.primitives import array_ns
+    return 'numba' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_urr_numpy_numba_agree_on_synthetic():
+    """URR numba kernel must reproduce the numpy path on the
+    same synthetic dict at machine precision (both paths use
+    the same Gauss-Legendre nodes and the same physics
+    formulas)."""
+    from endf_userpy.primitives import array_ns
+    d = _minimal_urr_endf_dict(
+        j_groups=[(0, [(3.5, 1.0, 0.5, 1.0, 0.0,
+                        [1e3, 1e4], [1.0, 1.0],
+                        [0.1, 0.1], [0.05, 0.05],
+                        [0.03, 0.03], [0.0, 0.0])])],
+    )
+    data = pre.urr_data_from_endf_dict(d)
+    einc = np.array([1.5e3, 3e3, 5e3, 8e3])
+    xs_np = urr.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = urr.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for k in ('sct', 'cap', 'fis', 'rxx', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[k]), np.asarray(xs_nb[k]),
+            rtol=1e-12, atol=1e-30,
+            err_msg=f'URR numpy vs numba disagree on {k}',
+        )
+
+
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_urr_numpy_numba_agree_on_u235():
+    """Numpy vs numba on the U-235 URR range: max relative error
+    at the ~1e-15 level across every partial (both paths run
+    the same physics; only the outer loop differs)."""
+    path = resolve_u235()
+    if path is None:
+        pytest.skip('U-235 corpus file not available')
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.primitives import array_ns
+    d = EndfParserCpp().parsefile(path, include=[1, 2])
+    data = pre.urr_data_from_endf_dict(d)
+    einc = np.array([2500., 5000., 10000., 20000., 40000.])
+    xs_np = urr.reconstruct(data, einc, array_ns.get_backend('numpy'))
+    xs_nb = urr.reconstruct(data, einc, array_ns.get_backend('numba'))
+    for k in ('sct', 'cap', 'fis', 'rxx', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_np[k]), np.asarray(xs_nb[k]),
+            rtol=1e-12, atol=1e-30,
+            err_msg=f'URR numpy vs numba on U-235 disagree on {k}',
+        )

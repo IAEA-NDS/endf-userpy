@@ -230,6 +230,10 @@ def reconstruct(data: URRData, energies_in, xp) -> dict:
     xp : backend
         As returned by :func:`~endf_userpy.primitives.array_ns.get_backend`.
     """
+    if getattr(xp, 'name', None) == 'numba':
+        from . import mf2_interpretation_urr_numba as _numba
+        return _numba.reconstruct(data, energies_in)
+
     # ---- INT-code guard. LRF=2 URR files overwhelmingly use
     # lin-lin (INT=2). Fail loud on anything else so a caller
     # doesn't quietly get wrong average widths from a mis-applied
