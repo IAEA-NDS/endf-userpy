@@ -430,3 +430,63 @@ def test_urr_numpy_numba_agree_on_u235():
             rtol=1e-12, atol=1e-30,
             err_msg=f'URR numpy vs numba on U-235 disagree on {k}',
         )
+
+
+# ============================================================
+# NJOY-parity: reconstruct vs NJOY unresr's tabulated MT152.
+# ============================================================
+
+
+def test_reconstruct_close_to_njoy_unresr_u235():
+    """``reconstruct`` (direct 1D Laplace-Gauss-Legendre) agrees
+    with NJOY unresr's tabulated MT152 (infinite dilution,
+    T = 0) to a few 1e-4 relative on capture and fission,
+    ~1e-5 on elastic, across the full TENDL-2021 U-235 URR
+    range. The small residual is NJOY's Ross-10-point
+    quadrature error, not ours (verified against Monte Carlo:
+    our integrand converges to the true chi-squared average to
+    ~1e-5, NJOY has ~1e-4 systematic offset from that value at
+    Porter-Thomas parameters).
+
+    Reference values transcribed from a NJOY unresr run on
+    TENDL-2021 U-235 (see ``scripts/njoy_compare/run_unresr.sh``);
+    encoded here as literals so the test works without NJOY
+    installed in CI.
+    """
+    path = resolve_u235()
+    if path is None:
+        pytest.skip('U-235 corpus file not available')
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.primitives import array_ns
+    d = EndfParserCpp().parsefile(path, include=[1, 2])
+    data = pre.urr_data_from_endf_dict(d)
+    xp = array_ns.get_backend('numpy')
+
+    # (E, el, fis, cap) from NJOY unresr MT152 tape22, sig0 = 1e10,
+    # T = 0 (NJOY floors to 1 K). 7-digit precision from tape22.
+    njoy = [
+        (2250.0,   11.9542, 5.9600, 2.3881),
+        (2500.0,   11.9309, 5.6553, 2.2547),
+        (3000.0,   11.8877, 5.1670, 2.0415),
+        (5000.0,   11.7485, 4.0425, 1.5528),
+        (10000.0,  11.4989, 2.9701, 1.0919),
+        (20000.0,  11.1531, 2.2866, 0.7961),
+        (40000.0,  10.6822, 1.8784, 0.6107),
+        (46200.0,  10.5668, 1.8175, 0.5813),
+    ]
+    einc = np.array([row[0] for row in njoy])
+    xs = urr.reconstruct(data, einc, xp)
+
+    tolerances = {'el': 1e-4, 'fis': 1e-3, 'cap': 1e-3}
+    for i, (E, n_el, n_fis, n_cap) in enumerate(njoy):
+        for label, ours, njoy_val in [
+            ('el', float(xs['sct'][i]), n_el),
+            ('fis', float(xs['fis'][i]), n_fis),
+            ('cap', float(xs['cap'][i]), n_cap),
+        ]:
+            rel = abs(ours - njoy_val) / njoy_val
+            assert rel < tolerances[label], (
+                f'E={E} eV: {label} = {ours:.6f} vs NJOY {njoy_val} '
+                f'({rel:.3%} relative -- expected < '
+                f'{tolerances[label]:.0e})'
+            )

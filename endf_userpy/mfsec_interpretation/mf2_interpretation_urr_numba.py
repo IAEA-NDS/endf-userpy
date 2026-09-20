@@ -126,6 +126,8 @@ def _reconstruct_kernel(
     table_gx,
     t_nodes,         # (Nq,)
     w_t,             # (Nq,)
+    group_pot_weight,  # (nJ,) 2L+1 at the first J-group of
+                       # each unique L; 0 elsewhere.
 ):
     ne = e.shape[0]
     nJ = group_l.shape[0]
@@ -192,7 +194,6 @@ def _reconstruct_kernel(
             R_nfis_val = 0.0
             R_ncomp_val = 0.0
             R_nn_val = 0.0
-            R_int_val = 0.0
             for q in range(Nq):
                 t = t_nodes[q]
                 w = w_t[q]
@@ -216,31 +217,37 @@ def _reconstruct_kernel(
                 R_nfis_val  += w * g1_n * g0_g * g1_f * g0_x
                 R_ncomp_val += w * g1_n * g0_g * g0_f * g1_x
                 R_nn_val    += w * g2_n * g0_g * g0_f * g0_x
-                # Interference integral: one power of Γ_n in the
-                # numerator (order 1), rest at order 0.
-                R_int_val   += w * g1_n * g0_g * g0_f * g0_x
 
             R_ncap_val  *= alpha_n * alpha_g
             R_nfis_val  *= alpha_n * alpha_f
             R_ncomp_val *= alpha_n * alpha_x
             R_nn_val    *= alpha_n * alpha_n
-            R_int_val   *= alpha_n * alpha_n
 
             # ---- Assemble per-group contribution.
             D_safe = D if D > _EPS else 1.0
             factor = (2.0 * math.pi / D_safe) * gJ
-            sin_2phi = math.sin(2.0 * phi_L)
 
-            # Resonance elastic minus interference correction (same
-            # sign / coefficient as the numpy path).
-            sct_i += (R_nn_val - 2.0 * sin_2phi * R_int_val) * factor
+            # Resonance elastic + interference correction. The
+            # interference formula matches NJOY unresr exactly:
+            #   Δσ_int = -(4π²/k²) · g_J · <Γ_n> · sin²(φ_L) / <D>
+            # Split as: sct_i (per-group internal units) gets
+            # R_nn * factor for the resonance piece, then the
+            # interference correction with sin²(φ_L) (not
+            # sin(2·)) and <Γ_n> (not <Γ_n²/Γ>).
+            sin_phi = math.sin(phi_L)
+            sct_i += R_nn_val * factor
+            sct_i += -4.0 * math.pi * gJ * alpha_n * sin_phi * sin_phi / D_safe
             cap_i += R_ncap_val * factor
             fis_i += R_nfis_val * factor
             rxx_i += R_ncomp_val * factor
 
-            # Potential elastic per group: 4 sin²(φ_L) · g_J.
-            sin_phi = math.sin(phi_L)
-            pot_i += gJ * sin_phi * sin_phi
+            # Potential elastic: (2L+1) · sin²(φ_L) at the first
+            # J-group of each unique L (accumulator initialised
+            # by the wrapper via ``group_pot_weight``, which is
+            # zero for every non-first group). Matches NJOY
+            # unresr line 1072 (``if j.eq.1: spot += (2ll+1)
+            # sin²(ps)``).
+            pot_i += group_pot_weight[g] * sin_phi * sin_phi
 
         sct[i] = inv_k2 * sct_i + 4.0 * inv_k2 * pot_i
         cap[i] = inv_k2 * cap_i
@@ -293,10 +300,23 @@ def reconstruct(data, energies_in):
     t_nodes = np.asarray(_T_NODES, dtype=np.float64)
     w_t = np.asarray(_T_WEIGHTS, dtype=np.float64)
 
+    # Per-group potential-elastic weight: (2L+1) at the FIRST
+    # J-group of each unique L, 0 elsewhere. Distributes the
+    # per-L potential sum across the kernel's per-group loop
+    # so we don't need a second pass.
+    group_l_arr = np.asarray(data.group_l, dtype=np.int64)
+    group_pot_weight = np.zeros(group_l_arr.shape[0], dtype=np.float64)
+    seen_L: set = set()
+    for g_idx, L_val in enumerate(group_l_arr):
+        if int(L_val) in seen_L:
+            continue
+        seen_L.add(int(L_val))
+        group_pot_weight[g_idx] = 2.0 * int(L_val) + 1.0
+
     sct, cap, fis, rxx, pot = _reconstruct_kernel(
         e, r_a_e, r_ap_e,
         float(data.abn), float(data.ki),
-        np.asarray(data.group_l, dtype=np.int64),
+        group_l_arr,
         np.asarray(data.group_g, dtype=np.float64),
         np.asarray(data.group_amun, dtype=np.float64),
         np.asarray(data.group_amug, dtype=np.float64),
@@ -309,6 +329,7 @@ def reconstruct(data, energies_in):
         np.asarray(data.table_gf, dtype=np.float64),
         np.asarray(data.table_gx, dtype=np.float64),
         t_nodes, w_t,
+        group_pot_weight,
     )
     tot = sct + cap + fis + rxx
     return {'sct': sct, 'cap': cap, 'fis': fis,
