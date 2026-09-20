@@ -169,21 +169,82 @@ def test_variable_ne_across_groups_raises_clearly():
 
 
 # ============================================================
-# Reconstruction wrapper stub raises the "not implemented" flag
-# until the kernel lands in the next commit on this branch.
+# Basic reconstruction sanity on synthetic dicts.
 # ============================================================
 
 
-def test_reconstruct_stub_raises_clearly_pending_kernel():
-    """The kernel arrives in the next commit; until then a caller
-    that hits :func:`reconstruct` gets a clear NotImplementedError
-    naming the follow-up rather than a silent bad number."""
+def test_reconstruct_returns_finite_nonnegative_on_synthetic():
+    """Baseline sanity: every partial (sct / cap / fis / rxx /
+    pot / tot) is finite and non-negative at a handful of query
+    energies inside the URR range."""
     d = _minimal_urr_endf_dict()
     data = pre.urr_data_from_endf_dict(d)
     from endf_userpy.primitives import array_ns
     xp = array_ns.get_backend('numpy')
-    with pytest.raises(NotImplementedError, match=r'kernel not yet implemented'):
+    xs = urr.reconstruct(data, np.array([1e3, 5e3, 1e4]), xp)
+    for k in ('sct', 'cap', 'fis', 'rxx', 'pot', 'tot'):
+        arr = np.asarray(xs[k])
+        assert np.all(np.isfinite(arr)), f'{k} has non-finite'
+        assert np.all(arr >= 0.0), f'{k} went negative'
+
+
+def test_reconstruct_rejects_non_lin_lin_int():
+    """Non-INT=2 tables are not supported by the initial URR
+    kernel; caller gets a clear NotImplementedError rather than a
+    silently mis-interpolated width."""
+    d = _minimal_urr_endf_dict(intp=5)   # log-log
+    data = pre.urr_data_from_endf_dict(d)
+    from endf_userpy.primitives import array_ns
+    xp = array_ns.get_backend('numpy')
+    with pytest.raises(NotImplementedError, match=r'INT=2'):
         urr.reconstruct(data, np.array([5e3]), xp)
+
+
+def test_u235_reconstruction_plausible_vs_tabulated_mf3():
+    """TENDL-2021 U-235 has LSSF=1 URR, so MF3 in the URR range
+    IS the evaluator-processed average XS. Our reconstruction
+    from the raw URR parameters should be in the same physical
+    ballpark (within ~25%), giving a smoke check that the
+    formulas are the right shape.
+
+    Not a strict-NJOY-parity test: MF3 was produced by
+    whatever URR processor TENDL used, with its own
+    tabulated-fluctuation-factor conventions, DOF handling
+    and possibly a resonance-potential interference term this
+    kernel does not yet include. Sub-percent parity is a
+    follow-up: run NJOY unresr on the same file's URR params
+    (via scripts/njoy_compare/) and compare bit-for-bit,
+    independent of MF3.
+
+    What this test does catch: order-of-magnitude physics
+    errors (unit slips, missing L-summation, wrong
+    penetration-factor formula, etc.). If any partial drifts
+    outside a factor of 1.25 vs MF3, physics is wrong somewhere,
+    not just a small formula variant.
+    """
+    path = resolve_u235()
+    if path is None:
+        pytest.skip('U-235 corpus file not available')
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.mfsec_interpretation import mf3_interpretation as mf3
+    from endf_userpy.primitives import array_ns
+    d = EndfParserCpp().parsefile(path, include=[1, 2, 3])
+    data = pre.urr_data_from_endf_dict(d)
+    xp = array_ns.get_backend('numpy')
+
+    einc = np.array([2500., 5000., 10000., 20000., 40000.])
+    ours = urr.reconstruct(data, einc, xp)
+
+    for mt, key in [(2, 'sct'), (18, 'fis'), (102, 'cap')]:
+        ours_x = np.asarray(ours[key])
+        mf3_x = np.asarray(mf3.compute_cross_section_agnostic(d, mt, einc, xp))
+        rel = np.abs(ours_x - mf3_x) / mf3_x
+        assert np.all(rel < 0.25), (
+            f'{key} (MT={mt}): max relative error {rel.max():.3g} '
+            f'exceeds 25% vs tabulated MF3 -- likely a physics bug '
+            f'rather than a formula-variant difference; '
+            f'ours={ours_x} vs MF3={mf3_x}'
+        )
 
 
 # ============================================================
