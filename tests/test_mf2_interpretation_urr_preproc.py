@@ -295,3 +295,80 @@ def test_u235_urr_dof_values_match_file(u235_urr_data):
                                    np.zeros(6, dtype=np.float64))
     # Set of unique AMUF values across the 6 groups.
     assert set(map(int, np.unique(data.group_amuf))) == {1, 2}
+
+
+# ============================================================
+# JAX autodiff: pinning test that jax.grad flows through the URR
+# reconstruction wrt an average-width field. Enabling capability
+# for autodiff-driven URR fitting.
+# ============================================================
+
+
+def _jax_available():
+    from endf_userpy.primitives import array_ns
+    return 'jax' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_grad_flows_through_urr_wrt_gamma_gamma():
+    """``jax.grad`` of the capture cross section wrt a scalar
+    scaling of the tabulated Gamma_gamma table returns a finite,
+    non-zero gradient with the right sign (positive: increasing
+    capture width increases capture XS).
+
+    Proves the JAX path is fully differentiable end-to-end
+    (interpolation + factors.pnt_shf + fluctuation integrals +
+    per-group sum), which is the enabling capability the user
+    called out for automated URR fitting.
+    """
+    import dataclasses
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.primitives import array_ns
+
+    xp = array_ns.get_backend('jax')
+    d = _minimal_urr_endf_dict(
+        j_groups=[(0, [(3.5, 1.0, 0.5, 1.0, 0.0,
+                        [1e3, 1e4], [1.0, 1.0],
+                        [0.1, 0.1], [0.05, 0.05],
+                        [0.0, 0.0], [0.0, 0.0])])],
+    )
+    data = pre.urr_data_from_endf_dict(d)
+
+    einc = jnp.array([2.5e3, 5e3])
+
+    def capture_from_scale(gg_scale):
+        """Sum of capture XS at the two query energies, as a
+        function of a scalar scaling applied to the entire
+        Gamma_gamma table. Autodiff sees this whole chain."""
+        gg_scaled = jnp.asarray(data.table_gg) * gg_scale
+        data_s = dataclasses.replace(data, table_gg=gg_scaled)
+        xs = urr.reconstruct(data_s, einc, xp)
+        return jnp.sum(xs['cap'])
+
+    val = float(capture_from_scale(1.0))
+    grad = float(jax.grad(capture_from_scale)(1.0))
+
+    assert np.isfinite(val), f'value not finite: {val}'
+    assert val > 0.0, f'capture at scale=1 should be positive; got {val}'
+    assert np.isfinite(grad), f'gradient not finite: {grad}'
+    # Sign check: scaling Γ_γ up should increase Γ_n Γ_γ / Γ
+    # (numerator grows faster than denominator at small Γ_γ),
+    # so d capture / d gg_scale > 0.
+    assert grad > 0.0, (
+        f'expected positive gradient wrt Gamma_gamma scale; got {grad}. '
+        f'Autodiff may not be flowing through the fluctuation integral '
+        f'or through the tables interpolation.'
+    )
+    # Finite-difference sanity: gradient magnitude should match
+    # (capture(1 + eps) - capture(1)) / eps within a few percent.
+    eps = 1e-3
+    val_p = float(capture_from_scale(1.0 + eps))
+    fd = (val_p - val) / eps
+    rel = abs(grad - fd) / abs(fd)
+    assert rel < 0.05, (
+        f'autodiff gradient {grad} vs finite-difference {fd}: '
+        f'{rel:.3%} relative disagreement (expected < 5%). '
+        f'A serious mismatch here indicates the autodiff graph is '
+        f'not connected the way the physics is.'
+    )
