@@ -95,7 +95,11 @@ def test_compute_reconstructed_equals_mf3_without_mf2():
 
 
 def _dict_with_urr(lssf):
-    """Minimal dict with MF3 + one LRU=2 URR range at ``lssf``."""
+    """Minimal dict with MF3 + one LRU=2 URR range at ``lssf``.
+    The URR range is a placeholder shell (no valid width tables);
+    the URR preproc will fail on it. Sufficient to exercise the
+    "LSSF=0 URR that the reconstruction cannot handle" path and
+    the LSSF=1 silent path."""
     d = _synthetic_mf3_only_dict()
     d[2] = {
         151: {
@@ -113,6 +117,48 @@ def _dict_with_urr(lssf):
                 }
             }
         }
+    }
+    return d
+
+
+def _dict_with_valid_lssf0_urr(mt=102):
+    """Minimal dict with MF3(mt) + one valid LSSF=0 LRU=2 LRF=2
+    URR range and just enough MF1 for the incident-particle
+    lookup. The URR range has one spin group with constant widths
+    at two energy knots, so the URR kernel actually produces a
+    positive contribution to be composed with MF3."""
+    e = np.array([1e-5, 500.0, 1e3, 5e3, 1e4, 5e4, 1e5, 2e7])
+    y = np.array([100.0, 5.0, 3.0, 2.0, 1.5, 1.0, 0.8, 0.001])
+    d = {
+        1: {451: {'NSUB': 10}},        # neutron incident
+        3: {mt: {'xstable': _tab1_dict(e, y)}},
+        2: {151: {'isotope': {1: {
+            'ABN': 1.0,
+            'range': {
+                1: {
+                    'LRU': 2, 'LRF': 2, 'LSSF': 0,
+                    'EL': 1e3, 'EH': 1e5,
+                    'NAPS': 0, 'NRO': 0,
+                    'SPI': 0.0, 'AP': 0.6,
+                    'NLS': 1,
+                    'l_group': {1: {
+                        'L': 0, 'AWRI': 232.0, 'NJS': 1,
+                        'j_group': {1: {
+                            'AJ': 0.5,
+                            'AMUN': 1.0, 'AMUG': 0.0,
+                            'AMUF': 0.0, 'AMUX': 0.0,
+                            'NE': 2, 'INT': 2,
+                            'ES': {1: 1e3, 2: 1e5},
+                            'D':  {1: 20.0, 2: 20.0},
+                            'GN0': {1: 5e-4, 2: 5e-4},
+                            'GG':  {1: 0.03, 2: 0.03},
+                            'GF':  {1: 0.0, 2: 0.0},
+                            'GX':  {1: 0.0, 2: 0.0},
+                        }},
+                    }},
+                }
+            },
+        }}}},
     }
     return d
 
@@ -166,6 +212,64 @@ def test_no_urr_stays_silent():
         res_comp.reconstruct_resonance_xs(d, 102, e_query, xp)
     lssf_warnings = [w for w in caught if 'LSSF' in str(w.message)]
     assert not lssf_warnings
+
+
+def test_valid_lssf0_urr_composes_silently_and_adds_contribution():
+    """LSSF=0 URR with a preproc-able, kernel-able range: no
+    warning, and the URR reconstruction actually contributes to
+    the composed cross section (result > MF3 alone in the URR
+    energy window)."""
+    d = _dict_with_valid_lssf0_urr(mt=102)
+    xp = array_ns.get_backend('numpy')
+
+    # Query points: two inside the URR [1e3, 1e5], two outside.
+    e_query = np.array([500.0, 2e3, 3e4, 2e5])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        res_only = np.asarray(res_comp.reconstruct_resonance_xs(
+            d, 102, e_query, xp,
+        ))
+    lssf_warnings = [w for w in caught if 'LSSF' in str(w.message)]
+    assert not lssf_warnings, (
+        f'valid LSSF=0 URR must not fire the "unhandled" warning; '
+        f'got: {[str(w.message) for w in lssf_warnings]}'
+    )
+
+    # Outside URR: zero contribution.
+    assert res_only[0] == 0.0, 'below URR range: contribution must be 0'
+    assert res_only[3] == 0.0, 'above URR range: contribution must be 0'
+    # Inside URR: positive contribution.
+    assert res_only[1] > 0.0, 'inside URR: expected a positive contribution'
+    assert res_only[2] > 0.0, 'inside URR: expected a positive contribution'
+
+    # Composition: MF3(mt=102) + URR contribution.
+    composed = np.asarray(res_comp.compute_reconstructed_cross_section(
+        d, 102, e_query, xp,
+    ))
+    from endf_userpy.mfsec_interpretation import mf3_interpretation
+    mf3_xs = np.asarray(mf3_interpretation.compute_cross_section_agnostic(
+        d, 102, e_query, xp,
+    ))
+    np.testing.assert_allclose(composed, mf3_xs + res_only, rtol=1e-12)
+
+
+def test_lssf0_urr_with_unsupported_lrf_warns_with_lrf_reason():
+    """LSSF=0 URR with LRF=1 (Case A, not yet supported by the
+    kernel): warning fires and names the LRF explicitly so the
+    caller can tell it's a format issue, not a bug."""
+    d = _dict_with_urr(lssf=0)
+    d[2][151]['isotope'][1]['range'][1]['LRF'] = 1
+    e_query = np.array([5e3])
+    xp = array_ns.get_backend('numpy')
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        res_comp.reconstruct_resonance_xs(d, 102, e_query, xp)
+    lssf_warnings = [w for w in caught if 'LSSF' in str(w.message)]
+    assert len(lssf_warnings) == 1
+    msg = str(lssf_warnings[0].message)
+    assert 'LRF=1' in msg, (
+        f'warning should name the unsupported LRF; got: {msg}'
+    )
 
 
 # ============================================================

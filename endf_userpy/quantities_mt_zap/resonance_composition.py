@@ -1,19 +1,21 @@
-"""MF2 resolved-resonance reconstruction composed with MF3 background.
+"""MF2 (resolved + unresolved) resonance reconstruction composed
+with the MF3 background.
 
-ENDF-6 stores the cross section in the resolved-resonance region as
-two additive parts: MF2 (resonance parameters, reconstructed
-point-wise by MLBW / R-M / etc.) plus MF3 (a smooth "background"
-subtractive residual). The physical cross section on a query grid
-is the sum. Outside every resolved range the MF2 contribution is
-zero and the sum reduces to the MF3 interpolation.
+ENDF-6 stores the cross section in the resonance region as two
+additive parts: MF2 (resonance parameters, reconstructed
+point-wise for LRU=1 or as an average for LRU=2 LSSF=0) plus MF3
+(a smooth "background" subtractive residual). The physical cross
+section on a query grid is the sum. Outside every resonance
+range the MF2 contribution is zero and the sum reduces to the
+MF3 interpolation.
 
 Two entry points:
 
-- :func:`reconstruct_resonance_xs` returns only the MF2 partial for
-  a given MT, summed over every LRU=1 range in the file. Zero
-  outside every range.
+- :func:`reconstruct_resonance_xs` returns only the MF2 partial
+  for a given MT, summed over every LRU=1 range and every
+  LRU=2 LSSF=0 URR range. Zero outside every range.
 - :func:`compute_reconstructed_cross_section` returns
-  ``MF3(mt, E) + MF2_partial(mt, E)`` — the composed physical
+  ``MF3(mt, E) + MF2_partial(mt, E)`` -- the composed physical
   cross section.
 
 Both are backend-agnostic: pass an ``xp`` returned by
@@ -21,10 +23,16 @@ Both are backend-agnostic: pass an ``xp`` returned by
 numpy, numba, or JAX. The default (``xp=None``) resolves to
 numpy.
 
-Supported formalisms: LRF=2 (MLBW) and LRF=3 (Reich-Moore).
-Unresolved-resonance ranges (LRU=2), Adler-Adler (LRF=4), and
-R-matrix limited (LRF=7) contribute zero and, if no supported
-range exists in the file at all, produce a :class:`UserWarning`.
+Supported LRU=1 formalisms: LRF=2 (MLBW) and LRF=3 (Reich-Moore).
+Supported LRU=2 formalisms: LRF=2 with INT=2 (Case C
+energy-dependent widths, lin-lin table interpolation).
+
+Ranges the current implementation cannot reconstruct
+(Adler-Adler LRF=4, R-matrix limited LRF=7, URR with non-INT=2
+tables, ...) contribute zero. If a file has no supported range
+at all, or has an LSSF=0 URR range the reconstructor cannot
+handle, a :class:`UserWarning` names the specific formalism /
+INT code seen.
 """
 
 import warnings
@@ -34,13 +42,15 @@ from ..mfsec_interpretation import mf2_interpretation_mlbw
 from ..mfsec_interpretation import mf2_interpretation_mlbw_preproc
 from ..mfsec_interpretation import mf2_interpretation_reichmoore
 from ..mfsec_interpretation import mf2_interpretation_reichmoore_preproc
+from ..mfsec_interpretation import mf2_interpretation_urr
+from ..mfsec_interpretation import mf2_interpretation_urr_preproc
 from ..primitives import array_ns
 
 
 # MT number -> which keys of the reconstruction result to sum.
 # The reconstruction returns 'sct', 'cap', 'fis', 'pot', 'tot' (+ 'rxx'
-# for MLBW). 'pot' is a diagnostic already included in 'sct', so it
-# never appears here; 'tot' is the aggregate already summed for us.
+# for MLBW and URR). 'pot' is a diagnostic already included in 'sct',
+# so it never appears here; 'tot' is the aggregate already summed.
 _MLBW_MT_TO_KEYS = {
     1: ('tot',),                     # total
     2: ('sct',),                     # elastic
@@ -58,6 +68,10 @@ _RM_MT_TO_KEYS = {
     27: ('cap', 'fis'),
     102: ('cap',),
 }
+
+# URR partials have the MLBW shape (sct / cap / fis / rxx / pot / tot),
+# so the same MT-to-keys map applies.
+_URR_MT_TO_KEYS = _MLBW_MT_TO_KEYS
 
 
 def _iter_lru1_ranges(endf_dict):
@@ -78,16 +92,14 @@ def _iter_lru1_ranges(endf_dict):
             yield iso_i, rng_i, rng
 
 
-def _lssf0_urr_ranges(endf_dict):
-    """Return ``[(iso_idx, rng_idx), ...]`` for every LRU=2 URR
-    range with ``LSSF=0`` (i.e., MF3 is a *background* to an
-    average-XS reconstruction we don't implement yet). Empty
-    list if the file has no URR, only LSSF=1 URR, or no MF2 at
-    all.
+def _iter_lru2_lssf0_ranges(endf_dict):
+    """Yield ``(iso_idx, rng_idx, rng_dict)`` for every LRU=2 URR
+    range with ``LSSF=0``. These are the URR ranges that need
+    reconstruction to produce a physical XS (LSSF=1 URR is
+    silently correct: MF3 already carries the average XS).
     """
     if 2 not in endf_dict or 151 not in endf_dict[2]:
-        return []
-    hits = []
+        return
     isotopes = endf_dict[2][151].get('isotope', {})
     for iso_i in sorted(isotopes):
         d_iso = isotopes[iso_i]
@@ -95,17 +107,15 @@ def _lssf0_urr_ranges(endf_dict):
             rng = d_iso['range'][rng_i]
             if int(rng.get('LRU', 0)) != 2:
                 continue
-            if int(rng.get('LSSF', 0)) == 0:
-                hits.append((iso_i, rng_i))
-    return hits
+            if int(rng.get('LSSF', 0)) != 0:
+                continue
+            yield iso_i, rng_i, rng
 
 
-def _reconstruct_range(endf_dict, iso_i, rng_i, rng, energies, xp):
-    """Preprocess + reconstruct a single supported range.
-
-    Returns ``(recon_dict, mt_to_keys_map)`` or ``(None, None)`` if
-    the range is not a supported formalism (caller then skips it).
-    """
+def _reconstruct_lru1_range(endf_dict, iso_i, rng_i, rng, energies, xp):
+    """Preprocess + reconstruct a single LRU=1 range. Returns
+    ``(recon_dict, mt_to_keys_map)`` or ``(None, None)`` if the
+    LRF is not supported (caller then skips it)."""
     lrf = int(rng.get('LRF', 0))
     if lrf == 2:
         data = mf2_interpretation_mlbw_preproc.mlbw_data_from_endf_dict(
@@ -122,11 +132,42 @@ def _reconstruct_range(endf_dict, iso_i, rng_i, rng, energies, xp):
     return None, None
 
 
+def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp):
+    """Preprocess + reconstruct a single LRU=2 LSSF=0 URR range.
+    Returns ``(recon_dict, mt_to_keys_map)`` on success, or
+    ``(None, reason_str)`` on failure (caller propagates the
+    reason into the unsupported-URR warning). Supported URR
+    formalism is LRF=2 with INT=2 (lin-lin) tables.
+
+    Any preproc / kernel exception is caught here and turned into
+    a graceful "URR reconstruction unavailable for this range"
+    signal: the composition layer falls back to MF3-only for the
+    URR energy window and emits one summary warning that names
+    every unhandled range with its specific failure reason. This
+    prevents a malformed or unsupported URR range from crashing
+    an otherwise-valid cross-section query.
+    """
+    lrf = int(rng.get('LRF', 0))
+    if lrf != 2:
+        return None, f'LRF={lrf} (only LRF=2 supported)'
+    try:
+        data = mf2_interpretation_urr_preproc.urr_data_from_endf_dict(
+            endf_dict, isotope_idx=iso_i, range_idx=rng_i,
+        )
+    except Exception as exc:
+        return None, f'preproc failed: {type(exc).__name__}: {exc}'
+    try:
+        recon = mf2_interpretation_urr.reconstruct(data, energies, xp)
+    except Exception as exc:
+        return None, f'kernel failed: {type(exc).__name__}: {exc}'
+    return recon, _URR_MT_TO_KEYS
+
+
 def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
     """MF2 partial-XS contribution for ``mt``, summed over every
-    LRU=1 range in ``endf_dict``. Zero at query energies outside
-    every range (per convention: the resonance representation is
-    defined only on ``[EL, EH]``).
+    supported resonance range in ``endf_dict``. Zero at query
+    energies outside every range (per convention: the resonance
+    representation is defined only on each range's ``[EL, EH]``).
 
     ``mt`` outside the supported set
     ``{1, 2, 3, 18, 27, 102}`` returns zero without a warning:
@@ -134,53 +175,49 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
     (n,2n) legitimately have no MF2 contribution and are handled
     entirely by MF3.
 
-    Ranges with unsupported LRF (Adler-Adler, R-matrix limited)
-    are skipped. If the file has no supported range at all, a
-    :class:`UserWarning` is emitted (once per call) naming which
-    formalism was seen.
+    LRU=1 (RRR): supported LRFs are 2 (MLBW) and 3 (Reich-Moore).
+    Unsupported LRFs (Adler-Adler LRF=4, R-matrix limited LRF=7)
+    are skipped. If the file has no supported LRU=1 range at all,
+    a :class:`UserWarning` names the formalism seen.
 
-    URR (LRU=2) handling: URR ranges never enter the MF2 sum
-    (the resolved-resonance reconstruction is not applicable
-    there). For ``LSSF=1`` URR that is silently correct, since
-    MF3 in the URR already carries the (self-shielded) average
-    cross section. For ``LSSF=0`` URR one :class:`UserWarning`
-    per call fires, naming the range: MF3 in the URR is then a
-    *background* to an average-XS reconstruction this library
-    does not implement yet, so the returned value is only the
-    MF3 background rather than the physical average XS.
+    LRU=2 (URR): LSSF=1 URR ranges never contribute (MF3 already
+    carries the physical average XS -- correct as-is). LSSF=0 URR
+    ranges are reconstructed via the chi-squared width-fluctuation
+    kernel in :mod:`mf2_interpretation_urr` when the format is
+    supported (LRF=2 with INT=2 lin-lin tables); ranges the
+    kernel cannot handle contribute zero and produce a
+    UserWarning naming the specific reason (unsupported LRF,
+    variable-NE across groups, non-lin-lin INT code, ...).
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
     e = xp.asarray(energies_in, dtype=xp.float64)
     total = xp.zeros_like(e)
 
-    saw_supported = False
-    unsupported = []
+    # ---- LRU=1 (RRR): MLBW / Reich-Moore.
+    saw_lru1_supported = False
+    lru1_unsupported = []
     for iso_i, rng_i, rng in _iter_lru1_ranges(endf_dict):
         lrf = int(rng.get('LRF', 0))
         if lrf not in (2, 3):
-            unsupported.append((iso_i, rng_i, lrf))
+            lru1_unsupported.append((iso_i, rng_i, lrf))
             continue
-        saw_supported = True
+        saw_lru1_supported = True
         keys = _MLBW_MT_TO_KEYS.get(mt) if lrf == 2 else _RM_MT_TO_KEYS.get(mt)
         if not keys:
-            # Supported formalism but MT does not receive an MF2
-            # contribution (e.g. MT=51). Reconstruction would still
-            # compute correctly; skip it to avoid the work.
             continue
         el = float(rng['EL'])
         eh = float(rng['EH'])
         in_range = (e >= el) & (e <= eh)
-        # Guard the reconstruction call itself with a zero-early-out
-        # when the query grid does not touch the range at all: the
-        # preproc + kernel would still work, but we can save the cost.
         try:
             any_in = bool(in_range.any())
         except Exception:
             any_in = True    # JAX tracer: always run
         if not any_in:
             continue
-        recon, _ = _reconstruct_range(endf_dict, iso_i, rng_i, rng, e, xp)
+        recon, _ = _reconstruct_lru1_range(
+            endf_dict, iso_i, rng_i, rng, e, xp,
+        )
         if recon is None:
             continue
         contrib = xp.zeros_like(e)
@@ -189,34 +226,60 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
                 contrib = contrib + recon[k]
         total = total + xp.where(in_range, contrib, xp.zeros_like(e))
 
-    if unsupported and not saw_supported:
+    if lru1_unsupported and not saw_lru1_supported:
         parts = ', '.join(f'iso={i} rng={j} LRF={f}'
-                          for i, j, f in unsupported)
+                          for i, j, f in lru1_unsupported)
         warnings.warn(
             f'reconstruct_resonance_xs: no supported LRF (2 MLBW / 3 '
             f'Reich-Moore) LRU=1 range found (saw: {parts}); returning '
-            f'zero resonance contribution. Adler-Adler (LRF=4) and '
-            f'R-matrix limited (LRF=7) are not implemented yet.',
+            f'zero resolved-resonance contribution. Adler-Adler '
+            f'(LRF=4) and R-matrix limited (LRF=7) are not '
+            f'implemented yet.',
             UserWarning, stacklevel=2,
         )
 
-    # URR with LSSF=0: MF3 in the URR is a background to an
-    # average-XS reconstruction that this library does not
-    # implement yet (LSSF=1 URR, where MF3 IS the physical
-    # average XS, is silently correct because the LRU=1 filter
-    # above already drops URR entirely).
-    lssf0_urr = _lssf0_urr_ranges(endf_dict)
-    if lssf0_urr:
-        parts = ', '.join(f'iso={i} rng={j}' for i, j in lssf0_urr)
+    # ---- LRU=2 LSSF=0 (URR needing reconstruction).
+    urr_unsupported = []
+    keys_urr = _URR_MT_TO_KEYS.get(mt)
+    for iso_i, rng_i, rng in _iter_lru2_lssf0_ranges(endf_dict):
+        if not keys_urr:
+            # MT does not receive an MF2 contribution in the URR
+            # either; skip the reconstruction work.
+            continue
+        el = float(rng['EL'])
+        eh = float(rng['EH'])
+        in_range = (e >= el) & (e <= eh)
+        try:
+            any_in = bool(in_range.any())
+        except Exception:
+            any_in = True
+        if not any_in:
+            continue
+        recon, err = _reconstruct_urr_range(
+            endf_dict, iso_i, rng_i, rng, e, xp,
+        )
+        if recon is None:
+            urr_unsupported.append((iso_i, rng_i, err))
+            continue
+        contrib = xp.zeros_like(e)
+        for k in keys_urr:
+            if k in recon:
+                contrib = contrib + recon[k]
+        total = total + xp.where(in_range, contrib, xp.zeros_like(e))
+
+    if urr_unsupported:
+        parts = ', '.join(
+            f'iso={i} rng={j} ({err})' for i, j, err in urr_unsupported
+        )
         warnings.warn(
-            f'reconstruct_resonance_xs: file has LRU=2 URR range(s) '
-            f'with LSSF=0 ({parts}). MF3 in the URR is a background '
-            f'to an average-XS reconstruction that is not implemented '
-            f'yet, so the returned XS is only the MF3 background in '
-            f'the URR energy range, not the physical average XS. '
-            f'For LSSF=1 URR (MF3 already carries the average XS) '
-            f'the result would be correct without any URR '
-            f'reconstruction.',
+            f'reconstruct_resonance_xs: file has LRU=2 LSSF=0 URR '
+            f'range(s) the reconstruction kernel could not handle '
+            f'({parts}). MF3 in those energy ranges is a background '
+            f'to an unresolved-region reconstruction, so the '
+            f'returned XS is only the MF3 background there, not the '
+            f'physical average XS. For LSSF=1 URR (MF3 already '
+            f'carries the average XS) the result would be correct '
+            f'without any URR reconstruction.',
             UserWarning, stacklevel=2,
         )
 
@@ -228,7 +291,12 @@ def compute_reconstructed_cross_section(
 ):
     """Physical cross section for ``mt`` per ENDF-6:
 
-        sigma(E) = MF3(mt, E) + sum over LRU=1 ranges of MF2_partial(mt, E)
+        sigma(E) = MF3(mt, E) + sum over supported resonance ranges of
+                                 MF2_partial(mt, E)
+
+    Supported ranges include LRU=1 RRR (MLBW / Reich-Moore) and
+    LRU=2 LSSF=0 URR (via the chi-squared width-fluctuation
+    kernel).
 
     Backend-agnostic: pass ``xp`` from
     :func:`endf_userpy.primitives.array_ns.get_backend` to run on
@@ -238,14 +306,14 @@ def compute_reconstructed_cross_section(
     :func:`mfsec_interpretation.mf3_interpretation.compute_cross_section_agnostic`),
     without the ``above_range`` / ``resonance_range`` policy
     machinery of the policy-driven
-    :func:`~mf3_interpretation.compute_cross_section` — the whole
+    :func:`~mf3_interpretation.compute_cross_section` -- the whole
     point of composing MF2 in is that the "raw MF3 is a background,
     warn about it" policy is no longer needed. Callers who still
     want above-range policy on top of the composed cross section
     should apply it themselves.
 
-    See :func:`reconstruct_resonance_xs` for supported LRF list and
-    warning behaviour on unsupported formalisms.
+    See :func:`reconstruct_resonance_xs` for supported LRF list
+    and warning behaviour on unsupported formalisms.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
