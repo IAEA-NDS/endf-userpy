@@ -250,3 +250,63 @@ def test_u235_thermal_capture_and_fission_match_ENDF():
         assert np.all(np.isfinite(arr)), f'{key} has non-finite values'
     assert np.all(np.asarray(xs['cap']) >= 0.0), 'capture went negative'
     assert np.all(np.asarray(xs['fis']) >= 0.0), 'fission went negative'
+
+
+# ============================================================
+# Preproc scalar fields are pytree-shaped (np.asarray, not float).
+# Regression on the small autodiff-enablement fix: fields like abn
+# / spi / ki / ap must be numpy 0-d arrays or scalars so a caller
+# can substitute a JAX tracer via dataclasses.replace(...) and have
+# the reconstruction flow through it.
+# ============================================================
+
+
+def _jax_available():
+    return 'jax' in array_ns.available_backends()
+
+
+def test_scalar_fields_are_array_shaped_not_python_float():
+    """RMData scalar fields (abn, spi, ap) should be numpy scalars
+    or 0-d arrays after preproc, NOT Python ``float``. Storing as
+    Python float destroys the substitution pathway that lets a
+    caller swap in a JAX tracer for those fields."""
+    d = _minimal_rm_endf_dict(
+        l_groups=[(0, [(1.0, 0.5, 0.1, 0.05, 0.0, 0.0)])],
+    )
+    data = pre.rm_data_from_endf_dict(d)
+    for field_name in ('abn', 'spi'):
+        value = getattr(data, field_name)
+        assert not isinstance(value, float), (
+            f'RMData.{field_name} is a Python float ({value!r}); '
+            f'expected a numpy scalar or 0-d array so JAX '
+            f'substitution can flow through.'
+        )
+        # Must still be numerically usable as a scalar.
+        assert float(value) == pytest.approx(float(value))
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_can_substitute_scalar_field_and_reconstruct():
+    """Concrete JAX-substitution smoke test: replace RMData.abn with
+    a jnp array, call reconstruct on the JAX backend, verify the
+    output tracks the substituted value linearly (RM sct scales
+    linearly with abn since abn multiplies every cross section)."""
+    import dataclasses
+    import jax.numpy as jnp
+    d = _minimal_rm_endf_dict(
+        l_groups=[(0, [(1.0, 0.5, 0.1, 0.05, 0.0, 0.0)])],
+    )
+    data = pre.rm_data_from_endf_dict(d)
+    xp = array_ns.get_backend('jax')
+
+    einc = jnp.array([0.5, 1.0, 1.5])
+    xs_1 = np.asarray(rm.reconstruct(
+        dataclasses.replace(data, abn=jnp.asarray(1.0)),
+        einc, xp,
+    )['sct'])
+    xs_2 = np.asarray(rm.reconstruct(
+        dataclasses.replace(data, abn=jnp.asarray(2.0)),
+        einc, xp,
+    )['sct'])
+    np.testing.assert_allclose(xs_2, 2.0 * xs_1, rtol=1e-10,
+                                err_msg='sct should scale linearly with abn')

@@ -230,7 +230,7 @@ def mlbw_data_from_endf_dict(
 
     d151 = endf_dict[2][151]
     d_iso = d151['isotope'][isotope_idx]
-    abn = float(d_iso['ABN'])
+    abn = np.asarray(d_iso['ABN'], dtype=np.float64)
     d_range = d_iso['range'][range_idx]
 
     lru = int(d_range['LRU'])
@@ -242,10 +242,10 @@ def mlbw_data_from_endf_dict(
         )
     naps = int(d_range['NAPS'])
     nro = int(d_range.get('NRO', 0))
-    spi = float(d_range['SPI'])
-    ap = float(d_range.get('AP', 0.0))
+    spi = np.asarray(d_range['SPI'], dtype=np.float64)
+    ap = np.asarray(d_range.get('AP', 0.0), dtype=np.float64)
     nls = int(d_range['NLS'])
-    emax = float(d_range['EH'])
+    emax = np.asarray(d_range['EH'], dtype=np.float64)
     d_grp = _get_l_group(d_range)
 
     # --- Sweep L-groups to build the channel table + per-resonance rows.
@@ -278,10 +278,10 @@ def mlbw_data_from_endf_dict(
     for l_idx in range(1, nls + 1):
         d_l = d_grp[l_idx]
         L = int(d_l['L'])
-        awri = float(d_l['AWRI'])
+        awri = np.asarray(d_l['AWRI'], dtype=np.float64)
         if awri_ref is None:
             awri_ref = awri
-        qx_l = float(d_l['QX'])
+        qx_l = np.asarray(d_l['QX'], dtype=np.float64)
         lrx = int(d_l['LRX'])
         nrs = int(d_l['NRS'])
 
