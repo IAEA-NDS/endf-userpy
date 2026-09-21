@@ -188,15 +188,29 @@ def test_reconstruct_returns_finite_nonnegative_on_synthetic():
         assert np.all(arr >= 0.0), f'{k} went negative'
 
 
-def test_reconstruct_rejects_non_lin_lin_int():
-    """Non-INT=2 tables are not supported by the initial URR
-    kernel; caller gets a clear NotImplementedError rather than a
-    silently mis-interpolated width."""
+def test_reconstruct_accepts_int5_log_log():
+    """INT=5 (log-log) is supported alongside INT=2 (lin-lin).
+    Rows whose y values are all positive are interpolated in
+    log-log space; rows with any non-positive y (typical: GF
+    all-zero on a non-fissile group) silently fall back to
+    lin-lin so the interpolation stays well defined."""
     d = _minimal_urr_endf_dict(intp=5)   # log-log
     data = pre.urr_data_from_endf_dict(d)
     from endf_userpy.primitives import array_ns
     xp = array_ns.get_backend('numpy')
-    with pytest.raises(NotImplementedError, match=r'INT=2'):
+    xs = urr.reconstruct(data, np.array([5e3]), xp)
+    assert np.all(np.isfinite(np.asarray(xs['tot'])))
+
+
+def test_reconstruct_rejects_unsupported_int_codes():
+    """Non-{2,5} INT codes are still rejected up front so a caller
+    gets a clear NotImplementedError rather than a silently
+    mis-interpolated width."""
+    d = _minimal_urr_endf_dict(intp=3)   # lin-log; not implemented
+    data = pre.urr_data_from_endf_dict(d)
+    from endf_userpy.primitives import array_ns
+    xp = array_ns.get_backend('numpy')
+    with pytest.raises(NotImplementedError, match=r'INT=2 \(lin-lin\) and INT=5'):
         urr.reconstruct(data, np.array([5e3]), xp)
 
 

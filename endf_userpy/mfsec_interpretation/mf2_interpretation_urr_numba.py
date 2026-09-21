@@ -85,6 +85,37 @@ def _interp_lin_lin_scalar(es_row, y_row, e):
 
 
 @njit(cache=True, inline='always')
+def _interp_dispatch_scalar(es_row, y_row, e, int_code):
+    """Dispatch INT=2 (lin-lin) and INT=5 (log-log) per group. Rows
+    with any non-positive y fall back to lin-lin for numerical
+    safety (typical case: GF row all zero on a non-fissile group)."""
+    if int_code != 5:
+        return _interp_lin_lin_scalar(es_row, y_row, e)
+    n = y_row.shape[0]
+    all_pos = True
+    for j in range(n):
+        if y_row[j] <= 0.0 or es_row[j] <= 0.0:
+            all_pos = False
+            break
+    if not all_pos:
+        return _interp_lin_lin_scalar(es_row, y_row, e)
+    # log-log with clamp-at-endpoint.
+    if e <= es_row[0]:
+        return y_row[0]
+    if e >= es_row[n - 1]:
+        return y_row[n - 1]
+    for j in range(1, n):
+        if e < es_row[j]:
+            le0 = math.log(es_row[j - 1])
+            le1 = math.log(es_row[j])
+            ly0 = math.log(y_row[j - 1])
+            ly1 = math.log(y_row[j])
+            frac = (math.log(e) - le0) / (le1 - le0)
+            return math.exp(ly0 + frac * (ly1 - ly0))
+    return y_row[n - 1]
+
+
+@njit(cache=True, inline='always')
 def _channel_factor_scalar(alpha, nu, t, order):
     """Scalar version of :func:`mf2_interpretation_urr._channel_factor`.
 
@@ -124,6 +155,7 @@ def _reconstruct_kernel(
     table_gg,
     table_gf,
     table_gx,
+    group_int,       # (nJ,) ENDF INT law per group (2 or 5)
     t_nodes,         # (Nq,)
     w_t,             # (Nq,)
     group_pot_weight,  # (nJ,) 2L+1 at the first J-group of
@@ -167,11 +199,12 @@ def _reconstruct_kernel(
             nu_x = group_amux[g]
 
             # ---- Interpolated widths + level spacing at E.
-            gn0 = _interp_lin_lin_scalar(table_es[g], table_gn0[g], E)
-            gg  = _interp_lin_lin_scalar(table_es[g], table_gg[g],  E)
-            gf  = _interp_lin_lin_scalar(table_es[g], table_gf[g],  E)
-            gx  = _interp_lin_lin_scalar(table_es[g], table_gx[g],  E)
-            D   = _interp_lin_lin_scalar(table_es[g], table_d[g],   E)
+            int_code = group_int[g]
+            gn0 = _interp_dispatch_scalar(table_es[g], table_gn0[g], E, int_code)
+            gg  = _interp_dispatch_scalar(table_es[g], table_gg[g],  E, int_code)
+            gf  = _interp_dispatch_scalar(table_es[g], table_gf[g],  E, int_code)
+            gx  = _interp_dispatch_scalar(table_es[g], table_gx[g],  E, int_code)
+            D   = _interp_dispatch_scalar(table_es[g], table_d[g],   E, int_code)
 
             # ---- Penetration / phase; v_L = P_L / rho (with L=0
             # branch pinned to 1 near rho=0).
@@ -275,14 +308,15 @@ def reconstruct(data, energies_in):
             "`pip install numba` or use `array_ns.get_backend('numpy')`."
         )
 
-    # ---- INT-code guard: same as the numpy path.
+    # ---- INT-code guard: same as the numpy path (INT=2 lin-lin and
+    # INT=5 log-log; other INT codes still unsupported).
     group_int = np.asarray(data.group_int, dtype=np.int64)
-    if np.any(group_int != 2):
-        offending = sorted(set(int(v) for v in group_int if int(v) != 2))
+    bad = [int(v) for v in group_int if int(v) not in (2, 5)]
+    if bad:
         raise NotImplementedError(
-            f'URR numba kernel supports INT=2 (lin-lin) '
-            f'energy-table interpolation only; got INT values '
-            f'{offending} in the URR spin groups.'
+            f'URR numba kernel supports INT=2 (lin-lin) and INT=5 '
+            f'(log-log) energy-table interpolation only; got INT '
+            f'values {sorted(set(bad))} in the URR spin groups.'
         )
 
     e = np.asarray(energies_in, dtype=np.float64)
@@ -328,6 +362,7 @@ def reconstruct(data, energies_in):
         np.asarray(data.table_gg, dtype=np.float64),
         np.asarray(data.table_gf, dtype=np.float64),
         np.asarray(data.table_gx, dtype=np.float64),
+        group_int,
         t_nodes, w_t,
         group_pot_weight,
     )

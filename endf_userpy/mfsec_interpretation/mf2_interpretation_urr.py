@@ -107,8 +107,10 @@ Scope
 - **LRF=2** (Case C): energy-dependent widths tabulated at knot
   energies per J-group. Covers essentially every modern
   actinide URR range.
-- **INT=2** (lin-lin) for the energy tables. Real URR files
-  overwhelmingly use lin-lin; other INT codes are rejected at
+- **INT=2** (lin-lin) or **INT=5** (log-log) for the energy
+  tables. Real URR files use one of these two per group; other
+  INT codes (INT=1 histogram, INT=3 lin-log, INT=4 log-lin) are
+  rejected at
   the wrapper of :func:`reconstruct` with a clear message.
 - **Backend-agnostic**: numpy / JAX via
   :mod:`~endf_userpy.primitives.array_ns`; numba path in
@@ -183,17 +185,37 @@ class URRData:
     r_ap: tab1.TAB1
 
 
-def _interp_per_group(table, es, e_query, xp):
-    """Lin-lin batched interp: for a (nJ, NE_tab) table with per-group
+def _interp_per_group(table, es, e_query, xp, int_codes=None):
+    """Per-group interp: for a (nJ, NE_tab) table with per-group
     ES rows and an ``(NE,)`` query grid, return ``(NE, nJ)``.
 
-    Uses a Python-side loop over the ``nJ`` groups (typically ~10)
-    with ``xp.interp`` per column. JAX unrolls at trace time;
-    fine at these sizes.
+    ``int_codes`` (optional, (nJ,) int array) picks the ENDF INT law
+    per group:
+
+    - INT=2 (lin-lin): standard ``xp.interp``. Default when
+      ``int_codes`` is None.
+    - INT=5 (log-log): interpolate in log-log space. Rows with any
+      non-positive y value fall back to lin-lin for that row so
+      the interpolation is well-defined when a channel has zero
+      width at some knots (common for GF on non-fissile files).
+
+    Real URR ranges use INT=2 or INT=5 (typically per group). Other
+    INT codes still raise upstream in :func:`reconstruct`.
     """
     cols = []
     for g in range(int(table.shape[0])):
-        cols.append(xp.interp(e_query, es[g], table[g]))
+        y_row = table[g]
+        e_row = es[g]
+        code = 2 if int_codes is None else int(int_codes[g])
+        if code == 5 and bool(xp.all(y_row > 0)) and bool(xp.all(e_row > 0)):
+            # log-log: interp in (log E, log y) space.
+            col = xp.exp(xp.interp(
+                xp.log(e_query), xp.log(e_row), xp.log(y_row),
+            ))
+        else:
+            # lin-lin (INT=2) or zero-row fallback for INT=5.
+            col = xp.interp(e_query, e_row, y_row)
+        cols.append(col)
     return xp.stack(cols, axis=-1)   # (NE, nJ)
 
 
@@ -269,19 +291,18 @@ def reconstruct(data: URRData, energies_in, xp) -> dict:
         from . import mf2_interpretation_urr_numba as _numba
         return _numba.reconstruct(data, energies_in)
 
-    # ---- INT-code guard. LRF=2 URR files overwhelmingly use
-    # lin-lin (INT=2). Fail loud on anything else so a caller
-    # doesn't quietly get wrong average widths from a mis-applied
-    # linear interpolation.
-    if not bool(xp.all(data.group_int == 2)):
-        offending = [
-            int(v) for v in data.group_int if int(v) != 2
-        ]
+    # ---- INT-code guard. LRF=2 URR files in real evaluations use
+    # either INT=2 (lin-lin) or INT=5 (log-log) on the average-
+    # width / spacing tables. Fail loud on anything else.
+    supported = {2, 5}
+    unsupported = [int(v) for v in data.group_int if int(v) not in supported]
+    if unsupported:
         raise NotImplementedError(
             f'URR reconstruction currently supports INT=2 (lin-lin) '
-            f'energy-table interpolation only; got INT values '
-            f'{sorted(set(offending))} in the URR spin groups. Add '
-            f'log-lin / lin-log / log-log if a real file needs it.'
+            f'and INT=5 (log-log) energy-table interpolation only; '
+            f'got INT values {sorted(set(unsupported))} in the URR '
+            f'spin groups. Add lin-log / log-lin (INT=3 / INT=4) if '
+            f'a real file needs it.'
         )
 
     e = xp.asarray(energies_in, dtype=xp.float64)
@@ -312,11 +333,12 @@ def reconstruct(data: URRData, energies_in, xp) -> dict:
 
     # ---- Per-group interpolated widths + level spacing.
     es = data.table_es                                   # (nJ, NE_tab)
-    alpha_n0 = _interp_per_group(data.table_gn0, es, e_safe, xp)  # (NE, nJ)
-    alpha_gg = _interp_per_group(data.table_gg, es, e_safe, xp)
-    alpha_gf = _interp_per_group(data.table_gf, es, e_safe, xp)
-    alpha_gx = _interp_per_group(data.table_gx, es, e_safe, xp)
-    d_avg = _interp_per_group(data.table_d, es, e_safe, xp)
+    ints = data.group_int
+    alpha_n0 = _interp_per_group(data.table_gn0, es, e_safe, xp, ints)  # (NE, nJ)
+    alpha_gg = _interp_per_group(data.table_gg, es, e_safe, xp, ints)
+    alpha_gf = _interp_per_group(data.table_gf, es, e_safe, xp, ints)
+    alpha_gx = _interp_per_group(data.table_gx, es, e_safe, xp, ints)
+    d_avg = _interp_per_group(data.table_d, es, e_safe, xp, ints)
 
     # Physical neutron width from ENDF-reduced GN0(E):
     # <Γ_n(E)> = <GN0(E)> · √E · v_L(E)
