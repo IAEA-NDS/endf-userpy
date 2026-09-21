@@ -215,8 +215,12 @@ def _reconstruct_kernel(
             else:
                 v_L = p_L / rho_a if rho_a > _EPS else 0.0
 
-            # ---- Physical average neutron width.
-            alpha_n = gn0 * math.sqrt(E_safe) * v_L
+            # ---- Physical average neutron width. Includes the
+            # AMUN factor: ENDF-6 stores GN0 as the reduced neutron
+            # width divided by AMUN (unlike GG/GF/GX which are
+            # <Γ_c> directly), so <Γ_n(E)> = GN0·√E·v_L·AMUN.
+            # Match NJOY unresr line 1068.
+            alpha_n = gn0 * math.sqrt(E_safe) * v_L * nu_n
             alpha_g = gg
             alpha_f = gf
             alpha_x = gx

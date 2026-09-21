@@ -340,9 +340,20 @@ def reconstruct(data: URRData, energies_in, xp) -> dict:
     alpha_gx = _interp_per_group(data.table_gx, es, e_safe, xp, ints)
     d_avg = _interp_per_group(data.table_d, es, e_safe, xp, ints)
 
-    # Physical neutron width from ENDF-reduced GN0(E):
-    # <Γ_n(E)> = <GN0(E)> · √E · v_L(E)
-    alpha_n_phys = alpha_n0 * xp.sqrt(e_safe[:, None]) * v_L  # (NE, nJ)
+    # Physical neutron width from ENDF-reduced GN0(E). ENDF-6
+    # D.3.4 stores GN0 as the reduced average width divided by the
+    # neutron degrees of freedom AMUN, so the recovered mean is
+    #   <Γ_n(E)> = GN0(E) · √E · v_L(E) · AMUN
+    # The other three channels (GG, GF, GX) are stored as the direct
+    # averages <Γ_c(E)> and do NOT get an AMU factor here — the
+    # asymmetry is a historical ENDF convention. NJOY unresr's
+    # unresl subroutine (unresr.f90 line 1068) applies exactly this
+    # AMUN factor on the neutron width alone; ours previously
+    # matched that only for AMUN=1 groups, giving up to ~7%
+    # underestimate on the elastic and capture averages for files
+    # with AMUN=2 groups (Xe-135 was the surfacing case).
+    amun_bc = xp.asarray(data.group_amun, dtype=xp.float64)[None, :]  # (1, nJ)
+    alpha_n_phys = alpha_n0 * xp.sqrt(e_safe[:, None]) * v_L * amun_bc  # (NE, nJ)
 
     # ---- Fluctuation-integral machinery.
     nu_n = xp.asarray(data.group_amun, dtype=xp.float64)[None, :]  # (1, nJ)

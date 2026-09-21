@@ -188,6 +188,49 @@ def test_reconstruct_returns_finite_nonnegative_on_synthetic():
         assert np.all(arr >= 0.0), f'{k} went negative'
 
 
+def test_reconstruct_neutron_width_scales_with_amun():
+    """ENDF-6 D.3.4 URR stores GN0 as the reduced average neutron
+    width DIVIDED by the neutron DOF (AMUN), so
+    ``<Γ_n(E)> = GN0(E) · √E · v_L(E) · AMUN``. GG, GF, GX are
+    stored as <Γ_c> directly, so this factor applies only to the
+    neutron channel. NJOY unresr line 1068 does exactly this
+    multiplication.
+
+    Pin: at fixed GN0, AMUN=2 gives a bigger compound elastic than
+    AMUN=1 by an appreciable margin (twice the mean neutron width
+    at the same tabulated GN0). Reverting the AMUN factor would
+    equalise the two.
+    """
+    from endf_userpy.primitives import array_ns
+    xp = array_ns.get_backend('numpy')
+
+    def build(amun):
+        # Isolate the AMUN effect: keep every other input identical.
+        # Single J-group, no fission / competitive, GG small so the
+        # neutron channel dominates the compound elastic.
+        return _minimal_urr_endf_dict(
+            j_groups=[(0, [(3.5, amun, 0.0, 1.0, 0.0,
+                            [1e3, 1e4], [1000.0, 1000.0],  # D
+                            [0.10, 0.10], [0.01, 0.01],    # GN0, GG
+                            [0.0, 0.0], [0.0, 0.0])])],    # GF, GX
+        )
+    d1 = build(1.0)
+    d2 = build(2.0)
+    data1 = pre.urr_data_from_endf_dict(d1)
+    data2 = pre.urr_data_from_endf_dict(d2)
+    E = np.array([5e3])
+    sct1 = float(np.asarray(urr.reconstruct(data1, E, xp)['sct'])[0])
+    sct2 = float(np.asarray(urr.reconstruct(data2, E, xp)['sct'])[0])
+    # AMUN=2 has to move the compound elastic upward relative to
+    # AMUN=1 at fixed GN0; without the fix the two would be equal.
+    assert sct2 > sct1 * 1.05, (
+        f'AMUN=2 sct = {sct2:.4f} vs AMUN=1 sct = {sct1:.4f}: expected '
+        f'AMUN=2 substantially larger, but they are essentially equal. '
+        f'The neutron-width AMUN factor has probably regressed out of '
+        f'`alpha_n_phys`.'
+    )
+
+
 def test_reconstruct_accepts_int5_log_log():
     """INT=5 (log-log) is supported alongside INT=2 (lin-lin).
     Rows whose y values are all positive are interpolated in
