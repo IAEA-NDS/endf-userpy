@@ -167,6 +167,38 @@ def test_multiple_l_groups_produce_grouped_by_l_j():
     assert data.res_group.tolist() == [0, 1]
 
 
+def test_channel_spin_ambiguity_split_by_aj_sign():
+    """When ENDF-6 LRF=3 encodes channel-spin ambiguity via the sign
+    of AJ, the preproc must keep the two channel spins as separate
+    groups. Merging on |AJ| would (i) mix R-matrix contributions
+    from disjoint channel-spin blocks and (ii) drop one g_J from
+    the potential-scattering sum. Bug it pins: sum of g_J at each
+    L was 2 instead of the physical 2L+1=3 on K-39 (I=3/2, L=1)
+    because AJ=+1 and AJ=-1 resonances (distinct channel spins
+    S=1 and S=2 at J=1) collapsed into a single group.
+    """
+    # Two J-groups with same |J|=1 but opposite AJ sign -> two
+    # distinct channel-spin groups.
+    d = _minimal_rm_endf_dict(
+        spi=1.5,
+        l_groups=[(1, [
+            (100.0,  1.0, 0.05, 0.04, 0.0, 0.0),   # AJ = +1 (channel spin A)
+            (200.0, -1.0, 0.03, 0.04, 0.0, 0.0),   # AJ = -1 (channel spin B)
+        ])],
+    )
+    data = pre.rm_data_from_endf_dict(d)
+    # Two groups at L=1 with same |J|=1 (both g_J = 3/8), distinct
+    # groups because sign of AJ differs.
+    assert data.group_l.tolist() == [1, 1]
+    assert data.res_group.tolist() == [0, 1]
+    # Both groups get the SAME g_J (single-channel-spin value), so
+    # sum-of-groups g_J = 2 * (2*1+1)/((2*0.5+1)(2*1.5+1)) = 2*3/8
+    # = 0.75, corresponding to two of the physical (L=1,J=1) channel
+    # spins. If merged incorrectly, sum would be only 3/8.
+    import numpy as np
+    assert float(np.sum(data.group_g)) == pytest.approx(0.75)
+
+
 def test_apl_takes_precedence_over_ap_when_nonzero():
     d = _minimal_rm_endf_dict(ap=0.5, apl=0.9, naps=1)
     data = pre.rm_data_from_endf_dict(d)

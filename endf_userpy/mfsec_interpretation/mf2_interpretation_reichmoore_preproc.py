@@ -103,12 +103,21 @@ def rm_data_from_endf_dict(
     emax = np.asarray(d_range['EH'], dtype=np.float64)
     d_grp = _get_l_group(d_range)
 
-    # Collate resonances by (L, |J|). endf_parserpy renders LRF=3
-    # spingroups one-per-L; individual resonances inside carry their
-    # own signed AJ. Sign of AJ marks spin-group parity but does NOT
-    # add channels beyond what |J| identifies (the fine-structure
-    # coupling is spin-averaged in this convention).
-    per_JPi: dict[tuple[int, int], list[tuple[float, float, float, float, float]]] = {}
+    # Collate resonances by (L, |J|, channel-spin marker). ENDF-6
+    # LRF=3 encodes the channel-spin ambiguity via the sign of AJ:
+    # for target-spin I where (L, |J|) can couple through more than
+    # one channel spin S = I ± 1/2 (e.g. K-39 L=1 with I=3/2, where
+    # J=1 and J=2 each admit S=1 and S=2), the evaluator marks
+    # AJ > 0 for one channel spin and AJ < 0 for the other. Merging
+    # AJ=+J and AJ=-J into a single group is wrong: (i) it mixes
+    # resonance R-matrix contributions from disjoint channel-spin
+    # blocks, and (ii) it drops one channel spin's g_J from the
+    # potential sum (Σ_group g_J at that L would fall short of the
+    # physical 2L+1). The channel-spin marker is 0 when AJ = 0
+    # (unambiguous J=0 case), +1 for AJ > 0, -1 for AJ < 0. AJ = 0
+    # never coexists with another sign at the same (L, |J|) in
+    # real files.
+    per_JPi: dict[tuple[int, int, int], list[tuple[float, float, float, float, float]]] = {}
 
     awri_ref: float | None = None    # first L-group's AWRI, used for ki
     apl_by_L: dict[int, float] = {}   # L -> APL if provided per L, 0 else
@@ -130,8 +139,15 @@ def rm_data_from_endf_dict(
         gfb_arr = list(d_l.get('GFB', {}).values()) or [0.0] * len(aj_arr)
 
         for i in range(len(aj_arr)):
-            j2 = int(round(abs(float(aj_arr[i])) * 2))
-            key = (L, j2)
+            aj = float(aj_arr[i])
+            j2 = int(round(abs(aj) * 2))
+            if aj > 0:
+                spin_mark = +1
+            elif aj < 0:
+                spin_mark = -1
+            else:
+                spin_mark = 0
+            key = (L, j2, spin_mark)
             per_JPi.setdefault(key, []).append((
                 float(er_arr[i]),
                 float(gn_arr[i]),
@@ -160,7 +176,7 @@ def rm_data_from_endf_dict(
     gj_den = (2.0 * spin_inc + 1.0) * (2.0 * spi + 1.0)
 
     for g, key in enumerate(group_keys):
-        L, j2 = key
+        L, j2, _spin_mark = key
         group_l[g] = L
         group_g[g] = (float(j2) + 1.0) / gj_den
 
@@ -201,7 +217,7 @@ def rm_data_from_endf_dict(
 
     group_r_ap_arr = np.zeros(ngroups, dtype=np.float64)
     group_r_a_arr = np.zeros(ngroups, dtype=np.float64)
-    for g, (L, _j2) in enumerate(group_keys):
+    for g, (L, _j2, _spin) in enumerate(group_keys):
         r_ap_g = _r_ap_for_L(L)
         group_r_ap_arr[g] = r_ap_g
         group_r_a_arr[g] = _channel_radius(r_ap_g, awri_ref, naps)
