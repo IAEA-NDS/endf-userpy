@@ -103,6 +103,26 @@ def rm_data_from_endf_dict(
     emax = np.asarray(d_range['EH'], dtype=np.float64)
     d_grp = _get_l_group(d_range)
 
+    spin_inc_val = float(spin_inc)
+    spi_val = float(spi)
+
+    def _n_chan_spin(L: int, j2: int) -> int:
+        """Count channel spins S in {|I-i|, ..., I+i} that admit
+        the coupling |L - S| <= |J| <= L + S. For I=0 there is a
+        single channel spin (S=1/2 for neutron scattering); for
+        I>0 there are two."""
+        # 2*S iterated as an integer to avoid float drift.
+        two_s_lo = int(round(abs(spi_val - spin_inc_val) * 2))
+        two_s_hi = int(round((spi_val + spin_inc_val) * 2))
+        n = 0
+        for two_s in range(two_s_lo, two_s_hi + 1, 2):
+            two_s_val = two_s
+            # |L - S|*2 <= j2 <= (L+S)*2
+            two_L = 2 * L
+            if abs(two_L - two_s_val) <= j2 <= two_L + two_s_val:
+                n += 1
+        return n
+
     # Collate resonances by (L, |J|, channel-spin marker). ENDF-6
     # LRF=3 encodes the channel-spin ambiguity via the sign of AJ:
     # for target-spin I where (L, |J|) can couple through more than
@@ -155,6 +175,41 @@ def rm_data_from_endf_dict(
                 float(gfa_arr[i]),
                 float(gfb_arr[i]),
             ))
+
+    # Phantom groups for missing channel spins: for each L in the
+    # file, walk every physically-allowed |J| coupling and count
+    # how many channel spins the file listed resonances for at
+    # that (L, |J|). If fewer than the physics admits (interior J
+    # values on a target with I > 0 typically admit two S=I±1/2
+    # channels), add one phantom group per missing channel spin
+    # so the reconstruction emits its potential-only U = Ω²
+    # contribution to elastic. This mirrors NJOY reconr's kkkkkk=2
+    # branch in csrmat (reconr.f90 lines 3378-3487), which adds
+    # `termn += 2*gj*(1 - cos(2φ)) = 4*gj*sin²(φ)` for each missing
+    # channel spin — the same quantity a phantom group produces
+    # via `sct_g = (π/k²) g_J |1 - Ω²|² = 4*(π/k²) g_J sin²(φ)`.
+    # Phantom sign markers start at +2 and count up so they never
+    # collide with the real +1 / -1 / 0 markers.
+    Ls_in_file = sorted({key[0] for key in per_JPi.keys()})
+    phantom_mark = 2
+    for L in Ls_in_file:
+        two_s_lo = int(round(abs(spi_val - spin_inc_val) * 2))
+        two_s_hi = int(round((spi_val + spin_inc_val) * 2))
+        allowed_j2 = set()
+        for two_s in range(two_s_lo, two_s_hi + 1, 2):
+            j2_lo = abs(2 * L - two_s)
+            j2_hi = 2 * L + two_s
+            for j2 in range(j2_lo, j2_hi + 1, 2):
+                allowed_j2.add(j2)
+        for j2 in allowed_j2:
+            n_present = sum(
+                1 for (Lf, jf, _sm) in per_JPi.keys()
+                if Lf == L and jf == j2
+            )
+            n_chan = _n_chan_spin(L, j2)
+            for _ in range(n_chan - n_present):
+                per_JPi[(L, j2, phantom_mark)] = []
+                phantom_mark += 1
 
     # Order groups deterministically: by (L, |J|). Reconstruction is
     # invariant to ordering (it iterates ngroups), but a stable order

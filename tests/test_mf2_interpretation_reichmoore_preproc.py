@@ -91,16 +91,19 @@ def test_wrong_lrf_raises():
 
 
 def test_single_j_group_no_fission_gives_one_group_with_nfis_zero():
-    """One L=0 resonance with GFA=GFB=0 -> one J·π group, nfis=0."""
+    """One L=0 resonance with GFA=GFB=0 -> one J·π group with
+    the resonance, nfis=0. Uses spi=0 so the single-neutron
+    channel spin S=1/2 admits only one J at each L; the preproc's
+    phantom-group logic contributes nothing here."""
     d = _minimal_rm_endf_dict(
-        spi=0.5,
+        spi=0.0,
         l_groups=[(0, [(100.0, 0.5, 0.001, 0.04, 0.0, 0.0)])],
     )
     data = pre.rm_data_from_endf_dict(d)
     assert data.group_l.tolist() == [0]
     assert data.group_nfis.tolist() == [0]
-    # g_J = (2|J|+1) / ((2 s_inc + 1)(2 I + 1)) = 2 / (2·2) = 0.5
-    assert abs(data.group_g[0] - 0.5) < 1e-12
+    # g_J = (2|J|+1) / ((2 s_inc + 1)(2 I + 1)) = 2 / (2·1) = 1
+    assert abs(data.group_g[0] - 1.0) < 1e-12
     assert data.res_group.tolist() == [0]
     assert data.res_gf1[0] == 0.0
     assert data.res_gf2[0] == 0.0
@@ -108,7 +111,10 @@ def test_single_j_group_no_fission_gives_one_group_with_nfis_zero():
 
 def test_fission_channel_activation_via_nonzero_gfa_gfb():
     """nfis derived from whether any resonance in the group has a
-    non-zero GFA (→ nfis>=1) or GFB (→ nfis=2)."""
+    non-zero GFA (→ nfis>=1) or GFB (→ nfis=2). Filters phantom
+    groups (empty resonance lists) out of the nfis assertion since
+    phantoms are always nfis=0 and don't reflect the original
+    resonances' fission channels."""
     # Only GFA non-zero -> nfis = 1
     d = _minimal_rm_endf_dict(
         l_groups=[(0, [
@@ -117,8 +123,12 @@ def test_fission_channel_activation_via_nonzero_gfa_gfb():
         ])],
     )
     data = pre.rm_data_from_endf_dict(d)
-    assert data.group_nfis.tolist() == [1]
-    # Signs of GFA preserved
+    # Real group (has resonances) at (L=0, |J|=3) with nfis=1;
+    # any other groups are phantoms.
+    real_groups = np.unique(data.res_group)
+    assert real_groups.size == 1
+    assert data.group_nfis[real_groups[0]] == 1
+    # Signs of GFA preserved on the real resonances
     assert data.res_gf1[0] > 0 and data.res_gf1[1] < 0
     assert data.res_gf2.tolist() == [0.0, 0.0]
 
@@ -130,7 +140,9 @@ def test_fission_channel_activation_via_nonzero_gfa_gfb():
         ])],
     )
     data2 = pre.rm_data_from_endf_dict(d2)
-    assert data2.group_nfis.tolist() == [2]
+    real_groups2 = np.unique(data2.res_group)
+    assert real_groups2.size == 1
+    assert data2.group_nfis[real_groups2[0]] == 2
 
 
 def test_multiple_j_within_l_group_split_into_two_groups():
@@ -154,17 +166,31 @@ def test_multiple_j_within_l_group_split_into_two_groups():
 
 
 def test_multiple_l_groups_produce_grouped_by_l_j():
-    """L=0 and L=1 groups each with a J each -> two (L, |J|) groups."""
+    """L=0 and L=1 groups each with a J each -> two distinct REAL
+    (L, |J|) groups. Uses spi=0 (single channel spin) and picks
+    J values that saturate the allowed range at each L, so the
+    preproc adds no phantom groups on top.
+
+    spi=0, i=1/2 -> S=1/2 only, allowed J:
+      L=0: J=1/2
+      L=1: J=1/2, J=3/2
+    Listing resonances at all three -> zero phantoms."""
     d = _minimal_rm_endf_dict(
+        spi=0.0,
         l_groups=[
-            (0, [(100.0, 3.0, 0.05, 0.04, 0.0, 0.0)]),
-            (1, [(200.0, 4.0, 0.03, 0.04, 0.0, 0.0)]),
+            (0, [(100.0, 0.5, 0.05, 0.04, 0.0, 0.0)]),
+            (1, [
+                (200.0, 0.5, 0.03, 0.04, 0.0, 0.0),
+                (300.0, 1.5, 0.02, 0.04, 0.0, 0.0),
+            ]),
         ],
     )
     data = pre.rm_data_from_endf_dict(d)
-    assert data.group_l.tolist() == [0, 1]
-    # Different (L, |J|) keys -> separate groups
-    assert data.res_group.tolist() == [0, 1]
+    # Real (resonance-carrying) groups: (L=0,J=1/2), (L=1,J=1/2),
+    # (L=1,J=3/2). Ordering is by (L, |J|).
+    real_groups = sorted(set(data.res_group.tolist()))
+    real_Ls = [int(data.group_l[g]) for g in real_groups]
+    assert real_Ls == [0, 1, 1]
 
 
 def test_channel_spin_ambiguity_split_by_aj_sign():
@@ -187,16 +213,66 @@ def test_channel_spin_ambiguity_split_by_aj_sign():
         ])],
     )
     data = pre.rm_data_from_endf_dict(d)
-    # Two groups at L=1 with same |J|=1 (both g_J = 3/8), distinct
-    # groups because sign of AJ differs.
-    assert data.group_l.tolist() == [1, 1]
-    assert data.res_group.tolist() == [0, 1]
-    # Both groups get the SAME g_J (single-channel-spin value), so
-    # sum-of-groups g_J = 2 * (2*1+1)/((2*0.5+1)(2*1.5+1)) = 2*3/8
-    # = 0.75, corresponding to two of the physical (L=1,J=1) channel
-    # spins. If merged incorrectly, sum would be only 3/8.
+    # File resonances land in two REAL groups at (L=1, |J|=1), one
+    # for each channel spin. Other L=1 J values physically allowed
+    # (0, 2, 3) come back as phantom groups; the test focuses on
+    # the file's own two groups being kept separate.
+    real_g = sorted(set(data.res_group.tolist()))
+    assert len(real_g) == 2
+    for g in real_g:
+        assert data.group_l[g] == 1
+    # Both real groups get the SAME single-channel-spin g_J. The
+    # sum-of-REAL-groups g_J = 2 * (2*1+1)/((2*0.5+1)(2*1.5+1)) =
+    # 2 * 3/8 = 0.75, corresponding to two of the physical
+    # (L=1,J=1) channel spins. If merged incorrectly, the pair
+    # would collapse to one group with g_J = 3/8.
     import numpy as np
-    assert float(np.sum(data.group_g)) == pytest.approx(0.75)
+    real_gJ_sum = float(np.sum(data.group_g[real_g]))
+    assert real_gJ_sum == pytest.approx(0.75)
+
+
+def test_phantom_groups_added_for_missing_channel_spins():
+    """When a file lists resonances for only one channel spin at
+    an (L, |J|) that physically admits two, the preproc must add
+    a phantom group with no resonances so the reconstruction
+    emits the missing channel spin's hard-sphere phase. Mirrors
+    NJOY reconr's csrmat kkkkkk=2 branch.
+
+    Setup: Co-59-like target with spi=3.5. At L=1 the channel spins
+    S=3 and S=4 admit J=3 and J=4 each with both S. Listing only
+    AJ=+3 and AJ=+4 in the file leaves one channel spin unlisted
+    at each of those two J values, so the preproc must add two
+    phantom groups. J=2 (S=3 only) and J=5 (S=4 only) are boundary
+    values where only one channel spin is physical; the file lists
+    neither, so those add one phantom each (the whole physically-
+    allowed hard-sphere phase for that J at L=1)."""
+    d = _minimal_rm_endf_dict(
+        spi=3.5,
+        l_groups=[(1, [
+            (100.0, 3.0, 0.05, 0.04, 0.0, 0.0),   # AJ = +3
+            (200.0, 4.0, 0.03, 0.04, 0.0, 0.0),   # AJ = +4
+        ])],
+    )
+    data = pre.rm_data_from_endf_dict(d)
+    real = sorted(set(data.res_group.tolist()))
+    assert len(real) == 2   # AJ=+3 and AJ=+4 stay separate real groups
+    # Total groups: 2 real (J=3+ and J=4+) plus 4 phantoms
+    # (missing-J=2, missing-J=3-, missing-J=4-, missing-J=5). We
+    # care that the sum of g_J across ALL L=1 groups now hits
+    # 2L+1 = 3 (the neutron statistical sum rule), which requires
+    # every physically-allowed (J, S) coupling to be represented.
+    import numpy as np
+    L1_mask = data.group_l == 1
+    total_gJ_L1 = float(np.sum(data.group_g[L1_mask]))
+    gj_den = (2*0.5 + 1) * (2*3.5 + 1)   # 2 * 8 = 16
+    assert total_gJ_L1 == pytest.approx((2*1 + 1) / gj_den * gj_den / 1.0)
+    # Same thing spelled out: sum of (2J+1) over all (J,S) at L=1
+    # divided by gj_den. For L=1 with S in {3,4}:
+    #   S=3: J in {2,3,4},   contributions (2J+1) = 5, 7, 9  (sum 21)
+    #   S=4: J in {3,4,5},   contributions (2J+1) = 7, 9, 11 (sum 27)
+    # Total (2J+1) = 48. Divide by gj_den=16 -> 3.0 = 2L+1. Pin
+    # to catch a regression that would drop any phantom.
+    assert total_gJ_L1 == pytest.approx(3.0)
 
 
 def test_apl_takes_precedence_over_ap_when_nonzero():
