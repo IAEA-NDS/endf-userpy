@@ -314,6 +314,21 @@ def compute_reconstructed_cross_section(
 
     See :func:`reconstruct_resonance_xs` for supported LRF list
     and warning behaviour on unsupported formalisms.
+
+    Sum-MTs (MT=1, 3, 4, 27, ...) are returned verbatim from the
+    file's own tabulation for those MT numbers; no sum-rule
+    enforcement is applied here. If the file's raw MF3/MT=1 grid
+    or INT law differs from its partial tabulations, the value
+    this function returns for MT=1 can differ from the sum of
+    partials at intermediate interpolation points (observed at
+    ~3 mbarn on ~12 barn total in JEFF-4.0 U-235 above the URR;
+    less than 1e-6 relative in the resolved-resonance region where
+    MF3 is zero). NJOY reconr in contrast re-enforces the sum rule
+    by writing MT=1 as the sum of reconstructed partials on its
+    output grid. Callers who want the NJOY-consistent, sum-rule-
+    enforced total should use :func:`endf_userpy.quantities.get_reaction_xs`,
+    whose selector heuristic drops sum-MTs in favour of their
+    leaf children when those children carry detailed data.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
