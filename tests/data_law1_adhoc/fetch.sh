@@ -69,6 +69,49 @@ files=(
   # LRX-competitive branches. Used by the array-agnostic MF2
   # reconstruction and end-to-end composition tests.
   "endfb81_n_Nb-93.endf  ENDF-B-VIII.1  n_041-Nb-93_4125  6ae5b6e7ee35b1d7e9460a9067b986de057ea632a7673a8bfc3125dbd3a222bd"
+  # ---- R-M / URR / composition coverage corners (from the NJOY
+  # coverage sweep summarised in the branch history). Each file
+  # exercises a corner of the reconstruction the pre-existing
+  # corpus does not.
+  #
+  # Pb-208 (ENDF-B-VIII.1): closed-shell + per-L APL (L=0: 0.967;
+  # L=1..3: 0.975). Regression pin for the per-L APL fix, and
+  # tracks the residual high-E R-M discrepancy driven by the
+  # large-Γ_n negative-E resonances (task #45; ~1% ratio bias
+  # above ~50 keV that survives the per-L APL fix).
+  "endfb81_n_Pb-208.endf  ENDF-B-VIII.1  n_082-Pb-208_8237  c6088040dcfcd68ebcd010faf3b1c98b90701de12beb0d7f2dd3d4e2c3c49688"
+  # K-39 (ENDF-B-VIII.1): worst LRF=3 NAPS=0 mismatch found in the
+  # sweep (median 17%, max 11.3 barn) driven by the same neg-E
+  # extrapolation issue as Pb-208 but on a light nucleus with
+  # different resonance density. Regression pin for the eventual
+  # fix of task #45.
+  "endfb81_n_K-39.endf    ENDF-B-VIII.1  n_019-K-39_1925    c99f5435fbb2d8975188142507edc89cc0ebb67996e7eac1039b1e4c0190b6e9"
+  # Rh-103 (ENDF-B-VIII.1): small RRR (6 resonances) plus a big
+  # LSSF=0 URR with the full AMU set (AMUN, AMUG, AMUF, AMUX all
+  # populated). Exercises the URR reconstruction path without the
+  # RRR crowding an actinide file forces.
+  "endfb81_n_Rh-103.endf  ENDF-B-VIII.1  n_045-Rh-103_4525  898d98b8945ac1c9debc9a39ceae93c47f1564f27c191e1501b86c42ba4e715b"
+  # Au-197 (JEFF-4.0): LSSF=0 URR Case C on a non-fissile standard
+  # reference nucleus. Complements the fissile-actinide URR
+  # coverage the U-235/U-238 files provide.
+  "jeff40_n_Au-197.endf   JEFF-4.0       n_079-Au-197_7925  b342274b21d26862fe8e1a29cf32e53f2c5a1e7dc6408041882e4c11542c6526"
+  # U-233 (ENDF-B-VIII.1): the biggest LRF=3 RRR in the surveyed
+  # corpus (6122 resonances). Performance stress and correctness
+  # cross-check for the numba/JAX kernels under a resonance load
+  # ~2x the U-235/U-238 files.
+  "endfb81_n_U-233.endf   ENDF-B-VIII.1  n_092-U-233_9222   a51575252b97fe6605da3dbcbc7af4798d854f756fdd698d84b64f7466f983b4"
+  # Pu-239 (CENDL-3.2): MT=1 pathology unique to CENDL in the
+  # sweep: MT=1 max/median rel err both saturate to 1.0 while
+  # MT=2/18/102 stay clean. Flag file for a follow-up sum-rule
+  # / MF3-declaration investigation; kept in the corpus so that
+  # any future fix can be pinned against it.
+  "cendl32_n_Pu-239.endf  CENDL-3.2      n_094-Pu-239_9437  45f038bbef1a3b6a55a758879c0720f8aecdbd22b7d8f087abb1cc459c73dd42"
+  # Nd-143 (ENDF-B-VIII.1): LRF=2 MLBW with an LSSF=0 URR at
+  # higher energy (10% max on MT=1 in the sweep). Exercises the
+  # MLBW <-> URR handoff in resonance_composition, which none of
+  # the other LSSF=0 URR files in the corpus does (they all pair
+  # URR with LRF=3 R-M).
+  "endfb81_n_Nd-143.endf  ENDF-B-VIII.1  n_060-Nd-143_6028  a2c1a5d579f52edd84626477ed55a3e03c38c2efb0c651f6ab60fbd40418c1de"
 )
 
 ua='Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)'
