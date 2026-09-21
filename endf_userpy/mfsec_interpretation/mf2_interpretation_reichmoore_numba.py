@@ -77,8 +77,8 @@ _EPS = 1e-38
 @njit(cache=True, parallel=True, fastmath=True)
 def _reconstruct_kernel(
     e,                     # (ne,) float64
-    r_a_e,                 # (ne,) channel radius interpolated at E
-    r_ap_e,                # (ne,) scattering radius interpolated at E
+    group_r_a,             # (ngroups,) channel radius per group (scalar)
+    group_r_ap,            # (ngroups,) scattering radius per group (scalar)
     abn, ki,
     group_l,               # (ngroups,) int
     group_g,               # (ngroups,) float
@@ -119,13 +119,17 @@ def _reconstruct_kernel(
         pot_sum = 0.0
 
         sqrt_E = math.sqrt(E_safe)
-        rho_a_i = ki * sqrt_E * r_a_e[i]
-        rho_ap_i = ki * sqrt_E * r_ap_e[i]
 
         for g in range(ngroups):
             L = group_l[g]
             gJ = group_g[g]
             nfis = group_nfis[g]
+
+            # Per-group radii: each L may have a different APL
+            # override. Compute rho_a / rho_ap here per group
+            # rather than at the outer per-energy level.
+            rho_a_i = ki * sqrt_E * group_r_a[g]
+            rho_ap_i = ki * sqrt_E * group_r_ap[g]
 
             # Elastic-channel factors at E. R-matrix penetration uses
             # the channel radius (rho_a); the hard-sphere phase in Ω
@@ -297,12 +301,34 @@ def reconstruct(data, energies_in):
     group_nfis = np.asarray(data.group_nfis, dtype=np.int64)
     ngroups = group_l.shape[0]
 
-    # --- Pre-interpolate radii on the query grid. ---
+    # --- Per-group scalar radii. If the preproc supplied per-L
+    # (data.group_r_a / data.group_r_ap), use them directly.
+    # Otherwise fall back to interpolating the range-level TAB1
+    # at a single reference energy (this is the old behaviour
+    # and is only correct when every L shares the same AP).
     xp = array_ns.get_backend('numpy')
-    e_safe = np.maximum(e, 0.0)
-    r_a_e = np.asarray(tab1_mod.interp(data.r_a, e_safe, xp))
-    r_ap_e = np.asarray(tab1_mod.interp(data.r_ap, e_safe, xp))
-    r_a_at_er = np.asarray(tab1_mod.interp(data.r_a, np.abs(er), xp))
+    if getattr(data, 'group_r_a', None) is not None:
+        group_r_a_arr = np.asarray(data.group_r_a, dtype=np.float64)
+    else:
+        # Fallback: constant TAB1 at any energy -> the same scalar
+        # for every group.
+        ref_val = float(tab1_mod.interp(
+            data.r_a, np.array([1.0]), xp,
+        )[0])
+        group_r_a_arr = np.full(ngroups, ref_val, dtype=np.float64)
+    if getattr(data, 'group_r_ap', None) is not None:
+        group_r_ap_arr = np.asarray(data.group_r_ap, dtype=np.float64)
+    else:
+        ref_val = float(tab1_mod.interp(
+            data.r_ap, np.array([1.0]), xp,
+        )[0])
+        group_r_ap_arr = np.full(ngroups, ref_val, dtype=np.float64)
+
+    # Per-resonance channel radius at |E_r|: each resonance uses
+    # its OWN group's r_a (constant per L). Bug fix vs the
+    # previous "single r_a for all resonances" behaviour.
+    res_group_np = np.asarray(data.res_group, dtype=np.int64)
+    r_a_at_er = group_r_a_arr[res_group_np]
 
     # --- Sort resonances by group so each group is contiguous. ---
     order = np.argsort(res_group, kind='stable')
@@ -350,7 +376,7 @@ def reconstruct(data, energies_in):
             )
 
     sct, cap, fis, pot = _reconstruct_kernel(
-        e, r_a_e, r_ap_e,
+        e, group_r_a_arr, group_r_ap_arr,
         float(data.abn), float(data.ki),
         group_l, group_g, group_nfis,
         group_res_start, group_res_end,

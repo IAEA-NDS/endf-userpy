@@ -26,15 +26,18 @@ def _minimal_rm_endf_dict(
     nsub=10,          # neutron incident
     spi=3.5, ap=0.6, naps=0, awri=232.0, apl=0.0,
     l_groups=None,     # list of (L, [(er, aj, gn, gg, gfa, gfb), ...])
+    apl_per_L=None,    # dict {L: APL}, per-L override (else uses `apl`)
     emax=1000.0,
 ):
     """Minimal MF1/MT451 + MF2/MT151 LRF=3 dict.
 
     Each l_group is (L, resonances). Each resonance is a 6-tuple
-    (ER, AJ, GN, GG, GFA, GFB). The preprocessor takes it from
-    there."""
+    (ER, AJ, GN, GG, GFA, GFB). Optional ``apl_per_L`` overrides
+    the single ``apl`` for specific L values (JEFF-4.0 Fe-56
+    pattern)."""
     if l_groups is None:
         l_groups = [(0, [(100.0, 3.0, 0.001, 0.04, 0.0, 0.0)])]
+    apl_per_L = apl_per_L or {}
     spingroups = {}
     for idx, (L, resonances) in enumerate(l_groups, start=1):
         ers = {i + 1: r[0] for i, r in enumerate(resonances)}
@@ -43,8 +46,10 @@ def _minimal_rm_endf_dict(
         ggs = {i + 1: r[3] for i, r in enumerate(resonances)}
         gfas = {i + 1: r[4] for i, r in enumerate(resonances)}
         gfbs = {i + 1: r[5] for i, r in enumerate(resonances)}
+        apl_this_L = apl_per_L.get(L, apl)
         spingroups[idx] = {
-            'AWRI': awri, 'APL': apl, 'L': L, 'NRS': len(resonances),
+            'AWRI': awri, 'APL': apl_this_L, 'L': L,
+            'NRS': len(resonances),
             'ER': ers, 'AJ': ajs,
             'GN': gns, 'GG': ggs, 'GFA': gfas, 'GFB': gfbs,
         }
@@ -175,6 +180,109 @@ def test_apl_zero_falls_back_to_ap():
     data = pre.rm_data_from_endf_dict(d)
     assert data.r_ap.y[0] == pytest.approx(0.5)
     assert data.r_a.y[0] == pytest.approx(0.5)
+
+
+def test_per_L_apl_produces_per_group_radii_JEFF_Fe56_pattern():
+    """Regression pinning: JEFF-4.0 Fe-56 has APL differing per L
+    (L=0 uses range AP, L=1 uses APL=0.5002, etc.). Our preproc
+    must fill per-group ``group_r_a`` / ``group_r_ap`` arrays so
+    the reconstruction picks the right radius per L.
+
+    Bug it pins: previously a single ``apl_ref`` (first non-zero
+    APL) was applied to every group, giving an 83% error on
+    Fe-56 elastic at interference-minimum energies.
+    """
+    d = _minimal_rm_endf_dict(
+        ap=0.5444,
+        apl_per_L={0: 0.0, 1: 0.5002, 2: 0.0},
+        naps=1,
+        l_groups=[
+            (0, [(100.0, 0.5, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(200.0, 1.5, 0.001, 0.04, 0.0, 0.0)]),
+            (2, [(300.0, 2.5, 0.001, 0.04, 0.0, 0.0)]),
+        ],
+    )
+    data = pre.rm_data_from_endf_dict(d)
+
+    assert data.group_r_ap is not None, (
+        'preproc must fill group_r_ap for per-L APL support'
+    )
+    assert data.group_r_a is not None, (
+        'preproc must fill group_r_a for per-L APL support'
+    )
+
+    # 3 groups: L=0, L=1, L=2. Per-L APL override -> group r_ap
+    # equals APL where non-zero, else range AP.
+    L_to_expected_r_ap = {0: 0.5444, 1: 0.5002, 2: 0.5444}
+    L_arr = np.asarray(data.group_l)
+    for g in range(len(L_arr)):
+        L = int(L_arr[g])
+        assert float(data.group_r_ap[g]) == pytest.approx(
+            L_to_expected_r_ap[L]
+        ), (
+            f'group {g} at L={L}: r_ap = {float(data.group_r_ap[g])}, '
+            f'expected {L_to_expected_r_ap[L]}'
+        )
+
+    # NAPS=1 -> channel radius equals scattering radius. Same pattern.
+    for g in range(len(L_arr)):
+        L = int(L_arr[g])
+        assert float(data.group_r_a[g]) == pytest.approx(
+            L_to_expected_r_ap[L]
+        )
+
+
+def test_per_L_apl_reconstruction_uses_per_L_phase():
+    """End-to-end: reconstruction with per-L APL gives a
+    different result than the (buggy) single-APL-for-all-L
+    approximation. Uses two L-groups with different APLs and
+    checks that swapping the APLs changes the elastic XS
+    outside the potential-only limit."""
+    from endf_userpy.mfsec_interpretation import (
+        mf2_interpretation_reichmoore as rm,
+    )
+    from endf_userpy.primitives import array_ns
+
+    # Two groups at the same energy, with differing APLs. Choose
+    # ap and E so rho ~ O(1) and the L=1 phase is not tiny.
+    d_correct = _minimal_rm_endf_dict(
+        ap=0.5,
+        apl_per_L={0: 0.5, 1: 0.9},
+        naps=1,
+        l_groups=[
+            (0, [(1e3, 0.5, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(2e3, 1.5, 0.001, 0.04, 0.0, 0.0)]),
+        ],
+        emax=1e5,
+    )
+    d_wrong = _minimal_rm_endf_dict(
+        ap=0.5,
+        apl_per_L={0: 0.5, 1: 0.5},   # same APL for both L
+        naps=1,
+        l_groups=[
+            (0, [(1e3, 0.5, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(2e3, 1.5, 0.001, 0.04, 0.0, 0.0)]),
+        ],
+        emax=1e5,
+    )
+    data_correct = pre.rm_data_from_endf_dict(d_correct)
+    data_wrong = pre.rm_data_from_endf_dict(d_wrong)
+
+    xp = array_ns.get_backend('numpy')
+    einc = np.array([5e4], dtype=np.float64)   # high enough for L=1 to matter
+    xs_correct = rm.reconstruct(data_correct, einc, xp)
+    xs_wrong = rm.reconstruct(data_wrong, einc, xp)
+
+    # Elastic must differ non-trivially when the L=1 radius
+    # changes from 0.5 to 0.9. Without the per-L fix both would
+    # return the same number.
+    sct_correct = float(xs_correct['sct'][0])
+    sct_wrong = float(xs_wrong['sct'][0])
+    assert sct_correct != pytest.approx(sct_wrong, rel=1e-6), (
+        f'per-L APL fix inactive: elastic identical whether L=1 '
+        f'uses r_ap=0.9 (correct={sct_correct}) or '
+        f'r_ap=0.5 (wrong={sct_wrong}).'
+    )
 
 
 # ============================================================
@@ -310,3 +418,54 @@ def test_jax_can_substitute_scalar_field_and_reconstruct():
     )['sct'])
     np.testing.assert_allclose(xs_2, 2.0 * xs_1, rtol=1e-10,
                                 err_msg='sct should scale linearly with abn')
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_can_substitute_group_r_ap_and_autodiff():
+    """Substituting a JAX tracer into RMData.group_r_ap must flow
+    through reconstruction. Pins that the per-L APL machinery is
+    autodiff-friendly: no float() casts on group_g/group_r_a/group_r_ap
+    inside the reconstruction, so users can fit per-group radii via
+    jax.grad through elastic XS."""
+    import dataclasses
+    import jax
+    import jax.numpy as jnp
+
+    d = _minimal_rm_endf_dict(
+        ap=0.5,
+        apl_per_L={0: 0.5, 1: 0.9},
+        naps=1,
+        l_groups=[
+            (0, [(1e3, 0.5, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(2e3, 1.5, 0.001, 0.04, 0.0, 0.0)]),
+        ],
+        emax=1e5,
+    )
+    data = pre.rm_data_from_endf_dict(d)
+    xp = array_ns.get_backend('jax')
+    einc = jnp.array([5e4])
+
+    base_r_ap = jnp.asarray(data.group_r_ap)
+    base_r_a = jnp.asarray(data.group_r_a)
+
+    def sct_of_r_ap_L1(r_ap_L1_scalar):
+        new_r_ap = base_r_ap.at[1].set(r_ap_L1_scalar)
+        new_r_a = base_r_a.at[1].set(r_ap_L1_scalar)   # NAPS=1
+        d2 = dataclasses.replace(
+            data,
+            group_r_ap=new_r_ap,
+            group_r_a=new_r_a,
+        )
+        return rm.reconstruct(d2, einc, xp)['sct'][0]
+
+    grad = jax.grad(sct_of_r_ap_L1)(jnp.asarray(0.9))
+    grad_val = float(grad)
+    assert np.isfinite(grad_val), (
+        f'jax.grad through group_r_ap must produce a finite gradient; '
+        f'got {grad_val}. If NaN/inf, a float() cast (or non-jax op) '
+        f'is severing the trace inside reconstruction.'
+    )
+    assert grad_val != 0.0, (
+        'gradient of elastic w.r.t. L=1 group r_ap must be non-zero '
+        'at r_ap=0.9 (potential elastic depends on it via sin(phi_1)).'
+    )

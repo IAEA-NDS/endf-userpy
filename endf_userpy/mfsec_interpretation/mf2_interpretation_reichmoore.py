@@ -142,6 +142,20 @@ class RMData:
     res_gg: np.ndarray
     res_gf1: np.ndarray
     res_gf2: np.ndarray
+    # Per-group scattering / channel radius (in fm-like ENDF units,
+    # constants with respect to E). Fill from per-L ``APL`` if the
+    # file provides it, else the range-level ``AP``; then compute
+    # the channel radius per group via ``_channel_radius`` with the
+    # group's own r_ap and the range's NAPS. Reconstruction uses
+    # these per-group values for the hard-sphere phase and R-matrix
+    # penetration. Needed because a file may specify a different
+    # scattering radius per L (JEFF-4.0 Fe-56, ENDF/B-VIII.1
+    # Zr-90, ...). Optional for backward compatibility: if left
+    # empty, reconstruction falls back to interpolating the
+    # range-level r_a / r_ap TAB1s for all groups (correct only
+    # when a single AP applies to every L).
+    group_r_a: np.ndarray = None
+    group_r_ap: np.ndarray = None
 
 
 def _signed_sqrt(x, xp):
@@ -163,6 +177,7 @@ def _reconstruct_group(
     res_er, res_gn, res_gg, res_gf1, res_gf2,
     group_mask,
     ki, r_a, r_ap, xp,
+    r_a_val=None, r_ap_val=None,
 ):
     """Reconstruct one J·π group's contribution to sct/cap/fis.
 
@@ -195,10 +210,13 @@ def _reconstruct_group(
     # ``S(E) - S(|E_r|)`` correction on the R-matrix denominator
     # (SAMMY shift-eliminated convention; see the "level shift"
     # note further down).
-    rho_e = _rho(e_safe, ki, r_a, xp)                          # (ne,)
+    if r_a_val is not None:
+        rho_e = ki * xp.sqrt(e_safe) * r_a_val                  # (ne,)
+        rho_r = ki * xp.sqrt(xp.abs(res_er)) * r_a_val          # (nres,)
+    else:
+        rho_e = _rho(e_safe, ki, r_a, xp)                       # (ne,)
+        rho_r = _rho(xp.abs(res_er), ki, r_a, xp)               # (nres,)
     p_e, shf_e = factors.pnt_shf(rho_e, L_scalar, xp)          # (ne,)
-
-    rho_r = _rho(xp.abs(res_er), ki, r_a, xp)                  # (nres,)
     p_r, shf_r = factors.pnt_shf(rho_r, L_scalar, xp)          # (nres,)
 
     # Elastic reduced-width amplitude gamma_n0. Sign of GN matters.
@@ -296,7 +314,10 @@ def _reconstruct_group(
     # differ for NAPS=2, where a is derived from AWRI while R'=AP is
     # tabulated separately. Fission channels have no hard-sphere phase
     # in the external region -- they get Ω = 1.
-    rho_ap = _rho(e_safe, ki, r_ap, xp)                        # (ne,)
+    if r_ap_val is not None:
+        rho_ap = ki * xp.sqrt(e_safe) * r_ap_val               # (ne,)
+    else:
+        rho_ap = _rho(e_safe, ki, r_ap, xp)                    # (ne,)
     phi_e = factors.phase(rho_ap, L_scalar, xp)                # (ne,)
     omega_c = xp.exp(-1j * phi_e)                              # (ne,)
     # omega_row for the fission channels are 1 (no hard-sphere phase).
@@ -456,11 +477,22 @@ def reconstruct(
     pot_tot = xp.zeros_like(e_safe)
 
     # --- Potential scattering: sum over groups of g_J * sin^2(phi_L). ---
-    rho_ap = _rho(e_safe, data.ki, data.r_ap, xp)              # (ne,)
+    # Each group uses its own scattering radius (per-L APL override
+    # if the preproc set data.group_r_ap; else fall back to the
+    # range-level r_ap TAB1 for every group). No Python-float
+    # casts on ``data.*`` here: JAX callers can substitute a
+    # traced array into ``group_r_ap`` (or ``group_g``, or
+    # ``ki``) via ``dataclasses.replace`` and autodiff still
+    # flows.
+    have_per_group_r_ap = getattr(data, 'group_r_ap', None) is not None
     for g in range(ngroups):
         L_g = xp.asarray(int(data.group_l[g]))
-        g_J = float(data.group_g[g])
-        phi_L = factors.phase(rho_ap, L_g, xp)                 # (ne,)
+        g_J = data.group_g[g]
+        if have_per_group_r_ap:
+            rho_ap_g = data.ki * xp.sqrt(e_safe) * data.group_r_ap[g]
+        else:
+            rho_ap_g = _rho(e_safe, data.ki, data.r_ap, xp)
+        phi_L = factors.phase(rho_ap_g, L_g, xp)               # (ne,)
         pot_tot = pot_tot + g_J * xp.sin(phi_L) ** 2
     pot_tot = 4.0 * pi_k2 * pot_tot
 
@@ -480,13 +512,24 @@ def reconstruct(
         res_group.reshape(-1, 1) == group_idx.reshape(1, -1)
     ).astype(xp.float64)                                       # (nres, ngroups)
 
+    # No Python-float casts here: pass the 0-d array entries
+    # straight through so a JAX caller who substituted
+    # ``group_r_a`` / ``group_r_ap`` via ``dataclasses.replace``
+    # (with a traced array) sees autodiff flow through the
+    # per-group per-energy rho computation inside
+    # ``_reconstruct_group``.
+    have_per_group_r_a = getattr(data, 'group_r_a', None) is not None
+    have_per_group_r_ap = getattr(data, 'group_r_ap', None) is not None
     for g in range(ngroups):
+        r_a_val_g = data.group_r_a[g] if have_per_group_r_a else None
+        r_ap_val_g = data.group_r_ap[g] if have_per_group_r_ap else None
         sct_g, cap_g, fis_g = _reconstruct_group(
             e_safe, e_pos, k_e2, pi_k2,
             data.group_l[g], data.group_g[g], data.group_nfis[g],
             res_er, res_gn, res_gg, res_gf1, res_gf2,
             res_mask[:, g],
             data.ki, data.r_a, data.r_ap, xp,
+            r_a_val=r_a_val_g, r_ap_val=r_ap_val_g,
         )
         sct_tot = sct_tot + sct_g
         cap_tot = cap_tot + cap_g

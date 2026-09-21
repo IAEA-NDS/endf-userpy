@@ -111,16 +111,16 @@ def rm_data_from_endf_dict(
     per_JPi: dict[tuple[int, int], list[tuple[float, float, float, float, float]]] = {}
 
     awri_ref: float | None = None    # first L-group's AWRI, used for ki
-    apl_ref: float | None = None      # first L-group's APL if given
+    apl_by_L: dict[int, float] = {}   # L -> APL if provided per L, 0 else
 
     for l_idx in range(1, nls + 1):
         d_l = d_grp[l_idx]
         L = int(d_l['L'])
         awri = np.asarray(d_l['AWRI'], dtype=np.float64)
         apl = np.asarray(d_l.get('APL', 0.0), dtype=np.float64)
+        apl_by_L[L] = float(apl)
         if awri_ref is None:
             awri_ref = awri
-            apl_ref = apl if apl > 0 else None
 
         aj_arr = list(d_l['AJ'].values())
         er_arr = list(d_l['ER'].values())
@@ -188,17 +188,37 @@ def rm_data_from_endf_dict(
     # ki = kn * sqrt(awi) * awri / (awri + awi).
     ki = _KN * math.sqrt(awi) * awri_ref / (awri_ref + awi)
 
-    # Scattering radius: APL (per L, first-non-zero) takes precedence
-    # over range-level AP if the file provides it; otherwise AP.
-    r_ap_val = apl_ref if apl_ref else ap
+    # Per-group scattering / channel radius. For each spin group,
+    # look up its L; use APL[L] if the file provides a per-L
+    # override (non-zero), else the range-level AP. Then compute
+    # the channel radius via _channel_radius(this-group's r_ap,
+    # AWRI, NAPS). Applies per group so the reconstruction uses
+    # the correct r_a / r_ap for the group's L. See JEFF-4.0
+    # Fe-56 for a real file where per-L APL differs.
+    def _r_ap_for_L(L: int) -> float:
+        apl_val = apl_by_L.get(L, 0.0)
+        return apl_val if apl_val > 0 else float(ap)
 
+    group_r_ap_arr = np.zeros(ngroups, dtype=np.float64)
+    group_r_a_arr = np.zeros(ngroups, dtype=np.float64)
+    for g, (L, _j2) in enumerate(group_keys):
+        r_ap_g = _r_ap_for_L(L)
+        group_r_ap_arr[g] = r_ap_g
+        group_r_a_arr[g] = _channel_radius(r_ap_g, awri_ref, naps)
+
+    # Range-level r_a / r_ap TAB1s: kept for backward compat and
+    # NRO=1 (energy-dependent scattering radius) support. Fill
+    # from the first L-group's radius; reconstruction prefers
+    # the per-group arrays above and falls back to these TAB1s
+    # only if the per-group arrays are absent.
+    r_ap_val_range = _r_ap_for_L(int(group_l[0])) if ngroups else float(ap)
     ape = d_range.get('AP_table') if nro else None
     if ape is not None:
         r_ap = _radius_tab1_from_ape(ape, emax)
     else:
-        r_ap = _radius_tab1_from_ap(r_ap_val, emax)
+        r_ap = _radius_tab1_from_ap(r_ap_val_range, emax)
 
-    a = _channel_radius(r_ap_val, awri_ref, naps)
+    a = _channel_radius(r_ap_val_range, awri_ref, naps)
     r_a = _radius_tab1_from_ap(a, emax)
 
     return RMData(
@@ -216,4 +236,6 @@ def rm_data_from_endf_dict(
         res_gg=np.asarray(res_gg_list, dtype=np.float64),
         res_gf1=np.asarray(res_gf1_list, dtype=np.float64),
         res_gf2=np.asarray(res_gf2_list, dtype=np.float64),
+        group_r_a=group_r_a_arr,
+        group_r_ap=group_r_ap_arr,
     )
