@@ -41,6 +41,26 @@ from .mf2_interpretation_mlbw_preproc import (
 from .mf2_interpretation_urr import URRData
 
 
+def _get_j_group(d_l: dict) -> dict:
+    """Return the per-J subsection table from a URR L-group dict.
+
+    Same pattern as :func:`_get_l_group`: ``endf_parserpy`` names
+    this table ``subsec`` from 0.17 onwards; older releases used
+    ``j_group`` for the same content. Try the new name first and
+    fall back to the old one so both parser versions work without
+    pinning.
+    """
+    grp = d_l.get('subsec')
+    if grp is None:
+        grp = d_l.get('j_group')
+    if grp is None:
+        raise KeyError(
+            "URR L-group has neither 'subsec' (endf_parserpy >= 0.17) "
+            "nor 'j_group' (older) key; parser output shape unrecognised"
+        )
+    return grp
+
+
 def urr_data_from_endf_dict(
     endf_dict, isotope_idx: int = 1, range_idx: int = 2,
 ) -> URRData:
@@ -135,7 +155,7 @@ def urr_data_from_endf_dict(
                 f'as a limitation if you hit it.'
             )
 
-        j_group = d_l['j_group']
+        j_group = _get_j_group(d_l)
         for _j_idx, d_j in sorted(j_group.items()):
             aj = float(d_j['AJ'])
             j2 = int(round(abs(aj) * 2))
