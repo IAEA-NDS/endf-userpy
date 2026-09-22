@@ -35,22 +35,24 @@ def _resolve_xp(xp):
     return xp if xp is not None else array_ns.get_backend('numpy')
 
 
-def interp_const(x, xp, fp):
-    """Constant interpolation"""
-    x1, y1, x2, y2 = get_enclosing_points(x, xp, fp)
+def interp_const(x, xp_mesh, fp, xp=None):
+    """Constant interpolation. Backend-agnostic; ``xp`` unused since
+    the operation is pure indexing."""
+    x1, y1, x2, y2 = get_enclosing_points(x, xp_mesh, fp)
     return y1
 
 
-def interp_lin_lin(x, xp, fp):
-    """Linear-Linear interpolation"""
-    x1, y1, x2, y2 = get_enclosing_points(x, xp, fp)
+def interp_lin_lin(x, xp_mesh, fp, xp=None):
+    """Linear-Linear interpolation. Backend-agnostic; ``xp`` unused
+    since the operation is pure arithmetic."""
+    x1, y1, x2, y2 = get_enclosing_points(x, xp_mesh, fp)
     return y1 + (x-x1)*(y2-y1)/(x2-x1)
 
 
 _INTERP_LOG_SMALL = 1.0e-38
 
 
-def interp_lin_log(x, xp, fp):
+def interp_lin_log(x, xp_mesh, fp, xp=None):
     """Linear-Logarithmic interpolation.
 
     Clamps ``x1 == 0`` to a small positive value before taking
@@ -58,34 +60,43 @@ def interp_lin_log(x, xp, fp):
     (endf6.f90 line 2044). This surfaces on ENDF files whose x-mesh
     starts at zero (e.g. MF6 LAW=7 outgoing-energy tabulations at
     Ep=0) when INT=3/5 is applied.
+
+    Backend-agnostic: ``xp=None`` (default) resolves to numpy.
     """
-    x1, y1, x2, y2 = get_enclosing_points(x, xp, fp)
-    x1 = np.where(x1 == 0.0, _INTERP_LOG_SMALL, x1)
-    return y1 + np.log(x/x1)*(y2-y1)/np.log(x2/x1)
+    xp = _resolve_xp(xp)
+    x1, y1, x2, y2 = get_enclosing_points(x, xp_mesh, fp)
+    x1 = xp.where(x1 == 0.0, _INTERP_LOG_SMALL, x1)
+    return y1 + xp.log(x/x1)*(y2-y1)/xp.log(x2/x1)
 
 
-def interp_log_lin(x, xp, fp):
+def interp_log_lin(x, xp_mesh, fp, xp=None):
     """Logarithmic-Linear interpolation.
 
     Clamps ``y1 == 0`` to a small positive value before taking
     logs, matching Fortran ``yintp`` (endf6.f90 line 2049).
+
+    Backend-agnostic: ``xp=None`` (default) resolves to numpy.
     """
-    x1, y1, x2, y2 = get_enclosing_points(x, xp, fp)
-    y1 = np.where(y1 == 0.0, _INTERP_LOG_SMALL, y1)
-    return y1*np.exp((x-x1)*np.log(y2/y1)/(x2-x1))
+    xp = _resolve_xp(xp)
+    x1, y1, x2, y2 = get_enclosing_points(x, xp_mesh, fp)
+    y1 = xp.where(y1 == 0.0, _INTERP_LOG_SMALL, y1)
+    return y1*xp.exp((x-x1)*xp.log(y2/y1)/(x2-x1))
 
 
-def interp_log_log(x, xp, fp):
+def interp_log_log(x, xp_mesh, fp, xp=None):
     """Logarithmic-Logarithmic interpolation.
 
     Clamps both ``x1 == 0`` and ``y1 == 0`` to a small positive
     value before taking logs, matching Fortran ``yintp``
     (endf6.f90 lines 2054-2055).
+
+    Backend-agnostic: ``xp=None`` (default) resolves to numpy.
     """
-    x1, y1, x2, y2 = get_enclosing_points(x, xp, fp)
-    x1 = np.where(x1 == 0.0, _INTERP_LOG_SMALL, x1)
-    y1 = np.where(y1 == 0.0, _INTERP_LOG_SMALL, y1)
-    return y1*np.exp(np.log(x/x1)*np.log(y2/y1)/np.log(x2/x1))
+    xp = _resolve_xp(xp)
+    x1, y1, x2, y2 = get_enclosing_points(x, xp_mesh, fp)
+    x1 = xp.where(x1 == 0.0, _INTERP_LOG_SMALL, x1)
+    y1 = xp.where(y1 == 0.0, _INTERP_LOG_SMALL, y1)
+    return y1*xp.exp(xp.log(x/x1)*xp.log(y2/y1)/xp.log(x2/x1))
 
 
 def _interp_two_point_columns(x, x1, x2, y1, y2, interp_type, xp=None):
@@ -140,88 +151,165 @@ def _interp_two_point_columns(x, x1, x2, y1, y2, interp_type, xp=None):
     )
 
 
-def interp(x, xp, fp, interp_type, outside_value=None):
-    """Interpolation using various schemes"""
+_INTERP_DISPATCH = {
+    1: interp_const,
+    2: interp_lin_lin,
+    3: interp_lin_log,
+    4: interp_log_lin,
+    5: interp_log_log,
+}
+
+
+def interp(x, xp_mesh, fp, interp_type, outside_value=None, xp=None):
+    """Interpolation using various schemes.
+
+    Backend-agnostic: ``xp=None`` (the default) resolves to numpy;
+    passing ``xp=array_ns.get_backend('jax')`` keeps ``fp`` tracers
+    alive through the arithmetic (issue #154). Query ``x`` and
+    mesh ``xp_mesh`` are treated as numpy arrays for the panel
+    lookup (index-selection is inherently nondifferentiable).
+    """
+    xp = _resolve_xp(xp)
     # TODO: Here we provisionally let NaN values pass through the
     #       program logic for comparison with the Fortran routines.
     #       However, eventually no NaN values should appear in x.
-    is_inside = ((x >= np.min(xp)) & (x <= np.max(xp))) | np.isnan(x)
+    x_np = np.asarray(x)
+    xp_mesh_np = np.asarray(xp_mesh)
+    # Normalise fp so downstream advanced indexing works regardless
+    # of whether the caller passed a Python list, numpy array, or
+    # JAX tracer (see `endf_interp1d` for the same rationale).
+    fp = xp.asarray(fp)
+    is_inside = (
+        (x_np >= np.min(xp_mesh_np)) & (x_np <= np.max(xp_mesh_np))
+    ) | np.isnan(x_np)
     if not np.all(is_inside) and outside_value is None:
         raise ValueError('some `x` value outside mesh given by `xp`')
-    xi = x[is_inside]
-    if interp_type == 1:
-        fi = interp_const(xi, xp, fp)
-    elif interp_type == 2:
-        fi = interp_lin_lin(xi, xp, fp)
-    elif interp_type == 3:
-        fi = interp_lin_log(xi, xp, fp)
-    elif interp_type == 4:
-        fi = interp_log_lin(xi, xp, fp)
-    elif interp_type == 5:
-        fi = interp_log_log(xi, xp, fp)
-    else:
-        raise TypeError(f"interpolation scheme (INT={interp_type}) not implemented")
-    f = np.full(x.shape, outside_value, dtype=float)
-    f[is_inside] = fi
-    return f
+    xi = x_np[is_inside]
+    scheme = _INTERP_DISPATCH.get(int(interp_type))
+    if scheme is None:
+        raise TypeError(
+            f'interpolation scheme (INT={interp_type}) not implemented'
+        )
+    fi = scheme(xi, xp_mesh_np, fp, xp=xp)
+    if np.all(is_inside):
+        return fi
+    return _scatter_inside(fi, is_inside, x_np.shape, outside_value, xp)
 
 
-def endf_interp1d(x, xp, fp, int_arr, nbt_arr, outside_value=None):
+def _scatter_inside(fi, is_inside, full_shape, outside_value, xp):
+    """Scatter the inside-mesh values `fi` into a full-shape array
+    filled with `outside_value` at the outside positions. Numpy
+    uses in-place assignment; JAX uses ``.at[].set()`` since jnp
+    arrays are immutable."""
+    is_inside_np = np.asarray(is_inside)
+    if xp.name == 'jax':
+        # Build the full array on jax with the outside fill, then
+        # scatter fi into the inside slots.
+        full = xp.full(full_shape, outside_value, dtype=fi.dtype)
+        return full.at[is_inside_np].set(fi)
+    full = np.empty(full_shape, dtype=float)
+    full[~is_inside_np] = outside_value
+    full[is_inside_np] = np.asarray(fi)
+    return xp.asarray(full)
+
+
+def endf_interp1d(x, xp_mesh, fp, int_arr, nbt_arr, outside_value=None, xp=None):
+    """Piecewise ENDF-6 TAB1 interpolation across INT regions.
+
+    Backend-agnostic: ``xp=None`` (the default) resolves to numpy;
+    passing ``xp=array_ns.get_backend('jax')`` keeps ``fp`` tracers
+    alive through the arithmetic. ``treat_duplicates`` only operates
+    on the mesh (concrete file-side data), so leaving it on numpy is
+    safe for the gradient chain; ``find_interval`` for panel
+    indexing is inherently non-differentiable and stays numpy.
+    """
+    xp = _resolve_xp(xp)
     check_int_nbt(int_arr, nbt_arr)
     x = np.asarray(x)
-    # Rebind `xp` to a deduplicated copy rather than mutating the
-    # caller's array in place. `treat_duplicates` perturbs repeated
-    # mesh values by a relative epsilon so `searchsorted` can
-    # distinguish them; if we did that in place, any caller that
-    # passes a long-lived array (e.g. cached from the ENDF dict)
-    # would have its mesh silently modified, and a second call on
-    # the same array would perturb it again (issue #49).
-    xp = treat_duplicates(xp)
-    # TODO: Here we provisionally let NaN values pass through the
-    #       program logic for comparison with the Fortran routines.
-    #       However, eventually no NaN values should appear in x.
-    is_inside = ((x >= np.min(xp)) & (x <= np.max(xp))) | np.isnan(x)
+    # Normalise fp to an xp-native array so downstream advanced
+    # indexing (`fp[idcs]` inside `get_enclosing_points`) works
+    # regardless of whether the caller passed a Python list, a
+    # numpy array, or a JAX tracer. `xp.asarray` on a JAX tracer
+    # is a no-op that preserves the tracer.
+    fp = xp.asarray(fp)
+    # Rebind `xp_mesh` to a deduplicated copy rather than mutating
+    # the caller's array in place. `treat_duplicates` perturbs
+    # repeated mesh values by a relative epsilon so `searchsorted`
+    # can distinguish them; if we did that in place, any caller
+    # that passes a long-lived array (e.g. cached from the ENDF
+    # dict) would have its mesh silently modified, and a second
+    # call on the same array would perturb it again (issue #49).
+    xp_mesh = treat_duplicates(np.asarray(xp_mesh))
+    is_inside = (
+        (x >= np.min(xp_mesh)) & (x <= np.max(xp_mesh))
+    ) | np.isnan(x)
     if not np.all(is_inside) and outside_value is None:
         raise ValueError('some `x` value outside mesh given by `xp`')
     xi = x[is_inside]
-    fi = np.zeros(xi.shape, dtype=float)
-    idcs = find_interval(xp, xi)
+    idcs = find_interval(xp_mesh, xi)
     # Per ENDF-6 TAB1 semantics, consecutive interpolation regions
     # share their boundary row: region n covers rows NBT(n-1)..NBT(n).
-    # In Python 0-indexing, region 0 is xp[0:NBT[0]] and region k>0 is
-    # xp[NBT[k-1]-1:NBT[k]] (overlapping the boundary). The interval
-    # starting at the shared row belongs to the upper region.
+    # In Python 0-indexing, region 0 is xp_mesh[0:NBT[0]] and region
+    # k>0 is xp_mesh[NBT[k-1]-1:NBT[k]] (overlapping the boundary).
+    # The interval starting at the shared row belongs to the upper
+    # region.
+    fi_pieces = []
+    piece_positions = []
     first_idx = 0
     nregions = len(int_arr)
     for i in range(nregions):
-        last_idx = nbt_arr[i]
+        last_idx = int(nbt_arr[i])
         is_last = (i == nregions - 1)
-        interp_type = int_arr[i]
-        cur_xp = xp[first_idx:last_idx]
-        cur_fp = fp[first_idx:last_idx]
+        interp_type = int(int_arr[i])
+        cur_xp = xp_mesh[first_idx:last_idx]
+        cur_fp = fp[first_idx:last_idx]  # slice preserves jax tracers
         upper = last_idx if is_last else last_idx - 1
         is_in_range = (idcs >= first_idx) & (idcs < upper)
         cur_x = xi[is_in_range]
-        fi[is_in_range] = interp(
-            cur_x, cur_xp, cur_fp, interp_type, outside_value
+        if cur_x.size == 0:
+            first_idx = last_idx - 1
+            continue
+        cur_fi = interp(
+            cur_x, cur_xp, cur_fp, interp_type, outside_value, xp=xp,
         )
-        # Share the boundary row with the next region.
+        fi_pieces.append(cur_fi)
+        piece_positions.append(np.where(is_in_range)[0])
         first_idx = last_idx - 1
 
-    f = np.empty(x.shape, dtype=float)
-    f[~is_inside] = outside_value
-    f[is_inside] = fi
-    return f
-
-
-def interp_legendre_coeffs(x, xp, coeffs, int_arr, nbt_arr, outside_value=None):
-    x = np.asarray(x)
-    interp_coeffs = np.zeros((x.shape[0], coeffs.shape[1]), dtype=float)
-    for i in range(interp_coeffs.shape[1]):
-        interp_coeffs[:, i] = endf_interp1d(
-            x, xp, coeffs[:, i], int_arr, nbt_arr, outside_value,
+    # Assemble in the original xi order.
+    if fi_pieces:
+        all_positions = np.concatenate(piece_positions)
+        fi_concat = xp.concatenate(
+            [xp.asarray(p).reshape(-1) for p in fi_pieces], axis=0,
         )
-    return interp_coeffs
+        order = np.argsort(all_positions)
+        fi = fi_concat[np.asarray(order)]
+    else:
+        fi = xp.zeros(xi.shape, dtype=xp.float64)
+
+    if np.all(is_inside):
+        return fi
+    return _scatter_inside(fi, is_inside, x.shape, outside_value, xp)
+
+
+def interp_legendre_coeffs(x, xp_mesh, coeffs, int_arr, nbt_arr,
+                            outside_value=None, xp=None):
+    """Per-column interpolation of a `(NE_mesh, L+1)` Legendre
+    coefficient array onto a query energy vector.
+
+    Backend-agnostic: ``xp=None`` (default) is numpy; JAX tracers
+    in ``coeffs`` propagate through the column-wise
+    :func:`endf_interp1d` calls (see issue #154).
+    """
+    xp = _resolve_xp(xp)
+    x = np.asarray(x)
+    ncols = int(coeffs.shape[1])
+    cols = []
+    for i in range(ncols):
+        cols.append(endf_interp1d(
+            x, xp_mesh, coeffs[:, i], int_arr, nbt_arr, outside_value, xp=xp,
+        ))
+    return xp.stack(cols, axis=-1)
 
 
 def _eval_legendre_series(coeffs, mu, xp):
@@ -288,13 +376,13 @@ def evaluate_interp_legendre_polynomials(
     Legendre evaluation gives 0 at those `x` (a photon line only
     contributes at Ein values it was tabulated at).
 
-    Backend-agnostic: pass ``xp=array_ns.get_backend(name)`` to
-    dispatch the Legendre evaluation onto that backend. The
-    per-degree coefficient interpolation over the file's energy
-    mesh (via :func:`interp_legendre_coeffs`) stays on numpy since
-    it operates on file-provided arrays whose shape and duplicate
-    structure are only known at Python time; the interpolated
-    coefficients are converted at the boundary via ``xp.asarray``.
+    Backend-agnostic (issue #154): pass
+    ``xp=array_ns.get_backend(name)`` to dispatch the whole
+    reconstruction onto that backend. JAX tracers in ``coeffs``
+    now propagate through the per-degree coefficient interpolation
+    (:func:`interp_legendre_coeffs`) and the Legendre evaluation
+    (:func:`_eval_legendre_series`) so ``jax.grad`` reaches all
+    the way back to the file's Legendre coefficients.
     ``xp=None`` (the default) resolves to numpy, keeping every
     pre-port caller on the same bit-identical path.
 
@@ -310,32 +398,41 @@ def evaluate_interp_legendre_polynomials(
         mu = mu.reshape(1, -1)
     if mu.shape[0] == 1:
         mu = np.broadcast_to(mu, (x.size, mu.shape[1]))
-    # Coefficient interpolation over the file's energy mesh stays
-    # on numpy: `endf_interp1d` walks per-region loops with
-    # dynamically-many ENDF interpolation zones and calls
-    # `treat_duplicates` (np.unique-based) on the mesh.
+    # Backend-agnostic per-degree coefficient interpolation over the
+    # file's energy mesh. Tracers in `coeffs` propagate through.
     interp_coeffs = interp_legendre_coeffs(
-        x, xp_mesh, coeffs, int_arr, nbt_arr, outside_value,
+        x, xp_mesh, coeffs, int_arr, nbt_arr, outside_value, xp=xp,
     )
-    # Move to the requested backend for the Legendre evaluation.
     # Caller passes the FULL coefficient array including the ``a_0``
     # constant term with any (2L+1)/2 normalisation factor already
     # applied (see e.g.
     # :func:`mf4_interpretation._convert_legendre_to_numpy_array`),
     # so ``_eval_legendre_series`` evaluates
     # ``sum_L coeffs[..., L] * P_L(mu)`` directly.
-    interp_coeffs_xp = xp.asarray(interp_coeffs)
     mu_xp = xp.asarray(mu)
-    return _eval_legendre_series(interp_coeffs_xp, mu_xp, xp)
+    return _eval_legendre_series(interp_coeffs, mu_xp, xp)
 
 
-def interp_tab1(x, tab1, xp_name, fp_name, outside_value=None):
-    x_mesh = np.array(tab1[xp_name], dtype=float)
-    f_mesh = np.array(tab1[fp_name], dtype=float)
-    int_arr = np.array(tab1['INT'], dtype=int)
-    nbt_arr = np.array(tab1['NBT'], dtype=int)
+def interp_tab1(x, tab1, xp_name, fp_name, outside_value=None, xp=None):
+    """Interpolate a TAB1 record (`{xp_name: mesh, fp_name: fp,
+    'INT': ..., 'NBT': ...}` dict-of-arrays layout) at query `x`.
+
+    Backend-agnostic: ``xp=None`` (default) is numpy; passing a
+    JAX backend preserves tracers in ``tab1[fp_name]``. The mesh
+    and INT/NBT are always numpy since they are file-side data
+    and drive panel-indexing lookups.
+    """
+    xp = _resolve_xp(xp)
+    x_mesh = np.asarray(tab1[xp_name], dtype=float)
+    # Do NOT force `f_mesh` to numpy: if the caller stores a JAX
+    # tracer in `tab1[fp_name]`, we want the gradient to flow.
+    f_mesh = tab1[fp_name]
+    if xp.name == 'numpy':
+        f_mesh = np.asarray(f_mesh, dtype=float)
+    int_arr = np.asarray(tab1['INT'], dtype=int)
+    nbt_arr = np.asarray(tab1['NBT'], dtype=int)
     return endf_interp1d(
-        x, x_mesh, f_mesh, int_arr, nbt_arr, outside_value
+        x, x_mesh, f_mesh, int_arr, nbt_arr, outside_value, xp=xp,
     )
 
 
