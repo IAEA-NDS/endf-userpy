@@ -40,7 +40,7 @@ from endf_userpy.mfsec_interpretation import (
     mf2_interpretation_reichmoore_preproc as rm_pre,
 )
 
-from _corpus import resolve_nb93, resolve_u235
+from _corpus import resolve_nb93, resolve_u235, resolve_nd143
 
 
 def _numba_available():
@@ -429,3 +429,173 @@ def test_u235_composition_numpy_vs_numba(u235_dict):
         )
     )
     np.testing.assert_allclose(composed_np, composed_nb, rtol=1e-10)
+
+
+# ============================================================
+# 6. Range-seam handling (issue #149).
+#
+# ENDF-6 stores adjacent resonance ranges as [EL, EH] intervals
+# with the upper endpoint of one range equal to the lower
+# endpoint of the next (RRR EH == URR EL; URR EH == "above URR"
+# start). Naively including both endpoints in the range mask
+# double-counts every query at exactly the shared boundary.
+#
+# The convention matches PR #146's tab1 side='right' default:
+# at the doubled-x seam, the RIGHT-limit range wins, i.e. the
+# higher-energy range owns the value at the shared E.
+# ============================================================
+
+
+def test_seam_urr_eh_only_mf3_fires_at_upper_endpoint():
+    """At E == URR EH (the URR upper endpoint), the URR
+    reconstruction must NOT contribute -- the value there is
+    owned by MF3, which starts at that energy (or extends past
+    it via its above-URR tabulation). Pre-fix this fired the
+    URR contribution AND MF3, giving a factor-2 wrong value at
+    exactly the seam.
+    """
+    d = _dict_with_valid_lssf0_urr(mt=102)
+    xp = array_ns.get_backend('numpy')
+    # URR range in this synthetic dict: [1e3, 1e5].
+    # Sample: just below EH, at EH, just above EH.
+    e_query = np.array([1e5 - 1.0, 1e5, 1e5 + 1.0])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        res_only = np.asarray(res_comp.reconstruct_resonance_xs(
+            d, 102, e_query, xp,
+        ))
+        composed = np.asarray(res_comp.compute_reconstructed_cross_section(
+            d, 102, e_query, xp,
+        ))
+    from endf_userpy.mfsec_interpretation import mf3_interpretation
+    mf3_xs = np.asarray(mf3_interpretation.compute_cross_section_agnostic(
+        d, 102, e_query, xp,
+    ))
+    # Just below EH: URR fires.
+    assert res_only[0] > 0.0
+    # At exactly EH: URR must NOT fire (right-limit convention).
+    assert res_only[1] == 0.0, (
+        f'URR contribution at exact upper endpoint E=EH must be zero '
+        f'(right-limit convention; issue #149), got {res_only[1]}'
+    )
+    # Above EH: URR does not fire.
+    assert res_only[2] == 0.0
+    # Composed at EH: exactly MF3 (no URR added on top).
+    np.testing.assert_allclose(composed[1], mf3_xs[1], rtol=1e-14, atol=0.0)
+    # Composed at EH+1 also just MF3.
+    np.testing.assert_allclose(composed[2], mf3_xs[2], rtol=1e-14, atol=0.0)
+
+
+def test_seam_urr_el_fires_inclusively_at_lower_endpoint():
+    """At E == URR EL, the URR reconstruction DOES fire (the
+    lower endpoint is inclusive -- the URR range owns its own
+    lower boundary). Symmetric to the upper-endpoint half-open
+    rule: [EL, EH). Guards against overshooting the fix into a
+    double-open interval that leaves EL uncovered.
+    """
+    d = _dict_with_valid_lssf0_urr(mt=102)
+    xp = array_ns.get_backend('numpy')
+    # URR range: [1e3, 1e5].
+    e_query = np.array([1e3 - 1.0, 1e3, 1e3 + 1.0])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        res_only = np.asarray(res_comp.reconstruct_resonance_xs(
+            d, 102, e_query, xp,
+        ))
+    # Below EL: no URR.
+    assert res_only[0] == 0.0
+    # At exactly EL: URR fires.
+    assert res_only[1] > 0.0, (
+        f'URR contribution at exact lower endpoint E=EL must be positive '
+        f'(EL is inclusive; issue #149), got {res_only[1]}'
+    )
+    # Just above EL: URR fires (continuous with EL).
+    assert res_only[2] > 0.0
+    np.testing.assert_allclose(res_only[1], res_only[2], rtol=1e-3)
+
+
+@pytest.fixture
+def nd143_dict():
+    """ENDF/B-VIII.1 Nd-143: RRR (MLBW) up to 5503 eV + LSSF=0
+    URR from 5503 eV to 225 keV + MF3-above-URR. Used to pin
+    the range-seam convention on real data with both a RRR/URR
+    seam and a URR/MF3 seam in the same file."""
+    path = resolve_nd143()
+    if path is None:
+        pytest.skip(
+            'Nd-143 ENDF file not available (set ND143_ENDF, run '
+            'tests/data_law1_adhoc/fetch.sh, or place the file at '
+            'tests/data_law1_adhoc/endfb81_n_Nd-143.endf)'
+        )
+    from endf_parserpy import EndfParserCpp
+    return EndfParserCpp().parsefile(path, include=[1, 2, 3])
+
+
+def test_nd143_rrr_urr_seam_takes_urr_value(nd143_dict):
+    """RRR/URR seam at E = 5503 eV on ENDF/B-VIII.1 Nd-143.
+    Pre-fix, composition returned RRR(EH) + URR(EL) summed
+    (~163 barn on MT=2 vs the correct URR-side value ~23 barn,
+    a factor of 7 wrong at the seam).
+    """
+    xp = array_ns.get_backend('numpy')
+    e_seam = 5503.0    # = RRR EH = URR EL
+    e_query = np.array([e_seam - 1e-3, e_seam, e_seam + 1e-3])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        for mt in (2, 102):
+            xs = np.asarray(res_comp.compute_reconstructed_cross_section(
+                nd143_dict, mt, e_query, xp,
+            ))
+            # Below the seam: RRR value. Above the seam: URR value.
+            # At the seam: URR value (right-limit convention).
+            below, at, above = xs
+            # The at-seam value must equal the just-above-seam value
+            # (URR side), not the just-below value (RRR side).
+            assert abs(at - above) < 0.01 * abs(above), (
+                f'MT={mt}: at-seam value {at:.5f} should match URR side '
+                f'{above:.5f} (right-limit); got {abs(at-above):.5f} away. '
+                f'Below-seam RRR value {below:.5f} is the double-count '
+                f'value if the bug is back.'
+            )
+            # Sanity: below-seam (RRR) is a real resonance, distinct
+            # from URR value.
+            assert abs(below - above) > 0.1 * above, (
+                f'MT={mt}: below/above seam should differ (RRR peak vs '
+                f'URR average); got below={below} above={above}. Test '
+                f'setup may not be exercising the seam.'
+            )
+
+
+def test_nd143_urr_mf3_seam_takes_mf3_value(nd143_dict):
+    """URR/MF3 seam at E = 225000 eV on ENDF/B-VIII.1 Nd-143.
+    Pre-fix, composition summed URR(EH) + MF3(EH) at the exact
+    seam, giving a factor-2 wrong value there.
+    """
+    xp = array_ns.get_backend('numpy')
+    e_seam = 225000.0   # = URR EH; MF3 starts at (or extends past) this E
+    e_query = np.array([e_seam - 1e-3, e_seam, e_seam + 1e-3])
+    from endf_userpy.mfsec_interpretation import mf3_interpretation
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        for mt in (2, 102):
+            xs = np.asarray(res_comp.compute_reconstructed_cross_section(
+                nd143_dict, mt, e_query, xp,
+            ))
+            mf3_at_seam = float(np.asarray(
+                mf3_interpretation.compute_cross_section_agnostic(
+                    nd143_dict, mt, np.array([e_seam]), xp,
+                )
+            )[0])
+            below, at, above = xs
+            # Above-seam and at-seam should both be exactly MF3 alone.
+            np.testing.assert_allclose(
+                above, mf3_at_seam, rtol=1e-6,
+                err_msg=f'MT={mt}: above URR EH must equal MF3',
+            )
+            np.testing.assert_allclose(
+                at, mf3_at_seam, rtol=1e-6,
+                err_msg=(f'MT={mt}: at URR EH must equal MF3 (right-limit '
+                         f'convention; issue #149), got {at:.5f} vs MF3 '
+                         f'{mf3_at_seam:.5f}. Below-seam value {below:.5f} '
+                         f'includes the URR contribution.'),
+            )

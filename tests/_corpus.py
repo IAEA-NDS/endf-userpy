@@ -44,3 +44,13 @@ def resolve_u235() -> str | None:
         os.environ.get('U235_ENDF'),
         os.path.join(_CORPUS_DIR, 'tendl21_n_U-235.endf'),
     )
+
+
+def resolve_nd143() -> str | None:
+    """Resolve the Nd-143 ENDF file (ENDF/B-VIII.1, used for the
+    RRR (MLBW) + LSSF=0 URR + MF3-above-URR seam tests in
+    issue #149)."""
+    return _first_existing(
+        os.environ.get('ND143_ENDF'),
+        os.path.join(_CORPUS_DIR, 'endfb81_n_Nd-143.endf'),
+    )

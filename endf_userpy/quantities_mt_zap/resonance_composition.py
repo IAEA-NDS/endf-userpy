@@ -208,7 +208,11 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
             continue
         el = float(rng['EL'])
         eh = float(rng['EH'])
-        in_range = (e >= el) & (e <= eh)
+        # Half-open [EL, EH): at the seam E == EH the next range (URR
+        # or MF3 above URR) owns the value. Matches NJOY's right-limit
+        # convention at doubled-x range transitions (issue #149; same
+        # side selection as PR #146 for MF3 tab1 lookups).
+        in_range = (e >= el) & (e < eh)
         try:
             any_in = bool(in_range.any())
         except Exception:
@@ -248,7 +252,9 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
             continue
         el = float(rng['EL'])
         eh = float(rng['EH'])
-        in_range = (e >= el) & (e <= eh)
+        # Half-open [EL, EH): at E == EH the MF3 above-URR tabulation
+        # owns the value. See issue #149.
+        in_range = (e >= el) & (e < eh)
         try:
             any_in = bool(in_range.any())
         except Exception:
