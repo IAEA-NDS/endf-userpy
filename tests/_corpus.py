@@ -54,3 +54,16 @@ def resolve_nd143() -> str | None:
         os.environ.get('ND143_ENDF'),
         os.path.join(_CORPUS_DIR, 'endfb81_n_Nd-143.endf'),
     )
+
+
+def resolve_al27() -> str | None:
+    """Resolve the Al-27 ENDF file (ENDF/B-VIII.1). Used for the
+    MF6 LAW=2 discrete-two-body port (issue #47): Al-27 has a
+    long ladder of discrete-level inelastic-scattering MTs
+    (MT=51..80) each written as MF6 LAW=2 LANG=0 (Legendre) with
+    a neutron ejectile (ZAP=1), which is the canonical
+    non-gamma-ZAP LAW=2 case."""
+    return _first_existing(
+        os.environ.get('AL27_ENDF'),
+        os.path.join(_CORPUS_DIR, 'endfb81_n_Al-27.endf'),
+    )
