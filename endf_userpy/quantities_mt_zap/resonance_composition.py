@@ -166,8 +166,14 @@ def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp):
 def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
     """MF2 partial-XS contribution for ``mt``, summed over every
     supported resonance range in ``endf_dict``. Zero at query
-    energies outside every range (per convention: the resonance
-    representation is defined only on each range's ``[EL, EH]``).
+    energies outside every range: each range is treated as the
+    half-open interval ``[EL, EH)`` (lower endpoint inclusive,
+    upper endpoint exclusive), so at the standard ENDF-6 seam
+    energies (RRR ``EH == URR EL``; URR ``EH ==`` first
+    MF3-above-URR knot) the higher-energy range owns the value
+    and no double-count occurs. Matches PR #146's tab1
+    ``side='right'`` default for the analogous MF3 doubled-x
+    transitions (issue #149).
 
     ``mt`` outside the supported set
     ``{1, 2, 3, 18, 27, 102}`` returns zero without a warning:
@@ -208,7 +214,11 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
             continue
         el = float(rng['EL'])
         eh = float(rng['EH'])
-        in_range = (e >= el) & (e <= eh)
+        # Half-open [EL, EH): at the seam E == EH the next range (URR
+        # or MF3 above URR) owns the value. Matches NJOY's right-limit
+        # convention at doubled-x range transitions (issue #149; same
+        # side selection as PR #146 for MF3 tab1 lookups).
+        in_range = (e >= el) & (e < eh)
         try:
             any_in = bool(in_range.any())
         except Exception:
@@ -248,7 +258,9 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
             continue
         el = float(rng['EL'])
         eh = float(rng['EH'])
-        in_range = (e >= el) & (e <= eh)
+        # Half-open [EL, EH): at E == EH the MF3 above-URR tabulation
+        # owns the value. See issue #149.
+        in_range = (e >= el) & (e < eh)
         try:
             any_in = bool(in_range.any())
         except Exception:
