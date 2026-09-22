@@ -4,10 +4,18 @@ from ..primitives.interpolation import interp_tab1
 from ..fortran.endf6 import (
     mf6_get_law1,
     mf6_get_law1_disc_lines,
-    mf6_get_law2,
     mf6_get_law7,
 )
 from ..primitives import array_ns
+from ..primitives.conversion import (
+    compute_r2,
+    convert_angcos_to_cmsys,
+    convert_angdist_to_labsys,
+)
+from ..primitives.interpolation import (
+    evaluate_interp_legendre_polynomials,
+    interp_tab2,
+)
 from ..primitives.helpers import (
     dict2array,
     convert_interp_repr,
@@ -263,26 +271,104 @@ def _dedup_discrete_lines(ep, b, nd):
     return ep_ded, b_ded, len(seen)
 
 
+def _law2_legendre_coeffs_array(subsec):
+    """Build the full Legendre coefficient array
+    ``(n_panels, max_L+1)`` from the ENDF-dict `subsec['A']`.
+
+    ENDF-6 MF6 LAW=2 LANG=0 stores per-panel Legendre coefficients
+    ``a_1, a_2, ..., a_{NL}`` (a_0 = 1 is implied by normalisation
+    and not written). We prepend ``a_0 = 1`` and apply the
+    ``(L + 0.5)`` factor (ENDF convention: ``f(mu) = sum_L (L+0.5)
+    a_L P_L(mu)``) so the caller can feed the result directly into
+    :func:`evaluate_interp_legendre_polynomials`, which evaluates
+    ``sum_L coeffs[..., L] P_L(mu)`` without further weighting.
+
+    Padding ragged rows to the max NL with zeros is safe: a zero
+    higher-degree coefficient contributes nothing to the Legendre
+    sum.
+    """
+    a_arr = dict2array(subsec['A'], dtype=float, order='C', fill_value=0.0)
+    nl_arr = np.array(list(subsec['NL'].values()), dtype=int)
+    n_panels = a_arr.shape[0]
+    max_L = a_arr.shape[1]                 # a_1 .. a_{max_L}
+    # Full coefficients including a_0.
+    coeffs = np.zeros((n_panels, max_L + 1), dtype=float)
+    coeffs[:, 0] = 1.0                     # a_0 = 1
+    for p in range(n_panels):
+        nl = int(nl_arr[p])
+        coeffs[p, 1:nl + 1] = a_arr[p, :nl]
+    # (L + 0.5) prefactor per ENDF convention.
+    L_indices = np.arange(coeffs.shape[1]).reshape(1, -1)
+    coeffs = coeffs * (L_indices + 0.5)
+    return coeffs
+
+
+def _law2_tab1_records(subsec, lang):
+    """Build a list of TAB1-shaped record dicts from the LANG=12/14
+    tabulated data in ``subsec['A']``.
+
+    ENDF-6 stores each panel as ``[u_1, p_1, u_2, p_2, ...]``. We
+    unpack to separate ``mu`` and ``f`` arrays and mark the
+    per-panel INT (``lang - 10``: LANG=12 -> lin-lin INT=2,
+    LANG=14 -> log-lin INT=4). Format matches what
+    :func:`interp_tab2` consumes.
+    """
+    a_arr = dict2array(subsec['A'], dtype=float, order='C', fill_value=0.0)
+    nl_arr = np.array(list(subsec['NL'].values()), dtype=int)
+    inner_int = lang - 10
+    records = []
+    for p in range(a_arr.shape[0]):
+        nl = int(nl_arr[p])
+        pairs = a_arr[p, :2 * nl]
+        mu_p = pairs[0::2]
+        f_p = pairs[1::2]
+        records.append({
+            'mu': mu_p, 'f': f_p,
+            'INT': np.array([inner_int], dtype=int),
+            'NBT': np.array([nl], dtype=int),
+        })
+    return records
+
+
 @pad_outside_angdist_values
 def get_angdist_from_subsec_law2(
-    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab,
+    xp=None,
 ):
-    # TODO: how to signal to the user that this is a
-    #       discrete distribution with a dirac delta in the
-    #       the emission energy.
+    """Backend-agnostic MF6 LAW=2 (discrete two-body reaction)
+    angular distribution.
+
+    Follows the ENDF-6 recipe (manual sec. 6.2.4): the evaluated
+    ``f(E, mu)`` at CM (or LAB, per ``LCT``) is either a Legendre
+    expansion (``LANG=0``) or a tabulated (u, p(u)) table
+    (``LANG=12`` lin-lin, ``LANG=14`` log-lin in mu). When the
+    evaluation is CM (``LCT=2``, or ``LCT=3`` with the ejectile
+    mass ``AWP <= 4``), the query LAB cosine is mapped to the CM
+    cosine via :func:`convert_angcos_to_cmsys` and the CM result
+    is multiplied by the CM -> LAB Jacobian via
+    :func:`convert_angdist_to_labsys`. Forbidden LAB angles
+    (``mu_lab < mu_lab_min`` for equal-mass / light-ejectile
+    back-scatter) produce NaN through the CM-cos mapping; we clip
+    NaN and negatives to zero to match the Fortran reference and
+    the MF4 Python path (issue #45).
+
+    Backend-agnostic: ``xp=None`` (the default) resolves to numpy
+    and gives the bit-identical numpy path used before the port.
+    Passing ``xp=array_ns.get_backend('jax')`` runs the arithmetic
+    on JAX, with the same file-side / query-side autodiff boundary
+    as the underlying primitives (see issue #154 for the full
+    dict-source autodiff scope). The Fortran-backed version used
+    to be provided by ``mf6_get_law2`` here; it now lives in
+    :mod:`mf6_interpretation_subsecs_fort` as the equivalence
+    oracle.
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
     # Short-circuit for gamma ZAP (issue #78): the LAW=2 CM<->LAB
-    # conversion in `mf6_get_law2` uses massive-particle 2-body
-    # kinematics with the subsection's `AWP` as the ejectile mass.
-    # For photons the correct treatment is massless-ejectile
-    # kinematics (energy and direction related by |p_gamma| = E_gamma
-    # rather than E = p^2 / 2m), which the Fortran evaluator does not
-    # implement. Previously the massive-formula path silently
-    # produced all NaN in the returned angular distribution and the
-    # caller propagated the NaN into `get_particle_production_dxs_dmu`.
-    # Return zeros so the sum-over-MTs stays well-defined; emit one
-    # summary warning per file so users see a clear signal.
+    # conversion assumes a massive ejectile; photons need
+    # massless-ejectile kinematics which we do not implement yet.
     if subsec.get('ZAP') == 0.0:
         warnings.warn(
             f'MF6/MT{mt} subsection {subsec_num} stores gamma '
@@ -296,24 +382,21 @@ def get_angdist_from_subsec_law2(
             f'implemented (issue #78).',
             UserWarning, stacklevel=3,
         )
-        return np.zeros(
-            (len(energies_in), len(angle_cosines_out)), dtype=float,
+        return xp.zeros(
+            (len(energies_in), len(angle_cosines_out)),
+            dtype=xp.float64,
         )
     awr = get_AWR(endf_dict)
     awi = get_AWI(endf_dict)
     awp = subsec['AWP']
     q = get_QI(endf_dict, mt)
     lct = sec['LCT'] if to_lab else 1
-    lang = subsec['LANG']
+    lang = int(subsec['LANG'])
     ei_mesh = dict2array(subsec['E'], dtype=float)
     int_arr = np.array(subsec['INT'], dtype=int)
     nbt_arr = np.array(subsec['NBT'], dtype=int)
-    ei_interp = convert_interp_repr(int_arr, nbt_arr)
 
-    a_arr = dict2array(subsec['A'], dtype=float, order='F', fill_value=0.0)
-    nl_arr = dict2array(subsec['NL'], dtype=float, order='F')
-
-    # determine effective LCT based on emitted particle (CM or LAB)
+    # Determine effective LCT for this ejectile.
     if lct in (1, 2):
         eff_lct = lct
     elif lct == 3:
@@ -321,43 +404,52 @@ def get_angdist_from_subsec_law2(
     else:
         raise NotImplementedError(f'LCT={lct} not implemented')
 
-    # find enclosing energy intervals
-    idcs = find_interval(ei_mesh, energies_in)
-
-    eu = energies_in
-    neu = len(eu)
-    nmu = len(angle_cosines_out)
-    xmu = angle_cosines_out
-    nmu = len(xmu)
-
-    result_dim = (neu, nmu)
-    result_arr = np.zeros(result_dim, dtype=float)
-
-    for i in range(neu):
-        curidx = idcs[i]
-        cur_eu = np.array([eu[i]], dtype=float, order='F')
-        ilaw = ei_interp[curidx].item()
-
-        e1 = ei_mesh[curidx].item()
-        a1 = a_arr[curidx]
-        nl1 = nl_arr[curidx].item()
-
-        e2 = ei_mesh[curidx+1].item()
-        a2 = a_arr[curidx+1]
-        nl2 = nl_arr[curidx+1].item()
-
-        cur_result = np.zeros((1, nmu), dtype=float, order='F')
-
-        # remove `ne` (=1) because automatically inferred
-        mf6_get_law2(
-            awr, awi, awp, q, eff_lct, lang,
-            e1, a1, nl1, e2, a2, nl2,
-            ilaw,cur_eu, xmu,nmu, cur_result
+    # Convert query LAB cosine to CM cosine if the evaluated data
+    # is in CM. `convert_angcos_to_cmsys` returns shape
+    # `(nE, nmu)`; when LAB (eff_lct == 1) we broadcast `mu` to the
+    # same shape by hand so the downstream evaluators see a
+    # consistent 2D query.
+    e_in = xp.asarray(energies_in, dtype=xp.float64)
+    mu_lab = xp.asarray(angle_cosines_out, dtype=xp.float64)
+    if eff_lct == 2:
+        r2 = compute_r2(e_in, awi, awr, awp, q, xp=xp)
+        mu_eff = convert_angcos_to_cmsys(mu_lab, r2, xp=xp)
+    else:
+        mu_eff = xp.broadcast_to(
+            mu_lab.reshape(1, -1),
+            (e_in.shape[0], mu_lab.shape[0]),
         )
 
-        result_arr[i:i+1,:] = cur_result
+    # Evaluate the CM (or LAB, if eff_lct == 1) f(E, mu_eff).
+    if lang == 0:
+        coeffs = _law2_legendre_coeffs_array(subsec)
+        f_eff = evaluate_interp_legendre_polynomials(
+            np.asarray(energies_in, dtype=float), np.asarray(mu_eff),
+            ei_mesh, coeffs, int_arr, nbt_arr,
+            xp=xp,
+        )
+    elif lang in (12, 14):
+        records = _law2_tab1_records(subsec, lang)
+        f_eff = interp_tab2(
+            np.asarray(energies_in, dtype=float), np.asarray(mu_eff),
+            ei_mesh, int_arr, nbt_arr, records, 'mu', 'f',
+            xp=xp,
+        )
+    else:
+        raise NotImplementedError(
+            f'MF6 LAW=2 LANG={lang} not supported (only 0, 12, 14).'
+        )
 
-    return result_arr
+    if eff_lct == 2:
+        # CM -> LAB Jacobian, then clip forbidden-region NaN /
+        # negative artefacts (matches MF4's post-conversion clip;
+        # see mf4_interpretation.compute_angdist_values for the
+        # rationale on issue #45).
+        f_lab = convert_angdist_to_labsys(mu_eff, f_eff, r2, xp=xp)
+        f_lab = xp.where(xp.isnan(f_lab), 0.0, f_lab)
+        f_lab = xp.where(f_lab < 0.0, 0.0, f_lab)
+        return f_lab
+    return f_eff
 
 
 def _law6_kernel(awr, awi, awp, q, apsx, npsx, eu, epu, uu, xp):
