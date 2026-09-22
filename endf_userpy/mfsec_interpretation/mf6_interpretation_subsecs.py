@@ -5,9 +5,9 @@ from ..fortran.endf6 import (
     mf6_get_law1,
     mf6_get_law1_disc_lines,
     mf6_get_law2,
-    mf6_get_law6,
     mf6_get_law7,
 )
+from ..primitives import array_ns
 from ..primitives.helpers import (
     dict2array,
     convert_interp_repr,
@@ -360,10 +360,83 @@ def get_angdist_from_subsec_law2(
     return result_arr
 
 
+def _law6_kernel(awr, awi, awp, q, apsx, npsx, eu, epu, uu, xp):
+    """Backend-agnostic MF6 LAW=6 (N-body phase-space) kernel.
+
+    Per ENDF-6 manual sec. 6.2.7 / Kalbach LA-13166, the LAB-frame
+    double-differential distribution for one of ``npsx`` phase-space
+    ejectiles is
+
+        f(E, E', mu) = C_n * sqrt(E') * (E_i^max - E'_c)^(1.5*npsx - 4)
+
+    where ``E'_c = E_s + E' - 2 mu sqrt(E_s E')`` is the CM
+    outgoing energy (with LAB kinematic shift
+    ``E_s = (AWI*AWP/(AWI+AWR)^2) * E``), ``E_i^max =
+    ((APSX - AWP)/APSX) * ((AWR/(AWI+AWR)) * E + Q)`` is the
+    maximum available CM energy per ejectile, and
+
+        C_3 = 4/(pi E_i^max^2)
+        C_4 = 105/(32 E_i^max^{7/2})
+        C_5 = 256/(14 pi E_i^max^5)
+
+    Zero outside the kinematically allowed region (``E'_c <
+    E_i^max``) or for ``npsx`` outside {3, 4, 5} (per Fortran
+    reference; the manual's general formula collapses on itself
+    for other N and the endf6.f90 hard-codes only these three).
+
+    Vectorised over the ``(nE, nE', nmu)`` outer product; every mu
+    column feels the mu-dependence through E'_c. Backend-agnostic:
+    all arithmetic goes through ``xp`` (numpy or jax.numpy).
+    """
+    eu = xp.asarray(eu, dtype=xp.float64)
+    epu = xp.asarray(epu, dtype=xp.float64)
+    uu = xp.asarray(uu, dtype=xp.float64)
+
+    awc = awi + awr
+    ea = (awr / awc) * eu + q                             # (nE,)
+    eimax = ((apsx - awp) / apsx) * ea                    # (nE,)
+    es = (awi * awp / (awc * awc)) * eu                   # (nE,)
+
+    # 3D outer product: broadcast (nE, nE', nmu).
+    eimax_bc = eimax[:, None, None]
+    es_bc = es[:, None, None]
+    ep_bc = epu[None, :, None]
+    mu_bc = uu[None, None, :]
+
+    epc = es_bc + ep_bc - 2.0 * mu_bc * xp.sqrt(es_bc * ep_bc)
+    delta = eimax_bc - epc                                # (nE, nE', nmu)
+
+    npsx_i = int(npsx)
+    if npsx_i == 3:
+        c_n = 4.0 / (xp.pi * eimax * eimax)
+    elif npsx_i == 4:
+        c_n = 105.0 / (32.0 * eimax ** 3.5)
+    elif npsx_i == 5:
+        c_n = 256.0 / (14.0 * xp.pi * eimax ** 5.0)
+    else:
+        # Fortran returns zero for npsx outside {3, 4, 5}.
+        return xp.zeros((eu.shape[0], epu.shape[0], uu.shape[0]),
+                        dtype=xp.float64)
+
+    c_bc = c_n[:, None, None]
+    power = 1.5 * npsx_i - 4.0
+    # Guard the power against negative bases (JAX / numpy would emit
+    # NaN); zero those out via `where` explicitly.
+    delta_safe = xp.where(delta > 0.0, delta, 1.0)
+    f = c_bc * xp.sqrt(ep_bc) * delta_safe ** power
+    # Also require Eimax > 0 (below reaction threshold in LAB).
+    valid = (delta > 0.0) & (eimax_bc > 0.0)
+    return xp.where(valid, f, 0.0)
+
+
 def get_dist2d_from_subsec_law6(
-    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out,
+    to_lab, xp=None,
 ):
-    # NOTE: to_lab parameter ignored for LAW=6
+    # NOTE: to_lab parameter ignored for LAW=6; the ENDF-6 formula is
+    # defined directly in the LAB frame per the manual.
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     sec = endf_dict[6][mt]
     awr = get_AWR(endf_dict)
     awi = get_AWI(endf_dict)
@@ -372,22 +445,8 @@ def get_dist2d_from_subsec_law6(
     awp = subsec['AWP']
     apsx = subsec['APSX']
     npsx = subsec['NPSX']
-
-    eu = energies_in
-    neu = len(eu)
-    epu = energies_out
-    nepu = len(epu)
-    uu = angle_cosines_out
-    nuu = len(uu)
-
-    result_dim = (neu, nepu, nuu)
-    result_arr = np.zeros(result_dim, dtype=float, order='F')
-
-    mf6_get_law6(
-        awr, awi, awp, q, apsx, npsx,
-        eu, epu, uu, nuu, result_arr
-    )
-    return result_arr
+    return _law6_kernel(awr, awi, awp, q, apsx, npsx,
+                        energies_in, energies_out, angle_cosines_out, xp)
 
 
 @pad_outside_dist2d_values
