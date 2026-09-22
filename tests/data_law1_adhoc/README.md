@@ -36,6 +36,24 @@ changed.
 | `jeff40_n_Cu-63.endf` | JEFF-4.0 | `n_029-Cu-63_2925.zip` | 0 | Added for issue #29. Not a LAW=1 discrete-line file; MF6 carries only the scattered neutron for MT 51..79 while MF12 (LO=2 transition probabilities) carries the de-excitation photons. Reproduces the exact "gamma production XS misses (n,n_i) contribution" symptom from Pablo's four-library plot: the pre-PR#35 gamma dispatcher silently dropped every MT 51..79 photon contribution because MF6 declared no gamma subsection and the reaction-string fallback lists zero gammas for inelastic MTs. |
 | `jendl5_n_Cu-63.endf` | JENDL-5 | `n_029-Cu-63_2925.zip` | 40 | Added for issue #55. Complement to the JEFF-4.0 file: MT 51..90 put the (n,n_i) de-excitation photons in MF6/LAW=1 as pure-discrete ND=1 subsections (each MT is a single gamma line) rather than in MF12+MF14. Before issue #55's fix, the entire JENDL-5 (n,n_i) gamma angular structure was silently dropped from `dxs/dmu` / DDX because `mf6_help.has_angdist_part` only recognised LAW=2/3/4. Exercises the MF6/LAW=1-with-nonzero-b(k) case that the TENDL Σb=0.5 quirk masks in the other corpus files. |
 
+### Resonance-reconstruction coverage corners
+
+Files added from the NJOY-vs-endf-userpy coverage sweep. Each one
+exposes a corner of the MF2 resolved / URR reconstruction the older
+files above do not, so tests that need that corner (regression pins,
+performance stress, formalism handoffs) have a stable pinned file
+to reach for.
+
+| file | library | origin | what it exercises |
+|---|---|---|---|
+| `endfb81_n_Pb-208.endf` | ENDF-B-VIII.1 | `n_082-Pb-208_8237.zip` | Closed-shell + per-L APL (L=0: 0.967; L=1..3: 0.975). Regression pin for the per-L APL fix (commit `0de5c1a`), and reference case for the residual high-E R-M discrepancy driven by the large-Γ_n negative-E resonances that survives the per-L APL fix (task #45, ~1% bias above ~50 keV). |
+| `endfb81_n_K-39.endf`   | ENDF-B-VIII.1 | `n_019-K-39_1925.zip`   | Worst LRF=3 NAPS=0 mismatch in the sweep (median 17%, max 11.3 barn). Same neg-E-extrapolation issue as Pb-208 but on a light nucleus with different resonance density. Regression pin for task #45. |
+| `endfb81_n_Rh-103.endf` | ENDF-B-VIII.1 | `n_045-Rh-103_4525.zip` | Small RRR (6 resonances) + big LSSF=0 URR with the full AMU set (AMUN, AMUG, AMUF, AMUX all populated). Exercises the URR chi-squared width-fluctuation kernel without the RRR crowding an actinide file forces. |
+| `jeff40_n_Au-197.endf`  | JEFF-4.0      | `n_079-Au-197_7925.zip` | LSSF=0 URR Case C on a non-fissile standard reference nucleus. Complements the fissile-actinide URR coverage the U-235/U-238 files provide. |
+| `endfb81_n_U-233.endf`  | ENDF-B-VIII.1 | `n_092-U-233_9222.zip`  | Biggest LRF=3 RRR in the surveyed corpus (6122 resonances). Performance stress and correctness cross-check for the numba/JAX kernels under ~2x the resonance load of U-235/U-238. |
+| `cendl32_n_Pu-239.endf` | CENDL-3.2     | `n_094-Pu-239_9437.zip` | MT=1 pathology unique to CENDL in the sweep: MT=1 max/median rel err both saturate to 1.0 while MT=2/18/102 stay clean. Flag file for a follow-up sum-rule / MF3-declaration investigation; kept in the corpus so any future fix can be pinned against it. |
+| `endfb81_n_Nd-143.endf` | ENDF-B-VIII.1 | `n_060-Nd-143_6028.zip` | LRF=2 MLBW range with an LSSF=0 URR at higher energy (10% max on MT=1 in the sweep). Exercises the MLBW ↔ URR handoff in `resonance_composition`, which none of the other LSSF=0 URR files in the corpus does (the others all pair URR with LRF=3 R-M). |
+
 ## Provenance
 
 Each file was downloaded directly from

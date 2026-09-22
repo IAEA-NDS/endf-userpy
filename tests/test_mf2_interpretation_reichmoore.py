@@ -156,6 +156,57 @@ def test_rm_no_resonances_off_peak_is_potential():
     )
 
 
+def test_rm_no_level_shift_pins_endf6_convention():
+    """ENDF-6 R-M defines L̃_c(E) = i P_c(E) with no shift term
+    (Section D.1.2), and NJOY reconr's csrmat matches. Earlier
+    drafts of this module borrowed the SAMMY shift-eliminated
+    formula from MLBW; that gave up to 80% error against NJOY at
+    interference minima for files with strong far-away resonances
+    (Pb-208 with Γ_n = MeV at E_r = -4 MeV).
+
+    Pin: a p-wave resonance far above the query energy contributes
+    ONLY through the standard denominator E_r - E - iΓ_γ/2, with
+    NO S_L(E) - S_L(|E_r|) correction shifting the effective
+    resonance energy. Test by placing a p-wave resonance at 1 MeV
+    with a huge Γ_n and querying at 100 eV where the shift would
+    otherwise show up as a percent-level bias on sct/cap.
+    """
+    xp = array_ns.get_backend('numpy')
+    # Single p-wave resonance far above the query point. Large gn
+    # forces the shift correction (if applied) to matter: γ² is
+    # proportional to gn/P_L(|E_r|), and Γ_n(E) = 2 P_L(E) γ² is
+    # small at low E; but the shift correction γ² · (S(E)-S(|E_r|))
+    # is significant.
+    data = _single_res_elastic_capture(
+        er=1.0e6, gn=1.0e4, gg=0.3, L=1, r_a=0.6,
+    )
+    einc = np.array([100.0], dtype=np.float64)
+    xs = rm.reconstruct(data, einc, xp)
+    sct = float(np.asarray(xs['sct'])[0])
+    # Hand-computed reference: no shift, single p-wave resonance
+    # in the tail. Numerically evaluate the R-matrix denominator
+    # at 100 eV and construct U_00 by hand.
+    ki, r_a = data.ki, 0.6
+    E = 100.0
+    rho_e = ki * np.sqrt(E) * r_a
+    rho_r = ki * np.sqrt(1.0e6) * r_a
+    p_e = rho_e * rho_e**2 / (1.0 + rho_e**2)
+    p_r = rho_r * rho_r**2 / (1.0 + rho_r**2)
+    gamma2 = 1.0e4 / (2.0 * p_r)
+    R00 = gamma2 / complex(1.0e6 - E, -0.5 * 0.3)
+    X00 = R00 / (1.0 - 1j * R00 * p_e)
+    phi_L = rho_e - np.arctan(rho_e)   # L=1 hard-sphere phase
+    omega_sq = np.exp(-2j * phi_L)
+    U00 = omega_sq * (1.0 + 2j * p_e * X00)
+    pi_k2 = np.pi / (ki**2 * E)
+    expected_sct = pi_k2 * 1.0 * abs(1.0 - U00) ** 2
+    assert sct == pytest.approx(float(expected_sct), rel=1e-8), (
+        f'sct = {sct} does not match ENDF-6 R-M reference '
+        f'{expected_sct} (no-shift denominator). Bias would signal '
+        f'a spurious level-shift correction has crept back in.'
+    )
+
+
 def test_rm_capture_peaks_at_er():
     """Single s-wave resonance, capture cross section has its peak
     at E = E_r."""

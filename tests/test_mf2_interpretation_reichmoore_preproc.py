@@ -26,15 +26,18 @@ def _minimal_rm_endf_dict(
     nsub=10,          # neutron incident
     spi=3.5, ap=0.6, naps=0, awri=232.0, apl=0.0,
     l_groups=None,     # list of (L, [(er, aj, gn, gg, gfa, gfb), ...])
+    apl_per_L=None,    # dict {L: APL}, per-L override (else uses `apl`)
     emax=1000.0,
 ):
     """Minimal MF1/MT451 + MF2/MT151 LRF=3 dict.
 
     Each l_group is (L, resonances). Each resonance is a 6-tuple
-    (ER, AJ, GN, GG, GFA, GFB). The preprocessor takes it from
-    there."""
+    (ER, AJ, GN, GG, GFA, GFB). Optional ``apl_per_L`` overrides
+    the single ``apl`` for specific L values (JEFF-4.0 Fe-56
+    pattern)."""
     if l_groups is None:
         l_groups = [(0, [(100.0, 3.0, 0.001, 0.04, 0.0, 0.0)])]
+    apl_per_L = apl_per_L or {}
     spingroups = {}
     for idx, (L, resonances) in enumerate(l_groups, start=1):
         ers = {i + 1: r[0] for i, r in enumerate(resonances)}
@@ -43,8 +46,10 @@ def _minimal_rm_endf_dict(
         ggs = {i + 1: r[3] for i, r in enumerate(resonances)}
         gfas = {i + 1: r[4] for i, r in enumerate(resonances)}
         gfbs = {i + 1: r[5] for i, r in enumerate(resonances)}
+        apl_this_L = apl_per_L.get(L, apl)
         spingroups[idx] = {
-            'AWRI': awri, 'APL': apl, 'L': L, 'NRS': len(resonances),
+            'AWRI': awri, 'APL': apl_this_L, 'L': L,
+            'NRS': len(resonances),
             'ER': ers, 'AJ': ajs,
             'GN': gns, 'GG': ggs, 'GFA': gfas, 'GFB': gfbs,
         }
@@ -86,16 +91,19 @@ def test_wrong_lrf_raises():
 
 
 def test_single_j_group_no_fission_gives_one_group_with_nfis_zero():
-    """One L=0 resonance with GFA=GFB=0 -> one J·π group, nfis=0."""
+    """One L=0 resonance with GFA=GFB=0 -> one J·π group with
+    the resonance, nfis=0. Uses spi=0 so the single-neutron
+    channel spin S=1/2 admits only one J at each L; the preproc's
+    phantom-group logic contributes nothing here."""
     d = _minimal_rm_endf_dict(
-        spi=0.5,
+        spi=0.0,
         l_groups=[(0, [(100.0, 0.5, 0.001, 0.04, 0.0, 0.0)])],
     )
     data = pre.rm_data_from_endf_dict(d)
     assert data.group_l.tolist() == [0]
     assert data.group_nfis.tolist() == [0]
-    # g_J = (2|J|+1) / ((2 s_inc + 1)(2 I + 1)) = 2 / (2·2) = 0.5
-    assert abs(data.group_g[0] - 0.5) < 1e-12
+    # g_J = (2|J|+1) / ((2 s_inc + 1)(2 I + 1)) = 2 / (2·1) = 1
+    assert abs(data.group_g[0] - 1.0) < 1e-12
     assert data.res_group.tolist() == [0]
     assert data.res_gf1[0] == 0.0
     assert data.res_gf2[0] == 0.0
@@ -103,7 +111,10 @@ def test_single_j_group_no_fission_gives_one_group_with_nfis_zero():
 
 def test_fission_channel_activation_via_nonzero_gfa_gfb():
     """nfis derived from whether any resonance in the group has a
-    non-zero GFA (→ nfis>=1) or GFB (→ nfis=2)."""
+    non-zero GFA (→ nfis>=1) or GFB (→ nfis=2). Filters phantom
+    groups (empty resonance lists) out of the nfis assertion since
+    phantoms are always nfis=0 and don't reflect the original
+    resonances' fission channels."""
     # Only GFA non-zero -> nfis = 1
     d = _minimal_rm_endf_dict(
         l_groups=[(0, [
@@ -112,8 +123,12 @@ def test_fission_channel_activation_via_nonzero_gfa_gfb():
         ])],
     )
     data = pre.rm_data_from_endf_dict(d)
-    assert data.group_nfis.tolist() == [1]
-    # Signs of GFA preserved
+    # Real group (has resonances) at (L=0, |J|=3) with nfis=1;
+    # any other groups are phantoms.
+    real_groups = np.unique(data.res_group)
+    assert real_groups.size == 1
+    assert data.group_nfis[real_groups[0]] == 1
+    # Signs of GFA preserved on the real resonances
     assert data.res_gf1[0] > 0 and data.res_gf1[1] < 0
     assert data.res_gf2.tolist() == [0.0, 0.0]
 
@@ -125,7 +140,9 @@ def test_fission_channel_activation_via_nonzero_gfa_gfb():
         ])],
     )
     data2 = pre.rm_data_from_endf_dict(d2)
-    assert data2.group_nfis.tolist() == [2]
+    real_groups2 = np.unique(data2.res_group)
+    assert real_groups2.size == 1
+    assert data2.group_nfis[real_groups2[0]] == 2
 
 
 def test_multiple_j_within_l_group_split_into_two_groups():
@@ -149,17 +166,113 @@ def test_multiple_j_within_l_group_split_into_two_groups():
 
 
 def test_multiple_l_groups_produce_grouped_by_l_j():
-    """L=0 and L=1 groups each with a J each -> two (L, |J|) groups."""
+    """L=0 and L=1 groups each with a J each -> two distinct REAL
+    (L, |J|) groups. Uses spi=0 (single channel spin) and picks
+    J values that saturate the allowed range at each L, so the
+    preproc adds no phantom groups on top.
+
+    spi=0, i=1/2 -> S=1/2 only, allowed J:
+      L=0: J=1/2
+      L=1: J=1/2, J=3/2
+    Listing resonances at all three -> zero phantoms."""
     d = _minimal_rm_endf_dict(
+        spi=0.0,
         l_groups=[
-            (0, [(100.0, 3.0, 0.05, 0.04, 0.0, 0.0)]),
-            (1, [(200.0, 4.0, 0.03, 0.04, 0.0, 0.0)]),
+            (0, [(100.0, 0.5, 0.05, 0.04, 0.0, 0.0)]),
+            (1, [
+                (200.0, 0.5, 0.03, 0.04, 0.0, 0.0),
+                (300.0, 1.5, 0.02, 0.04, 0.0, 0.0),
+            ]),
         ],
     )
     data = pre.rm_data_from_endf_dict(d)
-    assert data.group_l.tolist() == [0, 1]
-    # Different (L, |J|) keys -> separate groups
-    assert data.res_group.tolist() == [0, 1]
+    # Real (resonance-carrying) groups: (L=0,J=1/2), (L=1,J=1/2),
+    # (L=1,J=3/2). Ordering is by (L, |J|).
+    real_groups = sorted(set(data.res_group.tolist()))
+    real_Ls = [int(data.group_l[g]) for g in real_groups]
+    assert real_Ls == [0, 1, 1]
+
+
+def test_channel_spin_ambiguity_split_by_aj_sign():
+    """When ENDF-6 LRF=3 encodes channel-spin ambiguity via the sign
+    of AJ, the preproc must keep the two channel spins as separate
+    groups. Merging on |AJ| would (i) mix R-matrix contributions
+    from disjoint channel-spin blocks and (ii) drop one g_J from
+    the potential-scattering sum. Bug it pins: sum of g_J at each
+    L was 2 instead of the physical 2L+1=3 on K-39 (I=3/2, L=1)
+    because AJ=+1 and AJ=-1 resonances (distinct channel spins
+    S=1 and S=2 at J=1) collapsed into a single group.
+    """
+    # Two J-groups with same |J|=1 but opposite AJ sign -> two
+    # distinct channel-spin groups.
+    d = _minimal_rm_endf_dict(
+        spi=1.5,
+        l_groups=[(1, [
+            (100.0,  1.0, 0.05, 0.04, 0.0, 0.0),   # AJ = +1 (channel spin A)
+            (200.0, -1.0, 0.03, 0.04, 0.0, 0.0),   # AJ = -1 (channel spin B)
+        ])],
+    )
+    data = pre.rm_data_from_endf_dict(d)
+    # File resonances land in two REAL groups at (L=1, |J|=1), one
+    # for each channel spin. Other L=1 J values physically allowed
+    # (0, 2, 3) come back as phantom groups; the test focuses on
+    # the file's own two groups being kept separate.
+    real_g = sorted(set(data.res_group.tolist()))
+    assert len(real_g) == 2
+    for g in real_g:
+        assert data.group_l[g] == 1
+    # Both real groups get the SAME single-channel-spin g_J. The
+    # sum-of-REAL-groups g_J = 2 * (2*1+1)/((2*0.5+1)(2*1.5+1)) =
+    # 2 * 3/8 = 0.75, corresponding to two of the physical
+    # (L=1,J=1) channel spins. If merged incorrectly, the pair
+    # would collapse to one group with g_J = 3/8.
+    import numpy as np
+    real_gJ_sum = float(np.sum(data.group_g[real_g]))
+    assert real_gJ_sum == pytest.approx(0.75)
+
+
+def test_phantom_groups_added_for_missing_channel_spins():
+    """When a file lists resonances for only one channel spin at
+    an (L, |J|) that physically admits two, the preproc must add
+    a phantom group with no resonances so the reconstruction
+    emits the missing channel spin's hard-sphere phase. Mirrors
+    NJOY reconr's csrmat kkkkkk=2 branch.
+
+    Setup: Co-59-like target with spi=3.5. At L=1 the channel spins
+    S=3 and S=4 admit J=3 and J=4 each with both S. Listing only
+    AJ=+3 and AJ=+4 in the file leaves one channel spin unlisted
+    at each of those two J values, so the preproc must add two
+    phantom groups. J=2 (S=3 only) and J=5 (S=4 only) are boundary
+    values where only one channel spin is physical; the file lists
+    neither, so those add one phantom each (the whole physically-
+    allowed hard-sphere phase for that J at L=1)."""
+    d = _minimal_rm_endf_dict(
+        spi=3.5,
+        l_groups=[(1, [
+            (100.0, 3.0, 0.05, 0.04, 0.0, 0.0),   # AJ = +3
+            (200.0, 4.0, 0.03, 0.04, 0.0, 0.0),   # AJ = +4
+        ])],
+    )
+    data = pre.rm_data_from_endf_dict(d)
+    real = sorted(set(data.res_group.tolist()))
+    assert len(real) == 2   # AJ=+3 and AJ=+4 stay separate real groups
+    # Total groups: 2 real (J=3+ and J=4+) plus 4 phantoms
+    # (missing-J=2, missing-J=3-, missing-J=4-, missing-J=5). We
+    # care that the sum of g_J across ALL L=1 groups now hits
+    # 2L+1 = 3 (the neutron statistical sum rule), which requires
+    # every physically-allowed (J, S) coupling to be represented.
+    import numpy as np
+    L1_mask = data.group_l == 1
+    total_gJ_L1 = float(np.sum(data.group_g[L1_mask]))
+    gj_den = (2*0.5 + 1) * (2*3.5 + 1)   # 2 * 8 = 16
+    assert total_gJ_L1 == pytest.approx((2*1 + 1) / gj_den * gj_den / 1.0)
+    # Same thing spelled out: sum of (2J+1) over all (J,S) at L=1
+    # divided by gj_den. For L=1 with S in {3,4}:
+    #   S=3: J in {2,3,4},   contributions (2J+1) = 5, 7, 9  (sum 21)
+    #   S=4: J in {3,4,5},   contributions (2J+1) = 7, 9, 11 (sum 27)
+    # Total (2J+1) = 48. Divide by gj_den=16 -> 3.0 = 2L+1. Pin
+    # to catch a regression that would drop any phantom.
+    assert total_gJ_L1 == pytest.approx(3.0)
 
 
 def test_apl_takes_precedence_over_ap_when_nonzero():
@@ -175,6 +288,109 @@ def test_apl_zero_falls_back_to_ap():
     data = pre.rm_data_from_endf_dict(d)
     assert data.r_ap.y[0] == pytest.approx(0.5)
     assert data.r_a.y[0] == pytest.approx(0.5)
+
+
+def test_per_L_apl_produces_per_group_radii_JEFF_Fe56_pattern():
+    """Regression pinning: JEFF-4.0 Fe-56 has APL differing per L
+    (L=0 uses range AP, L=1 uses APL=0.5002, etc.). Our preproc
+    must fill per-group ``group_r_a`` / ``group_r_ap`` arrays so
+    the reconstruction picks the right radius per L.
+
+    Bug it pins: previously a single ``apl_ref`` (first non-zero
+    APL) was applied to every group, giving an 83% error on
+    Fe-56 elastic at interference-minimum energies.
+    """
+    d = _minimal_rm_endf_dict(
+        ap=0.5444,
+        apl_per_L={0: 0.0, 1: 0.5002, 2: 0.0},
+        naps=1,
+        l_groups=[
+            (0, [(100.0, 0.5, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(200.0, 1.5, 0.001, 0.04, 0.0, 0.0)]),
+            (2, [(300.0, 2.5, 0.001, 0.04, 0.0, 0.0)]),
+        ],
+    )
+    data = pre.rm_data_from_endf_dict(d)
+
+    assert data.group_r_ap is not None, (
+        'preproc must fill group_r_ap for per-L APL support'
+    )
+    assert data.group_r_a is not None, (
+        'preproc must fill group_r_a for per-L APL support'
+    )
+
+    # 3 groups: L=0, L=1, L=2. Per-L APL override -> group r_ap
+    # equals APL where non-zero, else range AP.
+    L_to_expected_r_ap = {0: 0.5444, 1: 0.5002, 2: 0.5444}
+    L_arr = np.asarray(data.group_l)
+    for g in range(len(L_arr)):
+        L = int(L_arr[g])
+        assert float(data.group_r_ap[g]) == pytest.approx(
+            L_to_expected_r_ap[L]
+        ), (
+            f'group {g} at L={L}: r_ap = {float(data.group_r_ap[g])}, '
+            f'expected {L_to_expected_r_ap[L]}'
+        )
+
+    # NAPS=1 -> channel radius equals scattering radius. Same pattern.
+    for g in range(len(L_arr)):
+        L = int(L_arr[g])
+        assert float(data.group_r_a[g]) == pytest.approx(
+            L_to_expected_r_ap[L]
+        )
+
+
+def test_per_L_apl_reconstruction_uses_per_L_phase():
+    """End-to-end: reconstruction with per-L APL gives a
+    different result than the (buggy) single-APL-for-all-L
+    approximation. Uses two L-groups with different APLs and
+    checks that swapping the APLs changes the elastic XS
+    outside the potential-only limit."""
+    from endf_userpy.mfsec_interpretation import (
+        mf2_interpretation_reichmoore as rm,
+    )
+    from endf_userpy.primitives import array_ns
+
+    # Two groups at the same energy, with differing APLs. Choose
+    # ap and E so rho ~ O(1) and the L=1 phase is not tiny.
+    d_correct = _minimal_rm_endf_dict(
+        ap=0.5,
+        apl_per_L={0: 0.5, 1: 0.9},
+        naps=1,
+        l_groups=[
+            (0, [(1e3, 0.5, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(2e3, 1.5, 0.001, 0.04, 0.0, 0.0)]),
+        ],
+        emax=1e5,
+    )
+    d_wrong = _minimal_rm_endf_dict(
+        ap=0.5,
+        apl_per_L={0: 0.5, 1: 0.5},   # same APL for both L
+        naps=1,
+        l_groups=[
+            (0, [(1e3, 0.5, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(2e3, 1.5, 0.001, 0.04, 0.0, 0.0)]),
+        ],
+        emax=1e5,
+    )
+    data_correct = pre.rm_data_from_endf_dict(d_correct)
+    data_wrong = pre.rm_data_from_endf_dict(d_wrong)
+
+    xp = array_ns.get_backend('numpy')
+    einc = np.array([5e4], dtype=np.float64)   # high enough for L=1 to matter
+    xs_correct = rm.reconstruct(data_correct, einc, xp)
+    xs_wrong = rm.reconstruct(data_wrong, einc, xp)
+
+    # Elastic must differ non-trivially when the L=1 radius
+    # changes from 0.5 to 0.9. Without the per-L fix both would
+    # return the same number.
+    sct_correct = float(xs_correct['sct'][0])
+    sct_wrong = float(xs_wrong['sct'][0])
+    assert sct_correct != pytest.approx(sct_wrong, rel=1e-6), (
+        f'per-L APL fix inactive: elastic identical whether L=1 '
+        f'uses r_ap=0.9 (correct={sct_correct}) or '
+        f'r_ap=0.5 (wrong={sct_wrong}).'
+    )
 
 
 # ============================================================
@@ -310,3 +526,54 @@ def test_jax_can_substitute_scalar_field_and_reconstruct():
     )['sct'])
     np.testing.assert_allclose(xs_2, 2.0 * xs_1, rtol=1e-10,
                                 err_msg='sct should scale linearly with abn')
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_can_substitute_group_r_ap_and_autodiff():
+    """Substituting a JAX tracer into RMData.group_r_ap must flow
+    through reconstruction. Pins that the per-L APL machinery is
+    autodiff-friendly: no float() casts on group_g/group_r_a/group_r_ap
+    inside the reconstruction, so users can fit per-group radii via
+    jax.grad through elastic XS."""
+    import dataclasses
+    import jax
+    import jax.numpy as jnp
+
+    d = _minimal_rm_endf_dict(
+        ap=0.5,
+        apl_per_L={0: 0.5, 1: 0.9},
+        naps=1,
+        l_groups=[
+            (0, [(1e3, 0.5, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(2e3, 1.5, 0.001, 0.04, 0.0, 0.0)]),
+        ],
+        emax=1e5,
+    )
+    data = pre.rm_data_from_endf_dict(d)
+    xp = array_ns.get_backend('jax')
+    einc = jnp.array([5e4])
+
+    base_r_ap = jnp.asarray(data.group_r_ap)
+    base_r_a = jnp.asarray(data.group_r_a)
+
+    def sct_of_r_ap_L1(r_ap_L1_scalar):
+        new_r_ap = base_r_ap.at[1].set(r_ap_L1_scalar)
+        new_r_a = base_r_a.at[1].set(r_ap_L1_scalar)   # NAPS=1
+        d2 = dataclasses.replace(
+            data,
+            group_r_ap=new_r_ap,
+            group_r_a=new_r_a,
+        )
+        return rm.reconstruct(d2, einc, xp)['sct'][0]
+
+    grad = jax.grad(sct_of_r_ap_L1)(jnp.asarray(0.9))
+    grad_val = float(grad)
+    assert np.isfinite(grad_val), (
+        f'jax.grad through group_r_ap must produce a finite gradient; '
+        f'got {grad_val}. If NaN/inf, a float() cast (or non-jax op) '
+        f'is severing the trace inside reconstruction.'
+    )
+    assert grad_val != 0.0, (
+        'gradient of elastic w.r.t. L=1 group r_ap must be non-zero '
+        'at r_ap=0.9 (potential elastic depends on it via sin(phi_1)).'
+    )

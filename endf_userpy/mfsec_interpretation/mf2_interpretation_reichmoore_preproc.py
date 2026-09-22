@@ -103,24 +103,53 @@ def rm_data_from_endf_dict(
     emax = np.asarray(d_range['EH'], dtype=np.float64)
     d_grp = _get_l_group(d_range)
 
-    # Collate resonances by (L, |J|). endf_parserpy renders LRF=3
-    # spingroups one-per-L; individual resonances inside carry their
-    # own signed AJ. Sign of AJ marks spin-group parity but does NOT
-    # add channels beyond what |J| identifies (the fine-structure
-    # coupling is spin-averaged in this convention).
-    per_JPi: dict[tuple[int, int], list[tuple[float, float, float, float, float]]] = {}
+    spin_inc_val = float(spin_inc)
+    spi_val = float(spi)
+
+    def _n_chan_spin(L: int, j2: int) -> int:
+        """Count channel spins S in {|I-i|, ..., I+i} that admit
+        the coupling |L - S| <= |J| <= L + S. For I=0 there is a
+        single channel spin (S=1/2 for neutron scattering); for
+        I>0 there are two."""
+        # 2*S iterated as an integer to avoid float drift.
+        two_s_lo = int(round(abs(spi_val - spin_inc_val) * 2))
+        two_s_hi = int(round((spi_val + spin_inc_val) * 2))
+        n = 0
+        for two_s in range(two_s_lo, two_s_hi + 1, 2):
+            two_s_val = two_s
+            # |L - S|*2 <= j2 <= (L+S)*2
+            two_L = 2 * L
+            if abs(two_L - two_s_val) <= j2 <= two_L + two_s_val:
+                n += 1
+        return n
+
+    # Collate resonances by (L, |J|, channel-spin marker). ENDF-6
+    # LRF=3 encodes the channel-spin ambiguity via the sign of AJ:
+    # for target-spin I where (L, |J|) can couple through more than
+    # one channel spin S = I ± 1/2 (e.g. K-39 L=1 with I=3/2, where
+    # J=1 and J=2 each admit S=1 and S=2), the evaluator marks
+    # AJ > 0 for one channel spin and AJ < 0 for the other. Merging
+    # AJ=+J and AJ=-J into a single group is wrong: (i) it mixes
+    # resonance R-matrix contributions from disjoint channel-spin
+    # blocks, and (ii) it drops one channel spin's g_J from the
+    # potential sum (Σ_group g_J at that L would fall short of the
+    # physical 2L+1). The channel-spin marker is 0 when AJ = 0
+    # (unambiguous J=0 case), +1 for AJ > 0, -1 for AJ < 0. AJ = 0
+    # never coexists with another sign at the same (L, |J|) in
+    # real files.
+    per_JPi: dict[tuple[int, int, int], list[tuple[float, float, float, float, float]]] = {}
 
     awri_ref: float | None = None    # first L-group's AWRI, used for ki
-    apl_ref: float | None = None      # first L-group's APL if given
+    apl_by_L: dict[int, float] = {}   # L -> APL if provided per L, 0 else
 
     for l_idx in range(1, nls + 1):
         d_l = d_grp[l_idx]
         L = int(d_l['L'])
         awri = np.asarray(d_l['AWRI'], dtype=np.float64)
         apl = np.asarray(d_l.get('APL', 0.0), dtype=np.float64)
+        apl_by_L[L] = float(apl)
         if awri_ref is None:
             awri_ref = awri
-            apl_ref = apl if apl > 0 else None
 
         aj_arr = list(d_l['AJ'].values())
         er_arr = list(d_l['ER'].values())
@@ -130,8 +159,15 @@ def rm_data_from_endf_dict(
         gfb_arr = list(d_l.get('GFB', {}).values()) or [0.0] * len(aj_arr)
 
         for i in range(len(aj_arr)):
-            j2 = int(round(abs(float(aj_arr[i])) * 2))
-            key = (L, j2)
+            aj = float(aj_arr[i])
+            j2 = int(round(abs(aj) * 2))
+            if aj > 0:
+                spin_mark = +1
+            elif aj < 0:
+                spin_mark = -1
+            else:
+                spin_mark = 0
+            key = (L, j2, spin_mark)
             per_JPi.setdefault(key, []).append((
                 float(er_arr[i]),
                 float(gn_arr[i]),
@@ -139,6 +175,41 @@ def rm_data_from_endf_dict(
                 float(gfa_arr[i]),
                 float(gfb_arr[i]),
             ))
+
+    # Phantom groups for missing channel spins: for each L in the
+    # file, walk every physically-allowed |J| coupling and count
+    # how many channel spins the file listed resonances for at
+    # that (L, |J|). If fewer than the physics admits (interior J
+    # values on a target with I > 0 typically admit two S=I±1/2
+    # channels), add one phantom group per missing channel spin
+    # so the reconstruction emits its potential-only U = Ω²
+    # contribution to elastic. This mirrors NJOY reconr's kkkkkk=2
+    # branch in csrmat (reconr.f90 lines 3378-3487), which adds
+    # `termn += 2*gj*(1 - cos(2φ)) = 4*gj*sin²(φ)` for each missing
+    # channel spin — the same quantity a phantom group produces
+    # via `sct_g = (π/k²) g_J |1 - Ω²|² = 4*(π/k²) g_J sin²(φ)`.
+    # Phantom sign markers start at +2 and count up so they never
+    # collide with the real +1 / -1 / 0 markers.
+    Ls_in_file = sorted({key[0] for key in per_JPi.keys()})
+    phantom_mark = 2
+    for L in Ls_in_file:
+        two_s_lo = int(round(abs(spi_val - spin_inc_val) * 2))
+        two_s_hi = int(round((spi_val + spin_inc_val) * 2))
+        allowed_j2 = set()
+        for two_s in range(two_s_lo, two_s_hi + 1, 2):
+            j2_lo = abs(2 * L - two_s)
+            j2_hi = 2 * L + two_s
+            for j2 in range(j2_lo, j2_hi + 1, 2):
+                allowed_j2.add(j2)
+        for j2 in allowed_j2:
+            n_present = sum(
+                1 for (Lf, jf, _sm) in per_JPi.keys()
+                if Lf == L and jf == j2
+            )
+            n_chan = _n_chan_spin(L, j2)
+            for _ in range(n_chan - n_present):
+                per_JPi[(L, j2, phantom_mark)] = []
+                phantom_mark += 1
 
     # Order groups deterministically: by (L, |J|). Reconstruction is
     # invariant to ordering (it iterates ngroups), but a stable order
@@ -160,7 +231,7 @@ def rm_data_from_endf_dict(
     gj_den = (2.0 * spin_inc + 1.0) * (2.0 * spi + 1.0)
 
     for g, key in enumerate(group_keys):
-        L, j2 = key
+        L, j2, _spin_mark = key
         group_l[g] = L
         group_g[g] = (float(j2) + 1.0) / gj_den
 
@@ -188,17 +259,37 @@ def rm_data_from_endf_dict(
     # ki = kn * sqrt(awi) * awri / (awri + awi).
     ki = _KN * math.sqrt(awi) * awri_ref / (awri_ref + awi)
 
-    # Scattering radius: APL (per L, first-non-zero) takes precedence
-    # over range-level AP if the file provides it; otherwise AP.
-    r_ap_val = apl_ref if apl_ref else ap
+    # Per-group scattering / channel radius. For each spin group,
+    # look up its L; use APL[L] if the file provides a per-L
+    # override (non-zero), else the range-level AP. Then compute
+    # the channel radius via _channel_radius(this-group's r_ap,
+    # AWRI, NAPS). Applies per group so the reconstruction uses
+    # the correct r_a / r_ap for the group's L. See JEFF-4.0
+    # Fe-56 for a real file where per-L APL differs.
+    def _r_ap_for_L(L: int) -> float:
+        apl_val = apl_by_L.get(L, 0.0)
+        return apl_val if apl_val > 0 else float(ap)
 
+    group_r_ap_arr = np.zeros(ngroups, dtype=np.float64)
+    group_r_a_arr = np.zeros(ngroups, dtype=np.float64)
+    for g, (L, _j2, _spin) in enumerate(group_keys):
+        r_ap_g = _r_ap_for_L(L)
+        group_r_ap_arr[g] = r_ap_g
+        group_r_a_arr[g] = _channel_radius(r_ap_g, awri_ref, naps)
+
+    # Range-level r_a / r_ap TAB1s: kept for backward compat and
+    # NRO=1 (energy-dependent scattering radius) support. Fill
+    # from the first L-group's radius; reconstruction prefers
+    # the per-group arrays above and falls back to these TAB1s
+    # only if the per-group arrays are absent.
+    r_ap_val_range = _r_ap_for_L(int(group_l[0])) if ngroups else float(ap)
     ape = d_range.get('AP_table') if nro else None
     if ape is not None:
         r_ap = _radius_tab1_from_ape(ape, emax)
     else:
-        r_ap = _radius_tab1_from_ap(r_ap_val, emax)
+        r_ap = _radius_tab1_from_ap(r_ap_val_range, emax)
 
-    a = _channel_radius(r_ap_val, awri_ref, naps)
+    a = _channel_radius(r_ap_val_range, awri_ref, naps)
     r_a = _radius_tab1_from_ap(a, emax)
 
     return RMData(
@@ -216,4 +307,6 @@ def rm_data_from_endf_dict(
         res_gg=np.asarray(res_gg_list, dtype=np.float64),
         res_gf1=np.asarray(res_gf1_list, dtype=np.float64),
         res_gf2=np.asarray(res_gf2_list, dtype=np.float64),
+        group_r_a=group_r_a_arr,
+        group_r_ap=group_r_ap_arr,
     )

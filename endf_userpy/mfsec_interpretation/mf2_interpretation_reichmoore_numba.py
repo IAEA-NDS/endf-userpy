@@ -18,11 +18,9 @@ Scope
   matching the numpy / jax path via
   :func:`mf2_interpretation_factors.newton_step_pnt_shf` /
   :func:`newton_step_phase`.
-- Same physics as the numpy path: shift-eliminated boundary
-  condition (``B_c = S_c(|E_r|)``) handled via the
-  ``E_r - γ_n^2 (S_L(E) - S_L(|E_r|))`` level shift on the R-matrix
-  denominator (SAMMY / NJOY-reconr convention). ``shf_r`` is
-  precomputed per resonance in the wrapper and passed in.
+- Same physics as the numpy path: no level shift on the R-matrix
+  denominator, matching ENDF-6 R-M (``L̃_c = i P_c(E)``) and NJOY
+  reconr's csrmat.
 - Hand-coded 1×1 / 2×2 / 3×3 solves for ``(I - i R P) X = R``.
   Faster than calling numba's ``np.linalg.solve`` per (E, group)
   under ``parallel=True`` (which serialises through LAPACK) and
@@ -77,8 +75,8 @@ _EPS = 1e-38
 @njit(cache=True, parallel=True, fastmath=True)
 def _reconstruct_kernel(
     e,                     # (ne,) float64
-    r_a_e,                 # (ne,) channel radius interpolated at E
-    r_ap_e,                # (ne,) scattering radius interpolated at E
+    group_r_a,             # (ngroups,) channel radius per group (scalar)
+    group_r_ap,            # (ngroups,) scattering radius per group (scalar)
     abn, ki,
     group_l,               # (ngroups,) int
     group_g,               # (ngroups,) float
@@ -90,7 +88,6 @@ def _reconstruct_kernel(
     gamma_n,               # (nres,) float  -- signed reduced-width amps, precomputed
     gamma_f1,              # (nres,) float
     gamma_f2,              # (nres,) float
-    shf_r,                 # (nres,) float  -- S_L(rho(|E_r|)) per resonance
 ):
     ne = e.shape[0]
     ngroups = group_l.shape[0]
@@ -119,23 +116,29 @@ def _reconstruct_kernel(
         pot_sum = 0.0
 
         sqrt_E = math.sqrt(E_safe)
-        rho_a_i = ki * sqrt_E * r_a_e[i]
-        rho_ap_i = ki * sqrt_E * r_ap_e[i]
 
         for g in range(ngroups):
             L = group_l[g]
             gJ = group_g[g]
             nfis = group_nfis[g]
 
+            # Per-group radii: each L may have a different APL
+            # override. Compute rho_a / rho_ap here per group
+            # rather than at the outer per-energy level.
+            rho_a_i = ki * sqrt_E * group_r_a[g]
+            rho_ap_i = ki * sqrt_E * group_r_ap[g]
+
             # Elastic-channel factors at E. R-matrix penetration uses
             # the channel radius (rho_a); the hard-sphere phase in Ω
             # uses the scattering radius (rho_ap). These differ only
             # for NAPS=2 evaluations but the physics is identical.
-            # `shf_e` is used below to build the S(E) - S(|E_r|) level
-            # shift correction on the R-matrix denominator
-            # (SAMMY shift-eliminated boundary condition; matches
-            # the numpy path).
-            p_e, shf_e = _pnt_shf(rho_a_i, L)
+            # No shift is used: ENDF-6 R-M defines L̃_c = i P_c(E)
+            # (pure imaginary), so the S(E) - S(|E_r|) level-shift
+            # correction that appears in MLBW does NOT appear here;
+            # NJOY reconr's csrmat confirms `diff = er - e` with no
+            # shift term. The (_, shf_e) discard on _pnt_shf keeps the
+            # numba kernel signature stable.
+            p_e, _shf_e = _pnt_shf(rho_a_i, L)
             phi_e = _phase(rho_ap_i, L)
 
             # Potential scattering contribution: 4π/k² Σ_J g_J sin²(φ_L).
@@ -156,15 +159,12 @@ def _reconstruct_kernel(
             r_start = group_res_start[g]
             r_end = group_res_end[g]
             for r in range(r_start, r_end):
-                # Level shift on the effective resonance energy:
-                #   E_r^eff = E_r - γ_n^2 (S_L(E) - S_L(|E_r|))
-                # Only the elastic channel contributes (S=0 for fission).
-                # For s-wave the shift is identically 0.
+                # No shift correction: ENDF-6 R-M denominator is
+                # ``E_r - E - i Γ_γ / 2`` (matches NJOY reconr csrmat
+                # line 3350: `diff = er - e`). Reduced-width amplitudes
+                # are already computed from Γ_n(|E_r|) in the wrapper.
                 gn_r = gamma_n[r]
-                delta_r = -(gn_r * gn_r) * (shf_e - shf_r[r])
-                er_eff = res_er[r] + delta_r
-                # 1 / (E_r^eff - E - i Γ_γ / 2)
-                denom = complex(er_eff - E_safe, -0.5 * res_gg[r])
+                denom = complex(res_er[r] - E_safe, -0.5 * res_gg[r])
                 inv_d = 1.0 / denom
 
                 R00 = R00 + (gn_r * gn_r) * inv_d
@@ -297,12 +297,34 @@ def reconstruct(data, energies_in):
     group_nfis = np.asarray(data.group_nfis, dtype=np.int64)
     ngroups = group_l.shape[0]
 
-    # --- Pre-interpolate radii on the query grid. ---
+    # --- Per-group scalar radii. If the preproc supplied per-L
+    # (data.group_r_a / data.group_r_ap), use them directly.
+    # Otherwise fall back to interpolating the range-level TAB1
+    # at a single reference energy (this is the old behaviour
+    # and is only correct when every L shares the same AP).
     xp = array_ns.get_backend('numpy')
-    e_safe = np.maximum(e, 0.0)
-    r_a_e = np.asarray(tab1_mod.interp(data.r_a, e_safe, xp))
-    r_ap_e = np.asarray(tab1_mod.interp(data.r_ap, e_safe, xp))
-    r_a_at_er = np.asarray(tab1_mod.interp(data.r_a, np.abs(er), xp))
+    if getattr(data, 'group_r_a', None) is not None:
+        group_r_a_arr = np.asarray(data.group_r_a, dtype=np.float64)
+    else:
+        # Fallback: constant TAB1 at any energy -> the same scalar
+        # for every group.
+        ref_val = float(tab1_mod.interp(
+            data.r_a, np.array([1.0]), xp,
+        )[0])
+        group_r_a_arr = np.full(ngroups, ref_val, dtype=np.float64)
+    if getattr(data, 'group_r_ap', None) is not None:
+        group_r_ap_arr = np.asarray(data.group_r_ap, dtype=np.float64)
+    else:
+        ref_val = float(tab1_mod.interp(
+            data.r_ap, np.array([1.0]), xp,
+        )[0])
+        group_r_ap_arr = np.full(ngroups, ref_val, dtype=np.float64)
+
+    # Per-resonance channel radius at |E_r|: each resonance uses
+    # its OWN group's r_a (constant per L). Bug fix vs the
+    # previous "single r_a for all resonances" behaviour.
+    res_group_np = np.asarray(data.res_group, dtype=np.int64)
+    r_a_at_er = group_r_a_arr[res_group_np]
 
     # --- Sort resonances by group so each group is contiguous. ---
     order = np.argsort(res_group, kind='stable')
@@ -325,17 +347,17 @@ def reconstruct(data, energies_in):
     # --- Precompute reduced-width amplitudes. ---
     # γ_n = sign(GN) * sqrt(|GN| / (2 * P_L(|E_r|)))
     # γ_{f,c} = sign(GF_c) * sqrt(|GF_c| / 2)   (P=1 for fission)
+    # No shift factor is needed: ENDF-6 R-M does not apply a level
+    # shift on the R-matrix denominator (NJOY reconr csrmat matches).
     nres = er_s.shape[0]
     gamma_n = np.zeros(nres, dtype=np.float64)
     gamma_f1 = np.zeros(nres, dtype=np.float64)
     gamma_f2 = np.zeros(nres, dtype=np.float64)
-    shf_r = np.zeros(nres, dtype=np.float64)
     for r in range(nres):
         g_idx = int(res_group_s[r])
         L = int(group_l[g_idx])
         rho_at_er = data.ki * math.sqrt(abs(er_s[r])) * r_a_at_er_s[r]
-        p_r, s_r = _pnt_shf_scalar(rho_at_er, L)
-        shf_r[r] = s_r
+        p_r, _s_r = _pnt_shf_scalar(rho_at_er, L)
         if p_r > _EPS:
             gamma_n[r] = math.copysign(
                 math.sqrt(abs(gn_s[r]) / (2.0 * p_r)), gn_s[r],
@@ -350,11 +372,11 @@ def reconstruct(data, energies_in):
             )
 
     sct, cap, fis, pot = _reconstruct_kernel(
-        e, r_a_e, r_ap_e,
+        e, group_r_a_arr, group_r_ap_arr,
         float(data.abn), float(data.ki),
         group_l, group_g, group_nfis,
         group_res_start, group_res_end,
-        er_s, gg_s, gamma_n, gamma_f1, gamma_f2, shf_r,
+        er_s, gg_s, gamma_n, gamma_f1, gamma_f2,
     )
     tot = sct + cap + fis
     return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot, 'tot': tot}

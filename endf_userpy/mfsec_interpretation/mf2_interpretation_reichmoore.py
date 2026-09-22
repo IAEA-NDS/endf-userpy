@@ -9,11 +9,12 @@ the ``'numba'`` backend follows in a sibling module (planned).
 Formulation
 -----------
 
-Follows the SAMMY / NJOY-reconr convention with boundary condition
-``B_c = S_c(|E_r|)`` (the shift-eliminated convention that covers
-every real ENDF-6 R-M evaluation; the format carries no
-boundary-condition flag on LRU=1 range records). Per J·π group
-at energy E:
+Follows the ENDF-6 R-M formalism literally (Section D.1.2): the
+channel function is ``L̃_c(E) = i P_c(E)`` (pure imaginary), so the
+R-matrix denominator carries no S_c-based level-shift correction.
+NJOY reconr's csrmat implements the same formula. This is different
+from MLBW (Section D.1.1), which DOES specify a shift correction.
+Per J·π group at energy E:
 
 - **Reduced-width amplitudes.** For the elastic channel (c=0),
   ``γ_{r,0} = sign(GN_r) * sqrt(GN_r / (2 * P_L(|E_r|)))``.
@@ -42,15 +43,12 @@ at energy E:
 
 Not covered by this sketch (deliberate scope):
 
-- **Alternate ``B_c`` boundary condition** on the R-matrix
-  denominator. The default (SAMMY / NJOY-reconr convention,
-  shift-eliminated) is the only one ENDF-6 R-M files use in
-  practice, and the format carries no boundary-condition flag on
-  LRU=1 range records. Adding an alternate ``B_c`` would put one
-  extra term on the L-matrix diagonal; can be added if a real
-  case ever demands it. (Earlier drafts of this docstring called
-  this "``LSSF != 0``", which is a URR-only flag and a misnomer
-  in the LRU=1 context.)
+- **Alternate boundary conditions.** ENDF-6 R-M fixes the channel
+  function at ``L̃_c = i P_c(E)`` (Section D.1.2), which is what
+  this module implements and what every real LRU=1 LRF=3
+  evaluation uses. A non-standard ``B_c`` would add a
+  ``S_c(E) - B_c`` term inside the R-matrix denominator; can be
+  added if a real case ever demands it.
 - **URR (LRU=2)**: unresolved region; separate module. When
   implemented, LSSF=1 URR (MF3 already carries the average XS)
   is a no-op; LSSF=0 URR needs actual URR reconstruction.
@@ -142,6 +140,20 @@ class RMData:
     res_gg: np.ndarray
     res_gf1: np.ndarray
     res_gf2: np.ndarray
+    # Per-group scattering / channel radius (in fm-like ENDF units,
+    # constants with respect to E). Fill from per-L ``APL`` if the
+    # file provides it, else the range-level ``AP``; then compute
+    # the channel radius per group via ``_channel_radius`` with the
+    # group's own r_ap and the range's NAPS. Reconstruction uses
+    # these per-group values for the hard-sphere phase and R-matrix
+    # penetration. Needed because a file may specify a different
+    # scattering radius per L (JEFF-4.0 Fe-56, ENDF/B-VIII.1
+    # Zr-90, ...). Optional for backward compatibility: if left
+    # empty, reconstruction falls back to interpolating the
+    # range-level r_a / r_ap TAB1s for all groups (correct only
+    # when a single AP applies to every L).
+    group_r_a: np.ndarray = None
+    group_r_ap: np.ndarray = None
 
 
 def _signed_sqrt(x, xp):
@@ -163,6 +175,7 @@ def _reconstruct_group(
     res_er, res_gn, res_gg, res_gf1, res_gf2,
     group_mask,
     ki, r_a, r_ap, xp,
+    r_a_val=None, r_ap_val=None,
 ):
     """Reconstruct one J·π group's contribution to sct/cap/fis.
 
@@ -191,15 +204,18 @@ def _reconstruct_group(
     L_scalar = xp.asarray(L)   # 0-d array; factors.pnt_shf broadcasts against it
 
     # --- Elastic-channel factors at E and at |E_r|.
-    # Now also keep the SHIFT factors; used below for the
-    # ``S(E) - S(|E_r|)`` correction on the R-matrix denominator
-    # (SAMMY shift-eliminated convention; see the "level shift"
-    # note further down).
-    rho_e = _rho(e_safe, ki, r_a, xp)                          # (ne,)
-    p_e, shf_e = factors.pnt_shf(rho_e, L_scalar, xp)          # (ne,)
-
-    rho_r = _rho(xp.abs(res_er), ki, r_a, xp)                  # (nres,)
-    p_r, shf_r = factors.pnt_shf(rho_r, L_scalar, xp)          # (nres,)
+    # Only the penetration factors are used: ENDF-6 R-M defines the
+    # channel function as L_c = i P_c(E) (no shift), so the level-shift
+    # correction that MLBW applies does NOT appear in R-M. See the
+    # "no level shift" note further down.
+    if r_a_val is not None:
+        rho_e = ki * xp.sqrt(e_safe) * r_a_val                  # (ne,)
+        rho_r = ki * xp.sqrt(xp.abs(res_er)) * r_a_val          # (nres,)
+    else:
+        rho_e = _rho(e_safe, ki, r_a, xp)                       # (ne,)
+        rho_r = _rho(xp.abs(res_er), ki, r_a, xp)               # (nres,)
+    p_e, _ = factors.pnt_shf(rho_e, L_scalar, xp)               # (ne,)
+    p_r, _ = factors.pnt_shf(rho_r, L_scalar, xp)               # (nres,)
 
     # Elastic reduced-width amplitude gamma_n0. Sign of GN matters.
     # gamma_{r,0} = sign(gn) * sqrt(|gn| / (2 * P_L(|E_r|))).
@@ -232,39 +248,29 @@ def _reconstruct_group(
         )
     # gammas: list of (nres,) arrays, length nch
 
-    # --- Level-shift correction on the R-matrix denominator.
+    # --- No level-shift correction on the R-matrix denominator.
     #
-    # ENDF-6 R-M parameters are given at the shift-eliminated
-    # boundary ``B_c = S_c(|E_r|)`` (SAMMY / NJOY-reconr
-    # convention; see section II.B of the SAMMY manual). Recover
-    # the R-matrix at arbitrary E by adjusting the effective
-    # resonance energy in the denominator:
-    #
-    #     E_r^eff(E) = E_r - Σ_c γ_{r,c}^2 (S_c(E) - S_c(|E_r|))
-    #
-    # Only the elastic channel contributes: fission channels have
-    # S_c(E) = 0, so their sum term vanishes. The MLBW sketch does
-    # the same thing via its `erp = er + 0.5 * (shf_r - shf_e) *
-    # gn0` construction; here it's just spelled out per resonance.
-    #
-    # Reduced-width-amplitude-squared:
-    #     γ_{r,elastic}^2 = |gamma0|^2   (already zeroed for
-    #     out-of-group resonances by the group mask above).
-    gamma_n_sq = gamma0 * gamma0                                # (nres,)
-    delta_r = -gamma_n_sq.reshape(1, -1) * (
-        shf_e.reshape(-1, 1) - shf_r.reshape(1, -1)
-    )   # (ne, nres)
+    # ENDF-6 Section D.1.2 defines the R-M channel function as
+    # ``L̃_c(E) = i P_c(E)`` (pure imaginary; no S_c term). NJOY
+    # reconr's csrmat (reconr.f90) follows this literally: its
+    # denominator is ``E_r - E - i Γ_γ / 2`` with no S(E) - S(|E_r|)
+    # correction. Earlier drafts of this module borrowed the SAMMY
+    # shift-eliminated formula ``E_r^eff = E_r - γ²(S(E)-S(|E_r|))``
+    # from MLBW; that IS correct for MLBW per ENDF-6 D.1.1, but the
+    # ENDF-6 R-M spec omits it and NJOY confirms. Applying the
+    # correction anyway diverged from NJOY by up to 80% at
+    # interference minima for files with strong far-away resonances
+    # (Pb-208 with Γ_n=MeV at E_r=-4 MeV was the surfacing case).
 
     # --- R-matrix (ne, nch, nch) complex. ---
     #   R_{cc'}(E) = Σ_r gamma_{r,c} gamma_{r,c'} /
-    #                     (E_r^eff(E) - E - i Γ_γ / 2)
+    #                     (E_r - E - i Γ_γ / 2)
     # Build the (ne, nres) denominator once and pool contributions per
     # (c, c') pair. Complex arithmetic throughout.
     e_col = e_safe.reshape(-1, 1)                              # (ne, 1)
     er_row = res_er.reshape(1, -1)                             # (1, nres)
     gg_row = res_gg.reshape(1, -1)
-    er_eff = er_row + delta_r                                  # (ne, nres)
-    denom_er = (er_eff - e_col) - 1j * 0.5 * gg_row            # (ne, nres) complex
+    denom_er = (er_row - e_col) - 1j * 0.5 * gg_row            # (ne, nres) complex
     inv_denom = 1.0 / denom_er                                 # (ne, nres)
 
     R = xp.zeros((ne, nch, nch), dtype=xp.complex128)
@@ -296,7 +302,10 @@ def _reconstruct_group(
     # differ for NAPS=2, where a is derived from AWRI while R'=AP is
     # tabulated separately. Fission channels have no hard-sphere phase
     # in the external region -- they get Ω = 1.
-    rho_ap = _rho(e_safe, ki, r_ap, xp)                        # (ne,)
+    if r_ap_val is not None:
+        rho_ap = ki * xp.sqrt(e_safe) * r_ap_val               # (ne,)
+    else:
+        rho_ap = _rho(e_safe, ki, r_ap, xp)                    # (ne,)
     phi_e = factors.phase(rho_ap, L_scalar, xp)                # (ne,)
     omega_c = xp.exp(-1j * phi_e)                              # (ne,)
     # omega_row for the fission channels are 1 (no hard-sphere phase).
@@ -456,11 +465,22 @@ def reconstruct(
     pot_tot = xp.zeros_like(e_safe)
 
     # --- Potential scattering: sum over groups of g_J * sin^2(phi_L). ---
-    rho_ap = _rho(e_safe, data.ki, data.r_ap, xp)              # (ne,)
+    # Each group uses its own scattering radius (per-L APL override
+    # if the preproc set data.group_r_ap; else fall back to the
+    # range-level r_ap TAB1 for every group). No Python-float
+    # casts on ``data.*`` here: JAX callers can substitute a
+    # traced array into ``group_r_ap`` (or ``group_g``, or
+    # ``ki``) via ``dataclasses.replace`` and autodiff still
+    # flows.
+    have_per_group_r_ap = getattr(data, 'group_r_ap', None) is not None
     for g in range(ngroups):
         L_g = xp.asarray(int(data.group_l[g]))
-        g_J = float(data.group_g[g])
-        phi_L = factors.phase(rho_ap, L_g, xp)                 # (ne,)
+        g_J = data.group_g[g]
+        if have_per_group_r_ap:
+            rho_ap_g = data.ki * xp.sqrt(e_safe) * data.group_r_ap[g]
+        else:
+            rho_ap_g = _rho(e_safe, data.ki, data.r_ap, xp)
+        phi_L = factors.phase(rho_ap_g, L_g, xp)               # (ne,)
         pot_tot = pot_tot + g_J * xp.sin(phi_L) ** 2
     pot_tot = 4.0 * pi_k2 * pot_tot
 
@@ -480,13 +500,24 @@ def reconstruct(
         res_group.reshape(-1, 1) == group_idx.reshape(1, -1)
     ).astype(xp.float64)                                       # (nres, ngroups)
 
+    # No Python-float casts here: pass the 0-d array entries
+    # straight through so a JAX caller who substituted
+    # ``group_r_a`` / ``group_r_ap`` via ``dataclasses.replace``
+    # (with a traced array) sees autodiff flow through the
+    # per-group per-energy rho computation inside
+    # ``_reconstruct_group``.
+    have_per_group_r_a = getattr(data, 'group_r_a', None) is not None
+    have_per_group_r_ap = getattr(data, 'group_r_ap', None) is not None
     for g in range(ngroups):
+        r_a_val_g = data.group_r_a[g] if have_per_group_r_a else None
+        r_ap_val_g = data.group_r_ap[g] if have_per_group_r_ap else None
         sct_g, cap_g, fis_g = _reconstruct_group(
             e_safe, e_pos, k_e2, pi_k2,
             data.group_l[g], data.group_g[g], data.group_nfis[g],
             res_er, res_gn, res_gg, res_gf1, res_gf2,
             res_mask[:, g],
             data.ki, data.r_a, data.r_ap, xp,
+            r_a_val=r_a_val_g, r_ap_val=r_ap_val_g,
         )
         sct_tot = sct_tot + sct_g
         cap_tot = cap_tot + cap_g
