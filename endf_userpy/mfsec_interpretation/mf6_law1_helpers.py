@@ -328,6 +328,298 @@ def _imatch(x0: float, x: np.ndarray, n: int) -> int:
     return -1
 
 
+# --- Forward LAB->CM map (companion of mf6cm2lab_disc) ------------
+
+
+def mf6lab2cm(awr: float, awi: float, awp: float, lct: int,
+               e: float, ep: float, u: float):
+    """Forward LAB->CM map (endf6.f90 line 1898). Companion of
+    :func:`mf6cm2lab_disc` (inverse map): given LAB ``(e, ep, u)``,
+    return eval-frame ``(tp, w, dinv)`` with the density Jacobian.
+
+    LCT=1 (LAB) and LCT=3 with heavy ejectile (AWP>=4): identity.
+    LCT=2 and LCT=3 with light ejectile (AWP<4): CM shift.
+
+    On the CM branch with ``ep <= 0`` (unphysical negative
+    outgoing energy), ``dinv = 0`` signals "no physical solution"
+    and ``tp = c0^2 e``, ``w = -1`` are the sentinel values.
+    """
+    c0 = np.sqrt(awi * awp) / (awi + awr)
+    if not ((lct == 2 or (lct == 3 and awp < 4.0)) and e * c0 > 0.0):
+        return ep, u, 1.0
+    if ep <= 0.0:
+        return c0 * c0 * e, -1.0, 0.0
+    c = c0 * np.sqrt(e / ep)
+    d2 = 1.0 + c * c - 2.0 * c * u
+    if d2 < _MF6CM_D2_MIN:
+        d2 = _MF6CM_D2_MIN
+        c = u - _MF6CM_C_MIN
+    tp = ep * d2
+    dinv = 1.0 / np.sqrt(d2)
+    w = dinv * (u - c)
+    if w > 1.0:
+        w = 1.0
+    elif w < -1.0:
+        w = -1.0
+    return tp, w, dinv
+
+
+# --- Continuum contribution: single-panel evaluation --------------
+
+
+def _ihigh(x0: float, x: np.ndarray, i0: int, n: int) -> int:
+    """Return the 0-indexed position of the first x[i] > x0 in the
+    range [i0, n-1]. Returns -1 if x0 < x[i0], x0 > x[n-1], or
+    i0 >= n. Direct transliteration of Fortran ``ihigh`` (endf6.f90
+    line 1952), returning 0-indexed rather than 1-indexed.
+    """
+    if x0 < x[i0] or x0 > x[n - 1] or i0 >= n - 1:
+        return -1
+    i = i0 + 1
+    while x[i] < x0:
+        i += 1
+    return i
+
+
+def _yintp_scalar(law: int, x1: float, y1: float,
+                  x2: float, y2: float, x: float) -> float:
+    """Scalar 2-point interpolation matching Fortran ``yintp``
+    (endf6.f90 line 2011), including the log-INT small-value
+    guards. Used by the LAW=1 continuum reconstruction where the
+    interpolated quantity may be a per-index scalar (not an array).
+    """
+    small = 1.0e-38
+    if x2 == x1 or x == x1:
+        return y1
+    if x == x2:
+        return y2
+    if law == 1 or y2 == y1:
+        return y1
+    if law == 2:
+        return y1 + (x - x1) * (y2 - y1) / (x2 - x1)
+    if law == 3:
+        x1 = small if x1 == 0.0 else x1
+        return y1 + np.log(x / x1) * (y2 - y1) / np.log(x2 / x1)
+    if law == 4:
+        y1 = small if y1 == 0.0 else y1
+        return y1 * np.exp((x - x1) * np.log(y2 / y1) / (x2 - x1))
+    if law == 5:
+        x1 = small if x1 == 0.0 else x1
+        y1 = small if y1 == 0.0 else y1
+        return y1 * np.exp(np.log(x / x1) * np.log(y2 / y1) / np.log(x2 / x1))
+    raise TypeError(f'interpolation scheme (INT={law}) not implemented')
+
+
+def _list_intp(law: int, e1: float, a1: np.ndarray, n1: int,
+                e2: float, a2: np.ndarray, n2: int, e: float) -> np.ndarray:
+    """Per-parameter 2-point interpolation of two lists at (e1, e2)
+    to a target `e`, using ENDF interp `law`. Mirrors Fortran
+    ``list_intp`` (endf6.f90 line 2116) including the shorter-list
+    zero-padding case (the ``n0 < na`` branch).
+
+    Returns an ``(na,)`` array with ``na = max(n1, n2)``.
+    """
+    if e == e1:
+        return np.asarray(a1[:n1], dtype=float).copy()
+    if e == e2:
+        return np.asarray(a2[:n2], dtype=float).copy()
+    n0 = min(n1, n2)
+    na = max(n1, n2)
+    out = np.zeros(na, dtype=float)
+    for l in range(n0):
+        out[l] = _yintp_scalar(law, e1, float(a1[l]), e2, float(a2[l]), e)
+    for l in range(n0, na):
+        if l >= n1:
+            out[l] = _yintp_scalar(law, e1, 0.0, e2, float(a2[l]), e)
+        else:
+            out[l] = _yintp_scalar(law, e1, float(a1[l]), e2, 0.0, e)
+    return out
+
+
+def f6law1_con_amplitude(e: float, tp: float, w: float,
+                          za: float, zai: float, zap: float,
+                          lang: int, lep: int, nd: int, na: int,
+                          ep_panel: np.ndarray,
+                          b_panel: np.ndarray) -> float:
+    """Continuum contribution at ``(E, tp, w)`` on one incident-
+    energy panel (endf6.f90 ``f6law1_con`` line 874).
+
+    Bracket the query ``tp`` in the continuum portion
+    ``ep_panel[nd..nep-1]`` via :func:`_ihigh`; if no valid
+    bracket exists, return zero. LANG=1 (Legendre) and LANG=2
+    (Kalbach-Mann) interpolate the ``na+1``-parameter row between
+    the two bracketing Ep rows via ``list_intp`` and evaluate the
+    angular function at ``w``. LANG=11..15 (tabulated) does a
+    unit-base interpolation over the mu axis followed by an Ep
+    interp with law ``lep``.
+    """
+    iep0 = nd  # 0-indexed continuum start
+    nep = ep_panel.shape[0]
+    i2 = _ihigh(tp, ep_panel, iep0, nep)
+    if i2 <= 0:
+        return 0.0
+    i1 = i2 - 1
+    ep1_val = float(ep_panel[i1])
+    ep2_val = float(ep_panel[i2])
+
+    if lang in (1, 2):
+        nt = na + 1
+        a1 = np.asarray(b_panel[i1, :nt], dtype=float)
+        a2 = np.asarray(b_panel[i2, :nt], dtype=float)
+        a = _list_intp(lep, ep1_val, a1, nt, ep2_val, a2, nt, tp)
+        if lang == 1:
+            return _legendre_eval_at_mu(w, a, na)
+        return ykalbach(zai, zap, za, e, tp, w, a, na)
+    if 11 <= lang <= 15:
+        f01 = float(b_panel[i1, 0])
+        f02 = float(b_panel[i2, 0])
+        if na > 0:
+            nmu = na // 2
+            a1 = np.empty(nmu, dtype=float)
+            y1 = np.empty(nmu, dtype=float)
+            a2 = np.empty(nmu, dtype=float)
+            y2 = np.empty(nmu, dtype=float)
+            k = 1
+            for j in range(nmu):
+                a1[j] = float(b_panel[i1, k])
+                a2[j] = float(b_panel[i2, k])
+                k += 1
+                y1[j] = 2.0 * f01 * float(b_panel[i1, k])
+                y2[j] = 2.0 * f02 * float(b_panel[i2, k])
+                k += 1
+            lmu = lang - 10
+            return _unit_base_intp_two_panel(
+                ep1_val, a1, y1, nmu, lmu,
+                ep2_val, a2, y2, nmu, lmu,
+                lep, tp, w,
+            )
+        # na == 0: isotropic; interpolate f0 over Ep then /2.
+        f0 = _yintp_scalar(lep, ep1_val, f01, ep2_val, f02, tp)
+        return 0.5 * f0
+    raise NotImplementedError(f'MF6 LAW=1 LANG={lang} not supported')
+
+
+def _unit_base_intp_two_panel(y1: float, x1_arr: np.ndarray, f1_arr: np.ndarray,
+                                np1: int, lmu1: int,
+                                y2: float, x2_arr: np.ndarray, f2_arr: np.ndarray,
+                                np2: int, lmu2: int,
+                                inty: int, y0: float, x0: float) -> float:
+    """Two-panel unit-base interpolation matching Fortran
+    ``unit_base_intp`` (endf6.f90 line 2173). Used for the
+    LAW=1 LANG=11..15 tabulated angular case at one continuum
+    ``(Ep_bracket, mu_bracket)`` pair.
+
+    Different from the multi-panel :func:`interp_tab2` in that
+    only two panels are involved. Returns 0 if ``y0`` lies outside
+    ``[y1, y2]``.
+    """
+    if y0 < y1 or y0 > y2:
+        return 0.0
+    law = inty % 10
+    x1low = float(x1_arr[0])
+    x1high = float(x1_arr[np1 - 1])
+    x1range = x1high - x1low
+    x2low = float(x2_arr[0])
+    x2high = float(x2_arr[np2 - 1])
+    x2range = x2high - x2low
+    yslope = (y0 - y1) / (y2 - y1)
+    xlow = x1low + yslope * (x2low - x1low)
+    xhigh = x1high + yslope * (x2high - x1high)
+    xrange = xhigh - xlow
+    xslope = (x0 - xlow) / xrange
+    x = x1low + xslope * x1range
+    f1x = _tab1_scalar_lin(x1_arr, f1_arr, np1, lmu1, x) * (x1range / xrange)
+    x = x2low + xslope * x2range
+    f2x = _tab1_scalar_lin(x2_arr, f2_arr, np2, lmu2, x) * (x2range / xrange)
+    return _yintp_scalar(law, y1, f1x, y2, f2x, y0)
+
+
+def _tab1_scalar_lin(x: np.ndarray, y: np.ndarray, n: int,
+                      law: int, x0: float) -> float:
+    """Scalar single-panel TAB1 interpolation with one INT law.
+    Small helper used inside :func:`_unit_base_intp_two_panel`.
+    """
+    if x0 <= float(x[0]):
+        return float(y[0])
+    if x0 >= float(x[n - 1]):
+        return float(y[n - 1])
+    # Find bracket
+    i = 1
+    while i < n - 1 and float(x[i]) < x0:
+        i += 1
+    x1 = float(x[i - 1])
+    x2 = float(x[i])
+    y1 = float(y[i - 1])
+    y2 = float(y[i])
+    return _yintp_scalar(law, x1, y1, x2, y2, x0)
+
+
+# --- Continuum contribution: two-panel outer combination -----------
+
+
+def f6law1con_amplitude(e: float, tp: float, w: float,
+                         za: float, zai: float, zap: float,
+                         lang: int, lep: int, lei: int,
+                         e1: float, nd1: int, na1: int,
+                         ep_panel1: np.ndarray, b_panel1: np.ndarray,
+                         e2: float, nd2: int, na2: int,
+                         ep_panel2: np.ndarray, b_panel2: np.ndarray) -> float:
+    """Two-panel continuum contribution (endf6.f90 ``f6law1con``
+    line 793): combine the per-panel :func:`f6law1_con_amplitude`
+    results with the outer E interp law ``lei``.
+
+    Handles three panel-count cases:
+
+    1. Panel 1 has only discrete data (``nep1 <= nd1``): use panel 2
+       only.
+    2. Panel 2 has only discrete data: use panel 1 only.
+    3. Both panels have continuum data: unit-base transform on ``tp``
+       across the panels (Fortran ``f6law1con`` lines 851-867), then
+       interp with the outer ``lei`` law.
+
+    Returns 0 when ``e`` is outside ``[e1, e2]`` or when neither
+    panel has any continuum data.
+    """
+    nep1 = ep_panel1.shape[0]
+    nep2 = ep_panel2.shape[0]
+    if e < e1 or e > e2 or (nep1 <= nd1 and nep2 <= nd2):
+        return 0.0
+    law = lei % 10
+    if nep1 <= nd1:
+        f1 = 0.0
+        f2 = f6law1_con_amplitude(
+            e2, tp, w, za, zai, zap, lang, lep, nd2, na2, ep_panel2, b_panel2,
+        )
+    elif nep2 <= nd2:
+        f1 = f6law1_con_amplitude(
+            e1, tp, w, za, zai, zap, lang, lep, nd1, na1, ep_panel1, b_panel1,
+        )
+        f2 = 0.0
+    else:
+        # Unit-base transform on tp across the two panels'
+        # continuum-only Ep ranges.
+        x1low = float(ep_panel1[nd1])
+        x1high = float(ep_panel1[nep1 - 1])
+        x1range = x1high - x1low
+        x2low = float(ep_panel2[nd2])
+        x2high = float(ep_panel2[nep2 - 1])
+        x2range = x2high - x2low
+        yslope = (e - e1) / (e2 - e1)
+        xlow = x1low + yslope * (x2low - x1low)
+        xhigh = x1high + yslope * (x2high - x1high)
+        xrange = xhigh - xlow
+        xslope = (tp - xlow) / xrange
+        x = x1low + xslope * x1range
+        f1 = f6law1_con_amplitude(
+            e1, x, w, za, zai, zap, lang, lep, nd1, na1, ep_panel1, b_panel1,
+        ) * (x1range / xrange)
+        x = x2low + xslope * x2range
+        f2 = f6law1_con_amplitude(
+            e2, x, w, za, zai, zap, lang, lep, nd2, na2, ep_panel2, b_panel2,
+        ) * (x2range / xrange)
+    return _yintp_scalar(law, e1, f1, e2, f2, e)
+
+
 def _legendre_eval_at_mu(mu: float, a_from_1: np.ndarray, na: int) -> float:
     """Legendre expansion evaluation matching Fortran ``yleg``
     (endf6.f90 line 1394): ``sum_{L=0..na} (L+0.5) a_L P_L(mu)``,

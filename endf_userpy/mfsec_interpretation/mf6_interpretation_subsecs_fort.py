@@ -17,6 +17,7 @@ can move to ``tests_fortran/`` and drop out of the wheel entirely.
 """
 import numpy as np
 from ..fortran.endf6 import (
+    mf6_get_law1,
     mf6_get_law1_disc_lines,
     mf6_get_law2,
     mf6_get_law6,
@@ -30,6 +31,7 @@ from ..primitives.helpers import (
     convert_interp_repr,
     find_interval,
 )
+from .mf6_interpretation_helpers import pad_outside_dist2d_values
 # Reuse the deduplication helper from the production module.
 from .mf6_interpretation_subsecs import _dedup_discrete_lines
 
@@ -324,3 +326,81 @@ def get_law1_discrete_lines_from_subsec(
         amp_disc[dst_rows, :, :] = cur_amp
 
     return ep_disc_lab, amp_disc
+
+
+@pad_outside_dist2d_values
+def get_dist2d_from_subsec_law1(
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out,
+    to_lab,
+):
+    """Fortran-backed MF6 LAW=1 continuum contribution. Copy of the
+    pre-port implementation from ``mf6_interpretation_subsecs.py``,
+    kept as the equivalence oracle for the pure-Python
+    :func:`get_dist2d_from_subsec_law1` port."""
+    sec = endf_dict[6][mt]
+    if sec['subsection'][subsec_num]['LAW'] != 1:
+        raise ValueError(
+            f'MT={mt} subsec_num={subsec_num} is '
+            f'LAW={sec["subsection"][subsec_num]["LAW"]}, not LAW=1'
+        )
+    eu = energies_in
+    neu = len(eu)
+    epu = energies_out
+    nepu = len(epu)
+    uu = angle_cosines_out
+    nuu = len(uu)
+    awr = get_AWR(endf_dict)
+    awi = get_AWI(endf_dict)
+    za = get_ZA(endf_dict)
+    zai = get_ZAI(endf_dict)
+    lct = sec['LCT'] if to_lab else 1
+    subsec = sec['subsection'][subsec_num]
+    zap = subsec['ZAP']
+    awp = subsec['AWP']
+    lang = subsec['LANG']
+    lep = subsec['LEP']
+    ei_mesh = dict2array(subsec['E'], dtype=float)
+    int_arr = np.array(subsec['INT'], dtype=int)
+    nbt_arr = np.array(subsec['NBT'], dtype=int)
+    ei_interp = convert_interp_repr(int_arr, nbt_arr)
+    nd_arr = dict2array(subsec['ND'], dtype=int)
+    na_arr = dict2array(subsec['NA'], dtype=int)
+
+    if lct in (1, 2):
+        eff_lct = lct
+    elif lct == 3:
+        eff_lct = 1 if awp > 4 else 2
+    else:
+        raise NotImplementedError(f'LCT={lct} not implemented')
+
+    idcs = find_interval(ei_mesh, energies_in)
+    result_dim = (neu, nepu, nuu)
+    disc_result_arr = np.zeros(result_dim, dtype=float)
+    cont_result_arr = np.zeros(result_dim, dtype=float)
+
+    for i in range(cont_result_arr.shape[0]):
+        curidx = idcs[i]
+        cur_eu = np.array([eu[i]], order='F')
+        lei = ei_interp[curidx].item()
+        e1 = ei_mesh[curidx].item()
+        nd1 = nd_arr[curidx].item()
+        na1 = na_arr[curidx].item()
+        ep1 = dict2array(subsec['Ep'][curidx + 1], dtype=float, order='F')
+        b1 = dict2array(subsec['b'][curidx + 1], dtype=float, order='F')
+        e2 = ei_mesh[curidx + 1].item()
+        nd2 = nd_arr[curidx + 1].item()
+        na2 = na_arr[curidx + 1].item()
+        ep2 = dict2array(subsec['Ep'][curidx + 2], dtype=float, order='F')
+        b2 = dict2array(subsec['b'][curidx + 2], dtype=float, order='F')
+        cur_disc_res = np.zeros((1, nepu, nuu), dtype=float, order='F')
+        cur_cont_res = np.zeros((1, nepu, nuu), dtype=float, order='F')
+        mf6_get_law1(
+            cur_eu, epu, uu, nuu,
+            awr, awi, awp, za, zai, zap, eff_lct, lang, lep, lei,
+            e1, nd1, na1, ep1, b1, e2, nd2, na2, ep2, b2,
+            cur_disc_res, cur_cont_res,
+        )
+        disc_result_arr[i:i + 1, :, :] = cur_disc_res
+        cont_result_arr[i:i + 1, :, :] = cur_cont_res
+
+    return cont_result_arr
