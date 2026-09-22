@@ -163,7 +163,11 @@ def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges):
     einc_arr = np.asarray(einc_arr, dtype=float)
     in_rrr_mask = np.zeros_like(einc_arr, dtype=bool)
     for el, eh in rrr_ranges:
-        in_rrr_mask |= (einc_arr >= el) & (einc_arr <= eh)
+        # Half-open [EL, EH): consistent with the resonance-composition
+        # range convention (issue #149). At E == EH the URR (or MF3
+        # above URR) owns the value, so a query there is not "inside
+        # the RRR" and should not fire the RRR-warning/nan policy.
+        in_rrr_mask |= (einc_arr >= el) & (einc_arr < eh)
     n_in = int(in_rrr_mask.sum())
     if n_in == 0:
         return None, None
