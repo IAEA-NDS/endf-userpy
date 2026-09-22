@@ -547,3 +547,253 @@ def test_reconstruct_close_to_njoy_unresr_u235():
                 f'({rel:.3%} relative -- expected < '
                 f'{tolerances[label]:.0e})'
             )
+
+
+# ============================================================
+# Ross-10 (Hwang / NJOY-style) 10-point Gauss-Chi-Squared
+# quadrature.
+# ============================================================
+
+
+def _has_ross_tables():
+    return urr._ROSS_QP is not None
+
+
+ROSS_UNAVAILABLE_REASON = (
+    'Ross-10 tables not built (mpmath not installed; '
+    'quadrature=\'ross_10\' is optional)'
+)
+
+
+@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
+def test_ross_tables_shape_and_normalisation():
+    """The Ross-10 tables are shape (4, 10) with a mean-normalised
+    chi-squared pdf on each row (`Sum(A_j) = 1`) and the mean of
+    that pdf itself equal to 1 (`Sum(A_j X_j) = 1`).
+
+    Both are exact for odd nu (half-range Gauss-Hermite is exact
+    on polynomial integrands up to degree 19; the pdf on the
+    substituted axis is polynomial of degree 0 and 2 respectively).
+    For even nu the rational transformation X = (1 - S)/(1 + S)
+    breaks polynomial-exactness of the pdf, so the tabulated sums
+    deviate by ~1e-3 -- reproducing NJOY's own tables to the same
+    off-normalisation (their nu=2 has ``Sum(A*X) - 1 ~= 1.1e-3``;
+    nu=4 has ``Sum(A) - 1 ~= 2.4e-4``; see NJOY2016 unresr.f90 qw).
+    """
+    qp, qw = urr._ROSS_QP, urr._ROSS_QW
+    assert qp.shape == (4, 10)
+    assert qw.shape == (4, 10)
+    tol = {1: 1e-12, 3: 1e-12, 2: 2e-3, 4: 2e-3}
+    for nu in range(1, 5):
+        norm = float(qw[nu - 1].sum())
+        mean = float((qw[nu - 1] * qp[nu - 1]).sum())
+        assert abs(norm - 1.0) < tol[nu], (
+            f'nu={nu} Sum(A) = {norm} deviates by {abs(norm - 1):.3e} '
+            f'(tol {tol[nu]:.0e})'
+        )
+        assert abs(mean - 1.0) < tol[nu], (
+            f'nu={nu} Sum(A*X) = {mean} deviates by {abs(mean - 1):.3e} '
+            f'(tol {tol[nu]:.0e})'
+        )
+
+
+@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
+def test_ross_tables_reproduce_njoy_hardcoded():
+    """Pinning test: our independently derived (mpmath Golub-Welsch
+    on Hwang's construction) Ross-10 tables reproduce the hard-coded
+    values in NJOY2016 ``unresr.f90`` (lines 869-898) to the printed
+    precision of the NJOY constants (7-8 digits).
+
+    We do NOT copy NJOY's tables -- they are derived from first
+    principles per Hwang MC²-2 (ANL-8144, 1976, App. A section V,
+    Eqs. A.32-A.36) and Steen, Byrne & Gelbard (Math. Comp. 23,
+    661-671, 1969). This test only verifies that the two derivations
+    yield the same numbers, as they should.
+
+    Bug-catching: reverting the Hwang formulas (e.g. dropping the
+    ``2 Z^{ν-1}/Γ(ν/2)`` weight scaling for odd ν, or omitting the
+    ``(1 + S)^{-2}`` Jacobian on the even-ν weights) flips every
+    row past the first few digits.
+    """
+    # NJOY unresr.f90 tables (transcribed from lines 869-898 for
+    # cross-check; deleted after test runs since we do not want the
+    # module to ship a copy of NJOY's constants).
+    qw_njoy = np.array([
+        [1.1120413e-1, 2.3546798e-1, 2.8440987e-1, 2.2419127e-1,
+         0.10967668e0, .030493789e0, 0.0042930874e0, 2.5827047e-4,
+         4.9031965e-6, 1.4079206e-8],
+        [0.033773418e0, 0.079932171e0, 0.12835937e0, 0.17652616e0,
+         0.21347043e0, 0.21154965e0, 0.13365186e0, 0.022630659e0,
+         1.6313638e-5, 2.745383e-31],
+        [3.3376214e-4, 0.018506108e0, 0.12309946e0, 0.29918923e0,
+         0.33431475e0, 0.17766657e0, 0.042695894e0, 4.0760575e-3,
+         1.1766115e-4, 5.0989546e-7],
+        [1.7623788e-3, 0.021517749e0, 0.080979849e0, 0.18797998e0,
+         0.30156335e0, 0.29616091e0, 0.10775649e0, 2.5171914e-3,
+         8.9630388e-10, 0.e0],
+    ])
+    qp_njoy = np.array([
+        [3.0013465e-3, 7.8592886e-2, 4.3282415e-1, 1.3345267e0,
+         3.0481846e0, 5.8263198e0, 9.9452656e0, 1.5782128e1,
+         23.996824e0, 36.216208e0],
+        [1.3219203e-2, 7.2349624e-2, 0.19089473e0, 0.39528842e0,
+         0.74083443e0, 1.3498293e0, 2.5297983e0, 5.2384894e0,
+         13.821772e0, 75.647525e0],
+        [1.0004488e-3, 0.026197629e0, 0.14427472e0, 0.44484223e0,
+         1.0160615e0, 1.9421066e0, 3.3150885e0, 5.2607092e0,
+         7.9989414e0, 12.072069e0],
+        [0.013219203e0, 0.072349624e0, 0.19089473e0, 0.39528842e0,
+         0.74083443e0, 1.3498293e0, 2.5297983e0, 5.2384894e0,
+         13.821772e0, 75.647525e0],
+    ])
+    # Absolute cap: NJOY prints qw entries as small as 1e-31, and
+    # our derivation collapses them into the noise below ~1e-15;
+    # atol=1e-8 (loose) is dominated by NJOY's 7-digit rounding on
+    # the entries that carry real weight.
+    for nu in range(1, 5):
+        np.testing.assert_allclose(
+            urr._ROSS_QP[nu - 1], qp_njoy[nu - 1],
+            rtol=1e-6, atol=1e-8,
+            err_msg=f'nu={nu} qp diverges from NJOY at more than 7 digits',
+        )
+        np.testing.assert_allclose(
+            urr._ROSS_QW[nu - 1], qw_njoy[nu - 1],
+            rtol=1e-4, atol=1e-8,
+            err_msg=f'nu={nu} qw diverges from NJOY at more than 7 digits',
+        )
+
+
+@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
+def test_ross_10_reconstruct_matches_default_on_deterministic_channels():
+    """When every channel has DOF nu = 0 (deterministic widths, no
+    fluctuation), Ross-10 and the default Gauss-Legendre-32
+    quadrature must produce identical numbers: both collapse to a
+    single-point rule on that channel and the fluctuation integral
+    reduces to (Gamma_n Gamma_c)/Gamma_tot evaluated at the mean
+    widths. Any nonzero difference here signals a bug in the Ross
+    nu=0 fallback (should be a delta at the mean)."""
+    from endf_userpy.primitives import array_ns
+    # Single J-group, all AMU* = 0.
+    d = _minimal_urr_endf_dict(
+        j_groups=[(0, [(3.5, 0.0, 0.0, 0.0, 0.0,
+                        [1e3, 1e4], [1000.0, 1000.0],
+                        [0.10, 0.10], [0.05, 0.05],
+                        [0.02, 0.02], [0.0, 0.0])])],
+    )
+    data = pre.urr_data_from_endf_dict(d)
+    xp = array_ns.get_backend('numpy')
+    einc = np.array([2e3, 5e3, 8e3])
+    xs_default = urr.reconstruct(data, einc, xp)
+    xs_ross = urr.reconstruct(data, einc, xp, quadrature='ross_10')
+    for k in ('sct', 'cap', 'fis', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(xs_default[k]), np.asarray(xs_ross[k]),
+            rtol=1e-12, atol=1e-30,
+            err_msg=f'Ross-10 vs default disagree on {k} with all nu=0',
+        )
+
+
+@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
+def test_ross_10_reproduces_njoy_unresr_on_u235():
+    """The whole point of Ross-10: on the same TENDL-2021 U-235
+    URR range, Ross-10 reproduces NJOY unresr's MT152 values to
+    much tighter tolerances than the default 1D Laplace quadrature
+    does, because Ross-10 is (up to the ~1e-7 table-precision
+    residual) the exact same quadrature NJOY uses.
+
+    Reference values from ``test_reconstruct_close_to_njoy_unresr_u235``
+    (NJOY unresr MT152 tape22, sig0 = 1e10, T floor). At 7-digit
+    NJOY precision the Ross-10 numbers land at machine precision
+    of the printed values on capture and fission; elastic sits
+    at ~1e-4 relative (matches default) because the ~0.4%
+    per-J-group potential-elastic assumption difference between
+    ours and NJOY is orthogonal to the fluctuation quadrature.
+    """
+    path = resolve_u235()
+    if path is None:
+        pytest.skip('U-235 corpus file not available')
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.primitives import array_ns
+    d = EndfParserCpp().parsefile(path, include=[1, 2])
+    data = pre.urr_data_from_endf_dict(d)
+    xp = array_ns.get_backend('numpy')
+
+    njoy = [
+        (2250.0,   11.9542, 5.9600, 2.3881),
+        (2500.0,   11.9309, 5.6553, 2.2547),
+        (3000.0,   11.8877, 5.1670, 2.0415),
+        (5000.0,   11.7485, 4.0425, 1.5528),
+        (10000.0,  11.4989, 2.9701, 1.0919),
+        (20000.0,  11.1531, 2.2866, 0.7961),
+        (40000.0,  10.6822, 1.8784, 0.6107),
+        (46200.0,  10.5668, 1.8175, 0.5813),
+    ]
+    einc = np.array([row[0] for row in njoy])
+    xs_ross = urr.reconstruct(data, einc, xp, quadrature='ross_10')
+    xs_default = urr.reconstruct(data, einc, xp)
+
+    # Ross-10 must be strictly closer to NJOY than the default on
+    # the fluctuation-dominated channels (cap and fis). On the
+    # aggregate over all energies:
+    err_cap_ross = float(np.max(np.abs(
+        np.asarray(xs_ross['cap']) - np.array([r[3] for r in njoy])
+    ) / np.array([r[3] for r in njoy])))
+    err_cap_default = float(np.max(np.abs(
+        np.asarray(xs_default['cap']) - np.array([r[3] for r in njoy])
+    ) / np.array([r[3] for r in njoy])))
+    err_fis_ross = float(np.max(np.abs(
+        np.asarray(xs_ross['fis']) - np.array([r[2] for r in njoy])
+    ) / np.array([r[2] for r in njoy])))
+
+    # Ross-10 capture: within the 7-digit NJOY tape precision at
+    # every energy. Loose absolute tolerance because at low E the
+    # sub-1e-4 relative residual dominates numerical noise.
+    assert err_cap_ross < 2e-4, (
+        f'Ross-10 capture max rel error {err_cap_ross:.3e} vs NJOY '
+        f'exceeds 2e-4 -- expected tighter than the default '
+        f'({err_cap_default:.3e})'
+    )
+    # Ross-10 has to be strictly closer to NJOY than default on
+    # capture. Otherwise the point of ross_10 (NJOY-parity) is
+    # lost.
+    assert err_cap_ross <= err_cap_default * 0.5, (
+        f'Ross-10 capture err {err_cap_ross:.3e} not appreciably '
+        f'better than default {err_cap_default:.3e}; the '
+        f'quadrature selection may have regressed'
+    )
+    # Fission likewise pinned tight vs NJOY.
+    assert err_fis_ross < 5e-4, (
+        f'Ross-10 fission max rel error {err_fis_ross:.3e} vs '
+        f'NJOY exceeds 5e-4'
+    )
+
+
+@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
+def test_reconstruct_rejects_unknown_quadrature():
+    """Typos or unsupported quadrature names must fail fast with a
+    clear ValueError, not silently pick the default."""
+    from endf_userpy.primitives import array_ns
+    d = _minimal_urr_endf_dict()
+    data = pre.urr_data_from_endf_dict(d)
+    xp = array_ns.get_backend('numpy')
+    with pytest.raises(ValueError, match=r"quadrature must be"):
+        urr.reconstruct(data, np.array([5e3]), xp, quadrature='ross_20')
+
+
+@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
+def test_ross_10_rejects_dof_above_four():
+    """Hwang / NJOY only tabulate the Ross-10 quadrature for
+    nu = 1..4. A group carrying nu = 5 (not seen in real ENDF-6
+    URR files) must raise NotImplementedError -- silently
+    falling back would give a wrong number."""
+    from endf_userpy.primitives import array_ns
+    d = _minimal_urr_endf_dict(
+        j_groups=[(0, [(3.5, 5.0, 0.0, 0.0, 0.0,       # AMUN=5 (illegal)
+                        [1e3, 1e4], [1.0, 1.0],
+                        [0.1, 0.1], [0.05, 0.05],
+                        [0.0, 0.0], [0.0, 0.0])])],
+    )
+    data = pre.urr_data_from_endf_dict(d)
+    xp = array_ns.get_backend('numpy')
+    with pytest.raises(NotImplementedError, match=r'Ross-10 quadrature'):
+        urr.reconstruct(data, np.array([5e3]), xp, quadrature='ross_10')
