@@ -481,7 +481,7 @@ def compute_cross_section(
 
 
 def compute_cross_section_agnostic(
-    endf_dict, mt, energies_in, xp, outside_value=0.0,
+    endf_dict, mt, energies_in, xp, outside_value=0.0, side='right',
 ):
     """Backend-agnostic MF3 cross-section reconstruction.
 
@@ -519,10 +519,20 @@ def compute_cross_section_agnostic(
         the file's lowest tabulated Ein. Pass ``float('nan')`` for
         the flag convention used by the higher-level quantities
         API.
+    side : {'right', 'left'}, optional
+        Endpoint-side selection at a doubled-E discontinuity
+        (see :func:`primitives.tab1.interp` and issue #136).
+        Default ``'right'`` matches NJOY reconr's TAB1 lookup
+        convention; away from doubled-E points the setting has no
+        effect. Pass ``'left'`` to force the pre-discontinuity
+        value at the exact-E query.
     """
     # Local import avoids pulling primitives.tab1 at module import
     # time; keeps the existing MF3 code path free of extra deps.
     from ..primitives import tab1 as tab1_mod
     sec = endf_dict[3][mt]['xstable']
     t = tab1_mod.from_endf_dict(sec, x_key='E', y_key='xs')
-    return tab1_mod.interp(t, energies_in, xp, outside_value=outside_value)
+    return tab1_mod.interp(
+        t, energies_in, xp,
+        outside_value=outside_value, side=side,
+    )
