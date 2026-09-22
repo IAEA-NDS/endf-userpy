@@ -4,7 +4,6 @@ from ..primitives.interpolation import interp_tab1
 from ..fortran.endf6 import (
     mf6_get_law1,
     mf6_get_law1_disc_lines,
-    mf6_get_law7,
 )
 from ..primitives import array_ns
 from ..primitives.conversion import (
@@ -15,6 +14,7 @@ from ..primitives.conversion import (
 from ..primitives.interpolation import (
     evaluate_interp_legendre_polynomials,
     interp_tab2,
+    _interp_two_point_columns,
 )
 from ..primitives.helpers import (
     dict2array,
@@ -541,94 +541,126 @@ def get_dist2d_from_subsec_law6(
                         energies_in, energies_out, angle_cosines_out, xp)
 
 
+def _law7_tab1_records_for_e_panel(subsec, e_panel_key):
+    """Build the list of per-mu-knot TAB1 records for one incident-
+    energy panel of an MF6 LAW=7 subsection. Each record maps an
+    outgoing-energy mesh ``Ep`` to the conditional distribution
+    ``f(Ep | mu_i, E_panel)`` with its own INT/NBT for the inner
+    (Ep) axis interpolation.
+
+    ``e_panel_key`` is the 1-indexed key into ``subsec['table']``
+    (matches the ``curidx + 1`` / ``curidx + 2`` convention used by
+    the pre-port Fortran wrapper).
+    """
+    per_mu_tables = subsec['table'][e_panel_key]
+    n_mu = len(per_mu_tables)
+    records = []
+    for mu_i in range(n_mu):
+        curtab = per_mu_tables[mu_i + 1]
+        records.append({
+            'Ep': np.asarray(curtab['Ep'], dtype=float),
+            'f': np.asarray(curtab['f'], dtype=float),
+            'INT': np.asarray(curtab['INT'], dtype=int),
+            'NBT': np.asarray(curtab['NBT'], dtype=int),
+        })
+    return records
+
+
+def _law7_eval_mu_panel(subsec, e_panel_key, mu_out, ep_out, xp):
+    """Evaluate the ``(mu, Ep)`` grid for one incident-energy panel
+    of MF6 LAW=7. Returns shape ``(n_mu_out, n_ep_out)``.
+
+    LAW=7 always uses unit-base interpolation between adjacent mu
+    subpanels (ENDF-6 manual sec. 6.2.8). The per-subpanel base
+    interpolation law comes from ``subsec['mu_interpol'][panel][
+    'INT']`` (typically INT=2 lin-lin); we force unit-base by
+    normalising the code to the 21..25 range (``20 + (raw mod
+    10)``), which triggers the unit-base branch of
+    :func:`interp_tab2`.
+    """
+    mu_mesh = dict2array(subsec['mu'][e_panel_key], dtype=float)
+    mu_interpol = subsec['mu_interpol'][e_panel_key]
+    mu_int_raw = np.asarray(mu_interpol['INT'], dtype=int)
+    mu_nbt = np.asarray(mu_interpol['NBT'], dtype=int)
+    # Force unit-base (LAW=7 semantic requirement).
+    mu_int = 20 + (mu_int_raw % 10)
+    records = _law7_tab1_records_for_e_panel(subsec, e_panel_key)
+    return interp_tab2(
+        np.asarray(mu_out, dtype=float),
+        np.asarray(ep_out, dtype=float),
+        mu_mesh, mu_int, mu_nbt, records, 'Ep', 'f',
+        outside_value=0.0, xp=xp,
+    )
+
+
 @pad_outside_dist2d_values
 def get_dist2d_from_subsec_law7(
-    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out,
+    to_lab, xp=None,
 ):
-    # NOTE: to_lab parameter ignored because LAW=7 always in lab system
-    mu = angle_cosines_out
+    """Backend-agnostic MF6 LAW=7 (tabulated E'/mu double-
+    differential) reconstruction.
+
+    Per ENDF-6 manual sec. 6.2.8: for each incident-energy panel,
+    the distribution is a TAB2 in mu whose entries are TAB1 records
+    of ``f(Ep | mu)``; unit-base interpolation is used both
+    between adjacent mu subpanels within an E panel and between
+    the two E panels bracketing the query. The outer E interpolation
+    picks the base law from ``subsec['E_interpol']['INT']`` (only
+    the mod-10 base law matters here; the ``+ 20`` unit-base
+    variant applies to the inner mu interp).
+
+    LAW=7 is always defined in the LAB system, so ``to_lab`` is
+    ignored (matches the pre-port Fortran behaviour).
+
+    Backend-agnostic: ``xp=None`` defaults to the numpy backend and
+    is bit-identical to the pre-port path; passing
+    ``xp=array_ns.get_backend('jax')`` runs the arithmetic on JAX,
+    with the same file-side / query-side autodiff boundary as
+    documented in :func:`interp_tab2` (see issue #154 for the
+    dict-source autodiff scope).
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
 
     ei_mesh = dict2array(subsec['E'], dtype=float)
-    int_arr = np.array(subsec['E_interpol']['INT'])
-    nbt_arr = np.array(subsec['E_interpol']['NBT'])
+    int_arr = np.array(subsec['E_interpol']['INT'], dtype=int)
+    nbt_arr = np.array(subsec['E_interpol']['NBT'], dtype=int)
     ei_interp = convert_interp_repr(int_arr, nbt_arr)
 
-    result_arr = np.zeros(
-        (len(energies_in), len(energies_out), len(angle_cosines_out)), dtype=float
-    )
+    ep_out = np.asarray(energies_out, dtype=float)
+    mu_out = np.asarray(angle_cosines_out, dtype=float)
+    e_in = np.asarray(energies_in, dtype=float)
 
-    idcs = find_interval(ei_mesh, energies_in)
-    for i, curidx in enumerate(idcs): 
-        cur_en =  energies_in[i:i+1]
-        en1 = ei_mesh[curidx]
-        en2 = ei_mesh[curidx+1]
-        interp_law = ei_interp[curidx]
-        mu_mesh1 = dict2array(subsec['mu'][curidx+1], dtype=float)
-        mu_mesh2 = dict2array(subsec['mu'][curidx+2], dtype=float)
-        mu_interpol1 = subsec['mu_interpol'][curidx+1] 
-        mu_interpol_arr1 = convert_interp_repr(
-            np.array(mu_interpol1['INT']), np.array(mu_interpol1['NBT'])
-        )
-        mu_interpol2 = subsec['mu_interpol'][curidx+2] 
-        mu_interpol_arr2 = convert_interp_repr(
-            np.array(mu_interpol2['INT']), np.array(mu_interpol2['NBT'])
-        )
-        idcs21 = find_interval(mu_mesh1, mu) 
-        idcs22 = find_interval(mu_mesh2, mu)
-        for j, (idx21, idx22) in enumerate(zip(idcs21, idcs22)): 
-            cur_mu = mu[j:j+1]
-            mu11 = mu_mesh1[idx21]
-            mu12 = mu_mesh1[idx21+1]
-            mu21 = mu_mesh2[idx22]
-            mu22 = mu_mesh2[idx22+1]
-            interp_mu_law1 = mu_interpol_arr1[idx21]
-            interp_mu_law2 = mu_interpol_arr2[idx22]
-            curtable11 = subsec['table'][curidx+1][idx21+1]
-            curtable12 = subsec['table'][curidx+1][idx21+2]
-            curtable21 = subsec['table'][curidx+2][idx22+1]
-            curtable22 = subsec['table'][curidx+2][idx22+2]
-            ep11 = np.array(curtable11['Ep'], dtype=float, order='F')
-            ep12 = np.array(curtable12['Ep'], dtype=float, order='F')
-            ep21 = np.array(curtable21['Ep'], dtype=float, order='F')
-            ep22 = np.array(curtable22['Ep'], dtype=float, order='F')
-            f11 = np.array(curtable11['f'], dtype=float, order='F')
-            f12 = np.array(curtable12['f'], dtype=float, order='F')
-            f21 = np.array(curtable21['f'], dtype=float, order='F')
-            f22 = np.array(curtable22['f'], dtype=float, order='F')
-            np11 = len(ep11)
-            np12 = len(ep12)
-            np21 = len(ep21)
-            np22 = len(ep22)
-            ibt11 = np.array(curtable11['INT'], dtype=float, order='F')
-            ibt12 = np.array(curtable12['INT'], dtype=float, order='F')
-            ibt21 = np.array(curtable21['INT'], dtype=float, order='F')
-            ibt22 = np.array(curtable22['INT'], dtype=float, order='F')
-            nbt11 = np.array(curtable11['NBT'], dtype=float, order='F')
-            nbt12 = np.array(curtable12['NBT'], dtype=float, order='F')
-            nbt21 = np.array(curtable21['NBT'], dtype=float, order='F')
-            nbt22 = np.array(curtable22['NBT'], dtype=float, order='F')
-            nr11 = len(ibt11)
-            nr12 = len(ibt12)
-            nr21 = len(ibt21)
-            nr22 = len(ibt22)
+    n_e = e_in.shape[0]
+    n_ep = ep_out.shape[0]
+    n_mu = mu_out.shape[0]
 
-            cur_result_arr = np.zeros((1, len(energies_out), 1), dtype=float, order='F')
+    idcs = find_interval(ei_mesh, e_in)
+    rows = []
+    for i, curidx in enumerate(idcs):
+        e = float(e_in[i])
+        e1 = float(ei_mesh[curidx])
+        e2 = float(ei_mesh[curidx + 1])
+        lei_law = int(ei_interp[curidx]) % 10
 
-            mf6_get_law7(
-                cur_en, energies_out, cur_mu, 1, interp_law,
-                en1, interp_mu_law1,
-                mu11, ep11, f11, np11, nbt11, ibt11, nr11,
-                mu12, ep12, f12, np12, nbt12, ibt12, nr12,
-                en2, interp_mu_law2,
-                mu21, ep21, f21, np21, nbt21, ibt21, nr21,
-                mu22, ep22, f22, np22, nbt22, ibt22, nr22,
-                cur_result_arr
-            )
+        # Per-E-panel unit-base mu evaluation: (n_mu, n_ep)
+        f1 = _law7_eval_mu_panel(subsec, curidx + 1, mu_out, ep_out, xp)
+        f2 = _law7_eval_mu_panel(subsec, curidx + 2, mu_out, ep_out, xp)
 
-            result_arr[i:i+1,:,j:j+1] = cur_result_arr
-    return result_arr
+        # Outer E-interp between f1 and f2 at query e.
+        # `_interp_two_point_columns` broadcasts elementwise over
+        # the shared 2D shape of (f1, f2).
+        f_e = _interp_two_point_columns(e, e1, e2, f1, f2, lei_law, xp)
+        # f_e shape: (n_mu, n_ep). Result axis order is
+        # (E_in, Ep_out, mu_out), so transpose to (n_ep, n_mu).
+        rows.append(f_e.T)
+
+    if len(rows) == 0:
+        return xp.zeros((n_e, n_ep, n_mu), dtype=xp.float64)
+    return xp.stack(rows, axis=0)
 
 
 def get_incident_energies_from_subsec(endf_dict, mt, subsec_num):

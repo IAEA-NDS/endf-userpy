@@ -16,7 +16,7 @@ module. Once every LAW has a Python implementation, ``endf6.f90``
 can move to ``tests_fortran/`` and drop out of the wheel entirely.
 """
 import numpy as np
-from ..fortran.endf6 import mf6_get_law2, mf6_get_law6
+from ..fortran.endf6 import mf6_get_law2, mf6_get_law6, mf6_get_law7
 from ..primitives.properties import get_AWI, get_AWR, get_QI
 from ..primitives.helpers import (
     dict2array,
@@ -122,4 +122,101 @@ def get_angdist_from_subsec_law2(
         )
         result_arr[i:i + 1, :] = cur_result
 
+    return result_arr
+
+
+def get_dist2d_from_subsec_law7(
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out,
+    to_lab,
+):
+    """Fortran-backed MF6 LAW=7 (tabulated E'/mu double-differential)
+    reconstruction. Copy of the pre-port implementation from
+    ``mf6_interpretation_subsecs.py`` for equivalence testing.
+
+    LAW=7 is always LAB; ``to_lab`` is ignored.
+    """
+    mu = angle_cosines_out
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+
+    ei_mesh = dict2array(subsec['E'], dtype=float)
+    int_arr = np.array(subsec['E_interpol']['INT'])
+    nbt_arr = np.array(subsec['E_interpol']['NBT'])
+    ei_interp = convert_interp_repr(int_arr, nbt_arr)
+
+    result_arr = np.zeros(
+        (len(energies_in), len(energies_out), len(angle_cosines_out)),
+        dtype=float,
+    )
+
+    idcs = find_interval(ei_mesh, energies_in)
+    for i, curidx in enumerate(idcs):
+        cur_en = energies_in[i:i + 1]
+        en1 = ei_mesh[curidx]
+        en2 = ei_mesh[curidx + 1]
+        interp_law = ei_interp[curidx]
+        mu_mesh1 = dict2array(subsec['mu'][curidx + 1], dtype=float)
+        mu_mesh2 = dict2array(subsec['mu'][curidx + 2], dtype=float)
+        mu_interpol1 = subsec['mu_interpol'][curidx + 1]
+        mu_interpol_arr1 = convert_interp_repr(
+            np.array(mu_interpol1['INT']), np.array(mu_interpol1['NBT']),
+        )
+        mu_interpol2 = subsec['mu_interpol'][curidx + 2]
+        mu_interpol_arr2 = convert_interp_repr(
+            np.array(mu_interpol2['INT']), np.array(mu_interpol2['NBT']),
+        )
+        idcs21 = find_interval(mu_mesh1, mu)
+        idcs22 = find_interval(mu_mesh2, mu)
+        for j, (idx21, idx22) in enumerate(zip(idcs21, idcs22)):
+            cur_mu = mu[j:j + 1]
+            mu11 = mu_mesh1[idx21]
+            mu12 = mu_mesh1[idx21 + 1]
+            mu21 = mu_mesh2[idx22]
+            mu22 = mu_mesh2[idx22 + 1]
+            interp_mu_law1 = mu_interpol_arr1[idx21]
+            interp_mu_law2 = mu_interpol_arr2[idx22]
+            curtable11 = subsec['table'][curidx + 1][idx21 + 1]
+            curtable12 = subsec['table'][curidx + 1][idx21 + 2]
+            curtable21 = subsec['table'][curidx + 2][idx22 + 1]
+            curtable22 = subsec['table'][curidx + 2][idx22 + 2]
+            ep11 = np.array(curtable11['Ep'], dtype=float, order='F')
+            ep12 = np.array(curtable12['Ep'], dtype=float, order='F')
+            ep21 = np.array(curtable21['Ep'], dtype=float, order='F')
+            ep22 = np.array(curtable22['Ep'], dtype=float, order='F')
+            f11 = np.array(curtable11['f'], dtype=float, order='F')
+            f12 = np.array(curtable12['f'], dtype=float, order='F')
+            f21 = np.array(curtable21['f'], dtype=float, order='F')
+            f22 = np.array(curtable22['f'], dtype=float, order='F')
+            np11 = len(ep11)
+            np12 = len(ep12)
+            np21 = len(ep21)
+            np22 = len(ep22)
+            ibt11 = np.array(curtable11['INT'], dtype=float, order='F')
+            ibt12 = np.array(curtable12['INT'], dtype=float, order='F')
+            ibt21 = np.array(curtable21['INT'], dtype=float, order='F')
+            ibt22 = np.array(curtable22['INT'], dtype=float, order='F')
+            nbt11 = np.array(curtable11['NBT'], dtype=float, order='F')
+            nbt12 = np.array(curtable12['NBT'], dtype=float, order='F')
+            nbt21 = np.array(curtable21['NBT'], dtype=float, order='F')
+            nbt22 = np.array(curtable22['NBT'], dtype=float, order='F')
+            nr11 = len(ibt11)
+            nr12 = len(ibt12)
+            nr21 = len(ibt21)
+            nr22 = len(ibt22)
+
+            cur_result_arr = np.zeros(
+                (1, len(energies_out), 1), dtype=float, order='F',
+            )
+
+            mf6_get_law7(
+                cur_en, energies_out, cur_mu, 1, interp_law,
+                en1, interp_mu_law1,
+                mu11, ep11, f11, np11, nbt11, ibt11, nr11,
+                mu12, ep12, f12, np12, nbt12, ibt12, nr12,
+                en2, interp_mu_law2,
+                mu21, ep21, f21, np21, nbt21, ibt21, nr21,
+                mu22, ep22, f22, np22, nbt22, ibt22, nr22,
+                cur_result_arr,
+            )
+            result_arr[i:i + 1, :, j:j + 1] = cur_result_arr
     return result_arr
