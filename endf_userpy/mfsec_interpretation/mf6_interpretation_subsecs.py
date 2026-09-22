@@ -1,9 +1,6 @@
 import warnings
 import numpy as np
 from ..primitives.interpolation import interp_tab1
-from ..fortran.endf6 import (
-    mf6_get_law1,
-)
 from . import mf6_law1_helpers
 from ..primitives import array_ns
 from ..primitives.conversion import (
@@ -41,31 +38,44 @@ module_logger = logging.getLogger(__name__)
 
 @pad_outside_dist2d_values
 def get_dist2d_from_subsec_law1(
-    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
+    endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab,
 ):
+    """MF6 LAW=1 continuum-part angle-energy distribution.
+
+    Returns only the continuum contribution ``f6con(E, E', mu)``.
+    The discrete-line positions and amplitudes are handled by the
+    separate :func:`get_law1_discrete_lines_from_subsec` because a
+    delta at ``ep_disc_lab`` is not usefully sampled on an
+    arbitrary user ``E_out`` grid.
+
+    Pure-Python replacement for the previous Fortran-backed path
+    (``mf6_get_law1``, endf6.f90 line 110). Uses the LAB->CM
+    forward map from :mod:`mf6_law1_helpers.mf6lab2cm` and the
+    per-panel continuum amplitude
+    :func:`mf6_law1_helpers.f6law1con_amplitude`.
+    """
     sec = endf_dict[6][mt]
     if sec['subsection'][subsec_num]['LAW'] != 1:
         raise ValueError(
             f'MT={mt} subsec_num={subsec_num} is '
             f'LAW={sec["subsection"][subsec_num]["LAW"]}, not LAW=1'
         )
-    eu = energies_in
-    neu = len(eu)
-    epu = energies_out
-    nepu = len(epu)
-    uu = angle_cosines_out
-    nuu = len(uu)
+    eu = np.asarray(energies_in, dtype=float)
+    neu = eu.shape[0]
+    epu = np.asarray(energies_out, dtype=float)
+    nepu = epu.shape[0]
+    uu = np.asarray(angle_cosines_out, dtype=float)
+    nuu = uu.shape[0]
     awr = get_AWR(endf_dict)
     awi = get_AWI(endf_dict)
     za = get_ZA(endf_dict)
     zai = get_ZAI(endf_dict)
-    lct = sec['LCT'] if to_lab else 1
-    # subsection variables
+    lct = int(sec['LCT']) if to_lab else 1
     subsec = sec['subsection'][subsec_num]
     zap = subsec['ZAP']
     awp = subsec['AWP']
-    lang = subsec['LANG']
-    lep = subsec['LEP'] 
+    lang = int(subsec['LANG'])
+    lep = int(subsec['LEP'])
     ei_mesh = dict2array(subsec['E'], dtype=float)
     int_arr = np.array(subsec['INT'], dtype=int)
     nbt_arr = np.array(subsec['NBT'], dtype=int)
@@ -73,7 +83,6 @@ def get_dist2d_from_subsec_law1(
     nd_arr = dict2array(subsec['ND'], dtype=int)
     na_arr = dict2array(subsec['NA'], dtype=int)
 
-    # determine effective LCT based on emitted particle (CM or LAB)
     if lct in (1, 2):
         eff_lct = lct
     elif lct == 3:
@@ -81,44 +90,43 @@ def get_dist2d_from_subsec_law1(
     else:
         raise NotImplementedError(f'LCT={lct} not implemented')
 
-    # find enclosing energy intervals
-    idcs = find_interval(ei_mesh, energies_in)
+    idcs = find_interval(ei_mesh, eu)
 
-    result_dim = (neu, nepu, nuu)
-    disc_result_arr = np.zeros(result_dim, dtype=float)
-    cont_result_arr = np.zeros(result_dim, dtype=float)
+    cont_result_arr = np.zeros((neu, nepu, nuu), dtype=float)
 
-    for i in range(cont_result_arr.shape[0]):
-        curidx = idcs[i]
-        cur_eu = np.array([eu[i]], order='F')
-        lei = ei_interp[curidx].item()
-
-        e1 = ei_mesh[curidx].item()
-        nd1 = nd_arr[curidx].item()
-        na1 = na_arr[curidx].item()
-        ep1 = dict2array(subsec['Ep'][curidx+1], dtype=float, order='F')
-        b1 = dict2array(subsec['b'][curidx+1], dtype=float, order='F')
-
-        e2 = ei_mesh[curidx+1].item()
-        nd2 = nd_arr[curidx+1].item()
-        na2 = na_arr[curidx+1].item()
-        ep2 = dict2array(subsec['Ep'][curidx+2], dtype=float, order='F')
-        b2 = dict2array(subsec['b'][curidx+2], dtype=float, order='F')
-
-        cur_disc_res = np.zeros((1, nepu, nuu), dtype=float, order='F')
-        cur_cont_res = np.zeros((1, nepu, nuu), dtype=float, order='F')
-
-        # neu, nepu, nep1, nep2 are automatically inferred
-        # hence dropped from the argument list
-        mf6_get_law1(
-            cur_eu, epu, uu, nuu,
-            awr, awi, awp, za, zai, zap, eff_lct, lang, lep, lei,
-            e1, nd1, na1, ep1, b1, e2, nd2, na2, ep2, b2,
-            cur_disc_res, cur_cont_res
-        )
-
-        disc_result_arr[i:i+1,:,:] = cur_disc_res
-        cont_result_arr[i:i+1,:,:] = cur_cont_res
+    # Process one E panel bracket at a time; group einc by panel so
+    # we do one marshaling pass per bracket.
+    for panel_idx in np.unique(idcs):
+        mask = (idcs == panel_idx)
+        if not np.any(mask):
+            continue
+        rows = np.where(mask)[0]
+        e1 = float(ei_mesh[panel_idx])
+        e2 = float(ei_mesh[panel_idx + 1])
+        nd1 = int(nd_arr[panel_idx])
+        na1 = int(na_arr[panel_idx])
+        ep1 = dict2array(subsec['Ep'][panel_idx + 1], dtype=float)
+        b1 = dict2array(subsec['b'][panel_idx + 1], dtype=float)
+        nd2 = int(nd_arr[panel_idx + 1])
+        na2 = int(na_arr[panel_idx + 1])
+        ep2 = dict2array(subsec['Ep'][panel_idx + 2], dtype=float)
+        b2 = dict2array(subsec['b'][panel_idx + 2], dtype=float)
+        lei = int(ei_interp[panel_idx])
+        for row in rows:
+            e = float(eu[row])
+            for je in range(nepu):
+                ep = float(epu[je])
+                for ju in range(nuu):
+                    u = float(uu[ju])
+                    tp, w, dinv = mf6_law1_helpers.mf6lab2cm(
+                        awr, awi, awp, eff_lct, e, ep, u,
+                    )
+                    fcon = mf6_law1_helpers.f6law1con_amplitude(
+                        e, tp, w, za, zai, zap, lang, lep, lei,
+                        e1, nd1, na1, ep1, b1,
+                        e2, nd2, na2, ep2, b2,
+                    )
+                    cont_result_arr[row, je, ju] = fcon * dinv
 
     return cont_result_arr
 
