@@ -3,8 +3,8 @@ import numpy as np
 from ..primitives.interpolation import interp_tab1
 from ..fortran.endf6 import (
     mf6_get_law1,
-    mf6_get_law1_disc_lines,
 )
+from . import mf6_law1_helpers
 from ..primitives import array_ns
 from ..primitives.conversion import (
     compute_r2,
@@ -123,6 +123,38 @@ def get_dist2d_from_subsec_law1(
     return cont_result_arr
 
 
+def _law1_disc_lines_two_point_interp(law, x1, y1, x2, y2, x):
+    """Scalar equivalent of the Fortran ``yintp`` (endf6.f90 line
+    2011) used by the discrete-lines port. Guards match Fortran:
+
+    - x == x1 or x1 == x2: return y1
+    - x == x2: return y2
+    - INT == 1 or y1 == y2: constant (returns y1)
+    - INT == 3/5 with x1 == 0: clamp x1 to 1e-38
+    - INT == 4/5 with y1 == 0: clamp y1 to 1e-38
+    """
+    small = 1.0e-38
+    if x2 == x1 or x == x1:
+        return y1
+    if x == x2:
+        return y2
+    if law == 1 or y2 == y1:
+        return y1
+    if law == 2:
+        return y1 + (x - x1) * (y2 - y1) / (x2 - x1)
+    if law == 3:
+        x1 = small if x1 == 0.0 else x1
+        return y1 + np.log(x / x1) * (y2 - y1) / np.log(x2 / x1)
+    if law == 4:
+        y1 = small if y1 == 0.0 else y1
+        return y1 * np.exp((x - x1) * np.log(y2 / y1) / (x2 - x1))
+    if law == 5:
+        x1 = small if x1 == 0.0 else x1
+        y1 = small if y1 == 0.0 else y1
+        return y1 * np.exp(np.log(x / x1) * np.log(y2 / y1) / np.log(x2 / x1))
+    raise TypeError(f'interpolation scheme (INT={law}) not implemented')
+
+
 def get_law1_discrete_lines_from_subsec(
     endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab=True,
 ):
@@ -136,8 +168,15 @@ def get_law1_discrete_lines_from_subsec(
     should treat them as "no contribution at this cell".
 
     to_lab must be True; setting it False raises. The underlying
-    Fortran uses the section's LCT, and this wrapper does not model
-    an "evaluation frame" the caller can pick.
+    logic uses the section's LCT; this wrapper does not model an
+    "evaluation frame" the caller can pick.
+
+    Pure-Python replacement for the previous Fortran-backed path
+    (``mf6_get_law1_disc_lines``, endf6.f90 line 190). Physics
+    helpers live in :mod:`mf6_law1_helpers` and are shared with
+    the (upcoming) LAW=1 continuum port. The Fortran-backed
+    version is preserved as an equivalence oracle in
+    :mod:`mf6_interpretation_subsecs_fort`.
     """
     if to_lab is not True:
         raise ValueError(
@@ -150,8 +189,8 @@ def get_law1_discrete_lines_from_subsec(
             f'MT={mt} subsec_num={subsec_num} is LAW={subsec["LAW"]}, '
             'not LAW=1'
         )
-    eu_full = np.asfortranarray(np.asarray(energies_in, dtype=float))
-    uu = np.asfortranarray(np.asarray(angle_cosines_out, dtype=float))
+    eu_full = np.asarray(energies_in, dtype=float)
+    uu = np.asarray(angle_cosines_out, dtype=float)
     neu = len(eu_full)
     nuu = len(uu)
 
@@ -159,11 +198,10 @@ def get_law1_discrete_lines_from_subsec(
     awi = get_AWI(endf_dict)
     za = get_ZA(endf_dict)
     zai = get_ZAI(endf_dict)
-    lct = sec['LCT']
+    lct = int(sec['LCT'])
     zap = subsec['ZAP']
     awp = subsec['AWP']
-    lang = subsec['LANG']
-    lep = subsec['LEP']
+    lang = int(subsec['LANG'])
     ei_mesh = dict2array(subsec['E'], dtype=float)
     int_arr = np.array(subsec['INT'], dtype=int)
     nbt_arr = np.array(subsec['NBT'], dtype=int)
@@ -172,8 +210,8 @@ def get_law1_discrete_lines_from_subsec(
     na_arr = dict2array(subsec['NA'], dtype=int)
 
     nd_max = int(nd_arr.max()) if nd_arr.size else 0
-    ep_disc_lab = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
-    amp_disc = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
+    ep_disc_lab = np.zeros((neu, nuu, nd_max), dtype=float)
+    amp_disc = np.zeros((neu, nuu, nd_max), dtype=float)
     if nd_max == 0:
         return ep_disc_lab, amp_disc
 
@@ -188,58 +226,76 @@ def get_law1_discrete_lines_from_subsec(
     idcs = find_interval(ei_mesh, eu_inside)
     inside_pos = np.flatnonzero(inside)
 
-    # The Fortran routine processes one incident-energy panel bracket
-    # (e1, e2) at a time. Group user einc by the panel they land in
-    # so we make one Fortran call per bracket.
+    # Process one incident-energy panel bracket (e1, e2) at a time.
+    # Group user einc by the panel they land in so we do one panel
+    # setup per bracket.
     for panel_idx in np.unique(idcs):
         mask_inside = (idcs == panel_idx)
         if not np.any(mask_inside):
             continue
-        cur_eu = np.asfortranarray(eu_inside[mask_inside])
-        # Map back to positions in the full einc array so we can
-        # write results into the right slots.
         dst_rows = inside_pos[mask_inside]
-        e1 = ei_mesh[panel_idx].item()
-        e2 = ei_mesh[panel_idx + 1].item()
-        nd1 = nd_arr[panel_idx].item()
-        na1 = na_arr[panel_idx].item()
+        cur_eu = eu_inside[mask_inside]
+        e1 = float(ei_mesh[panel_idx])
+        e2 = float(ei_mesh[panel_idx + 1])
+        nd1 = int(nd_arr[panel_idx])
+        na1 = int(na_arr[panel_idx])
         ep1_full = dict2array(subsec['Ep'][panel_idx + 1], dtype=float)
         b1_full = dict2array(subsec['b'][panel_idx + 1], dtype=float)
-        nd2 = nd_arr[panel_idx + 1].item()
-        na2 = na_arr[panel_idx + 1].item()
+        nd2 = int(nd_arr[panel_idx + 1])
+        na2 = int(na_arr[panel_idx + 1])
         ep2_full = dict2array(subsec['Ep'][panel_idx + 2], dtype=float)
         b2_full = dict2array(subsec['b'][panel_idx + 2], dtype=float)
-        lei = ei_interp[panel_idx].item()
+        lei = int(ei_interp[panel_idx])
+        law = lei % 10       # base interp law for the outer E axis
 
-        # Deduplicate coincident discrete Ep values in each panel:
-        # the downstream Fortran f6law1_dis uses imatch which returns
-        # only the first index of a repeated ep, so any additional
-        # rows with the same ep would be silently dropped and their
-        # b weight lost. Physically identical to summing them (both
-        # sit at the same LAB position after broadening), so pre-sum
-        # here and pass unique-ep arrays to the Fortran routine.
+        # Deduplicate coincident discrete Ep values in each panel.
+        # The Fortran imatch returns only the first index of a
+        # repeated ep, so any additional rows with the same ep
+        # would be silently dropped and their b weight lost.
+        # Physically identical to summing them (both sit at the
+        # same LAB position after broadening), so pre-sum here.
         ep1_disc, b1_disc, nd1_ded = _dedup_discrete_lines(ep1_full, b1_full, nd1)
         ep2_disc, b2_disc, nd2_ded = _dedup_discrete_lines(ep2_full, b2_full, nd2)
-        ep1 = np.asfortranarray(np.concatenate([ep1_disc, ep1_full[nd1:]]))
-        b1 = np.asfortranarray(np.concatenate([b1_disc, b1_full[nd1:]], axis=0))
-        ep2 = np.asfortranarray(np.concatenate([ep2_disc, ep2_full[nd2:]]))
-        b2 = np.asfortranarray(np.concatenate([b2_disc, b2_full[nd2:]], axis=0))
+        ep1_used = np.concatenate([ep1_disc, ep1_full[nd1:]])
+        b1_used = np.concatenate([b1_disc, b1_full[nd1:]], axis=0)
+        ep2_used = np.concatenate([ep2_disc, ep2_full[nd2:]])
+        b2_used = np.concatenate([b2_disc, b2_full[nd2:]], axis=0)
+        nd_used = min(nd1_ded, nd2_ded, nd_max)
 
-        cur_ep = np.zeros(
-            (cur_eu.size, nuu, nd_max), dtype=float, order='F',
-        )
-        cur_amp = np.zeros(
-            (cur_eu.size, nuu, nd_max), dtype=float, order='F',
-        )
-        mf6_get_law1_disc_lines(
-            cur_eu, uu,
-            awr, awi, awp, za, zai, zap, lct, lang, lep, lei,
-            e1, nd1_ded, na1, ep1, b1,
-            e2, nd2_ded, na2, ep2, b2,
-            nd_max, cur_ep, cur_amp,
-        )
-        ep_disc_lab[dst_rows, :, :] = cur_ep
-        amp_disc[dst_rows, :, :] = cur_amp
+        for i_local in range(cur_eu.size):
+            e = float(cur_eu[i_local])
+            if e < e1 or e > e2:
+                continue
+            dst_row = int(dst_rows[i_local])
+            for ju in range(nuu):
+                u = float(uu[ju])
+                for k in range(nd_used):
+                    # Panel-interpolated discrete eval-frame energy
+                    # at user's E_in. For genuine level-decay lines
+                    # ep1[k] == ep2[k], so this is usually a no-op.
+                    ep1k = float(ep1_used[k])
+                    ep2k = float(ep2_used[k])
+                    tp = _law1_disc_lines_two_point_interp(
+                        law, e1, ep1k, e2, ep2k, e,
+                    )
+                    ep_lab, w, dinv = mf6_law1_helpers.mf6cm2lab_disc(
+                        awr, awi, awp, lct, e, tp, u,
+                    )
+                    if dinv <= 0.0:
+                        continue
+                    f1 = mf6_law1_helpers.f6law1_dis_amplitude(
+                        e1, ep1k, w, za, zai, zap, lang,
+                        nd1_ded, na1, ep1_used, b1_used,
+                    )
+                    f2 = mf6_law1_helpers.f6law1_dis_amplitude(
+                        e2, ep2k, w, za, zai, zap, lang,
+                        nd2_ded, na2, ep2_used, b2_used,
+                    )
+                    amp_interp = _law1_disc_lines_two_point_interp(
+                        law, e1, f1, e2, f2, e,
+                    )
+                    ep_disc_lab[dst_row, ju, k] = ep_lab
+                    amp_disc[dst_row, ju, k] = amp_interp * dinv
 
     return ep_disc_lab, amp_disc
 

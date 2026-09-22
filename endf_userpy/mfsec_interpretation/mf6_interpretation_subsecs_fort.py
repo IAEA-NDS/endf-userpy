@@ -16,13 +16,22 @@ module. Once every LAW has a Python implementation, ``endf6.f90``
 can move to ``tests_fortran/`` and drop out of the wheel entirely.
 """
 import numpy as np
-from ..fortran.endf6 import mf6_get_law2, mf6_get_law6, mf6_get_law7
-from ..primitives.properties import get_AWI, get_AWR, get_QI
+from ..fortran.endf6 import (
+    mf6_get_law1_disc_lines,
+    mf6_get_law2,
+    mf6_get_law6,
+    mf6_get_law7,
+)
+from ..primitives.properties import (
+    get_AWI, get_AWR, get_QI, get_ZA, get_ZAI,
+)
 from ..primitives.helpers import (
     dict2array,
     convert_interp_repr,
     find_interval,
 )
+# Reuse the deduplication helper from the production module.
+from .mf6_interpretation_subsecs import _dedup_discrete_lines
 
 
 def get_dist2d_from_subsec_law6(
@@ -220,3 +229,98 @@ def get_dist2d_from_subsec_law7(
             )
             result_arr[i:i + 1, :, j:j + 1] = cur_result_arr
     return result_arr
+
+
+def get_law1_discrete_lines_from_subsec(
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab=True,
+):
+    """Fortran-backed discrete-line positions and amplitudes for one
+    MF6/LAW=1 subsection. Copy of the pre-port implementation from
+    ``mf6_interpretation_subsecs.py`` for equivalence testing."""
+    if to_lab is not True:
+        raise ValueError(
+            'get_law1_discrete_lines_from_subsec requires `to_lab=True`'
+        )
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    if subsec['LAW'] != 1:
+        raise ValueError(
+            f'MT={mt} subsec_num={subsec_num} is LAW={subsec["LAW"]}, '
+            'not LAW=1'
+        )
+    eu_full = np.asfortranarray(np.asarray(energies_in, dtype=float))
+    uu = np.asfortranarray(np.asarray(angle_cosines_out, dtype=float))
+    neu = len(eu_full)
+    nuu = len(uu)
+
+    awr = get_AWR(endf_dict)
+    awi = get_AWI(endf_dict)
+    za = get_ZA(endf_dict)
+    zai = get_ZAI(endf_dict)
+    lct = sec['LCT']
+    zap = subsec['ZAP']
+    awp = subsec['AWP']
+    lang = subsec['LANG']
+    lep = subsec['LEP']
+    ei_mesh = dict2array(subsec['E'], dtype=float)
+    int_arr = np.array(subsec['INT'], dtype=int)
+    nbt_arr = np.array(subsec['NBT'], dtype=int)
+    ei_interp = convert_interp_repr(int_arr, nbt_arr)
+    nd_arr = dict2array(subsec['ND'], dtype=int)
+    na_arr = dict2array(subsec['NA'], dtype=int)
+
+    nd_max = int(nd_arr.max()) if nd_arr.size else 0
+    ep_disc_lab = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
+    amp_disc = np.zeros((neu, nuu, nd_max), dtype=float, order='F')
+    if nd_max == 0:
+        return ep_disc_lab, amp_disc
+
+    inside = (eu_full >= ei_mesh.min()) & (eu_full <= ei_mesh.max())
+    if not np.any(inside):
+        return ep_disc_lab, amp_disc
+    eu_inside = eu_full[inside]
+    idcs = find_interval(ei_mesh, eu_inside)
+    inside_pos = np.flatnonzero(inside)
+
+    for panel_idx in np.unique(idcs):
+        mask_inside = (idcs == panel_idx)
+        if not np.any(mask_inside):
+            continue
+        cur_eu = np.asfortranarray(eu_inside[mask_inside])
+        dst_rows = inside_pos[mask_inside]
+        e1 = ei_mesh[panel_idx].item()
+        e2 = ei_mesh[panel_idx + 1].item()
+        nd1 = nd_arr[panel_idx].item()
+        na1 = na_arr[panel_idx].item()
+        ep1_full = dict2array(subsec['Ep'][panel_idx + 1], dtype=float)
+        b1_full = dict2array(subsec['b'][panel_idx + 1], dtype=float)
+        nd2 = nd_arr[panel_idx + 1].item()
+        na2 = na_arr[panel_idx + 1].item()
+        ep2_full = dict2array(subsec['Ep'][panel_idx + 2], dtype=float)
+        b2_full = dict2array(subsec['b'][panel_idx + 2], dtype=float)
+        lei = ei_interp[panel_idx].item()
+
+        ep1_disc, b1_disc, nd1_ded = _dedup_discrete_lines(ep1_full, b1_full, nd1)
+        ep2_disc, b2_disc, nd2_ded = _dedup_discrete_lines(ep2_full, b2_full, nd2)
+        ep1 = np.asfortranarray(np.concatenate([ep1_disc, ep1_full[nd1:]]))
+        b1 = np.asfortranarray(np.concatenate([b1_disc, b1_full[nd1:]], axis=0))
+        ep2 = np.asfortranarray(np.concatenate([ep2_disc, ep2_full[nd2:]]))
+        b2 = np.asfortranarray(np.concatenate([b2_disc, b2_full[nd2:]], axis=0))
+
+        cur_ep = np.zeros(
+            (cur_eu.size, nuu, nd_max), dtype=float, order='F',
+        )
+        cur_amp = np.zeros(
+            (cur_eu.size, nuu, nd_max), dtype=float, order='F',
+        )
+        mf6_get_law1_disc_lines(
+            cur_eu, uu,
+            awr, awi, awp, za, zai, zap, lct, lang, lep, lei,
+            e1, nd1_ded, na1, ep1, b1,
+            e2, nd2_ded, na2, ep2, b2,
+            nd_max, cur_ep, cur_amp,
+        )
+        ep_disc_lab[dst_rows, :, :] = cur_ep
+        amp_disc[dst_rows, :, :] = cur_amp
+
+    return ep_disc_lab, amp_disc
