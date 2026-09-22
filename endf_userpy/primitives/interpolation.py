@@ -47,21 +47,44 @@ def interp_lin_lin(x, xp, fp):
     return y1 + (x-x1)*(y2-y1)/(x2-x1)
 
 
+_INTERP_LOG_SMALL = 1.0e-38
+
+
 def interp_lin_log(x, xp, fp):
-    """Linear-Logarithmic interpolation"""
+    """Linear-Logarithmic interpolation.
+
+    Clamps ``x1 == 0`` to a small positive value before taking
+    logs, matching the Fortran ``yintp`` reference behaviour
+    (endf6.f90 line 2044). This surfaces on ENDF files whose x-mesh
+    starts at zero (e.g. MF6 LAW=7 outgoing-energy tabulations at
+    Ep=0) when INT=3/5 is applied.
+    """
     x1, y1, x2, y2 = get_enclosing_points(x, xp, fp)
+    x1 = np.where(x1 == 0.0, _INTERP_LOG_SMALL, x1)
     return y1 + np.log(x/x1)*(y2-y1)/np.log(x2/x1)
 
 
 def interp_log_lin(x, xp, fp):
-    """Logarithmic-Linear interpolation"""
+    """Logarithmic-Linear interpolation.
+
+    Clamps ``y1 == 0`` to a small positive value before taking
+    logs, matching Fortran ``yintp`` (endf6.f90 line 2049).
+    """
     x1, y1, x2, y2 = get_enclosing_points(x, xp, fp)
-    return y1*np.exp((x-x1)*np.log(y2/y1)/(x2-x1)) 
+    y1 = np.where(y1 == 0.0, _INTERP_LOG_SMALL, y1)
+    return y1*np.exp((x-x1)*np.log(y2/y1)/(x2-x1))
 
 
 def interp_log_log(x, xp, fp):
-    """Logarithmic-Logarithmic interpolation"""
+    """Logarithmic-Logarithmic interpolation.
+
+    Clamps both ``x1 == 0`` and ``y1 == 0`` to a small positive
+    value before taking logs, matching Fortran ``yintp``
+    (endf6.f90 lines 2054-2055).
+    """
     x1, y1, x2, y2 = get_enclosing_points(x, xp, fp)
+    x1 = np.where(x1 == 0.0, _INTERP_LOG_SMALL, x1)
+    y1 = np.where(y1 == 0.0, _INTERP_LOG_SMALL, y1)
     return y1*np.exp(np.log(x/x1)*np.log(y2/y1)/np.log(x2/x1))
 
 
@@ -79,10 +102,20 @@ def _interp_two_point_columns(x, x1, x2, y1, y2, interp_type, xp=None):
     function is exact-equivalent numerically, not just
     approximately.
 
+    For the log-based schemes (INT=3/4/5) the closed form would
+    NaN out at ``x1 == 0`` (log-in-x) or where ``y1 == 0``
+    element-wise (log-in-y). Matching the Fortran ``yintp``
+    reference (endf6.f90 line 2011), we clamp those degenerate
+    values to ``1e-38`` before taking the log; on the (rare)
+    columns where this bites, the interpolated value is
+    numerically dominated by ``y1`` / a small perturbation of it,
+    which is the conventional evaluator behaviour.
+
     Backend-agnostic: pass ``xp=array_ns.get_backend(name)`` to
     dispatch. ``xp=None`` (the default) resolves to numpy.
     """
     xp = _resolve_xp(xp)
+    _small = 1.0e-38
     if interp_type == 1:      # histogram / constant
         # `broadcast_to` gives a read-only view on numpy; we return
         # it as-is since callers only read the result. JAX
@@ -91,12 +124,16 @@ def _interp_two_point_columns(x, x1, x2, y1, y2, interp_type, xp=None):
     if interp_type == 2:      # lin-lin
         return y1 + (x - x1) * (y2 - y1) / (x2 - x1)
     if interp_type == 3:      # lin-log (log in x)
-        return y1 + xp.log(x / x1) * (y2 - y1) / xp.log(x2 / x1)
+        x1_safe = x1 if x1 != 0.0 else _small
+        return y1 + xp.log(x / x1_safe) * (y2 - y1) / xp.log(x2 / x1_safe)
     if interp_type == 4:      # log-lin (log in y)
-        return y1 * xp.exp((x - x1) * xp.log(y2 / y1) / (x2 - x1))
+        y1_safe = xp.where(y1 == 0.0, _small, y1)
+        return y1_safe * xp.exp((x - x1) * xp.log(y2 / y1_safe) / (x2 - x1))
     if interp_type == 5:      # log-log
-        return y1 * xp.exp(
-            xp.log(x / x1) * xp.log(y2 / y1) / xp.log(x2 / x1)
+        x1_safe = x1 if x1 != 0.0 else _small
+        y1_safe = xp.where(y1 == 0.0, _small, y1)
+        return y1_safe * xp.exp(
+            xp.log(x / x1_safe) * xp.log(y2 / y1_safe) / xp.log(x2 / x1_safe)
         )
     raise TypeError(
         f'interpolation scheme (INT={interp_type}) not implemented'
