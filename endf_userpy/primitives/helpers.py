@@ -48,12 +48,24 @@ def pad_nested_ragged_lists(obj, fill_value=0.0, dims=None):
             pad_nested_ragged_lists(obj[i], fill_value, dims[1:])
 
 
-def dict2array(obj, dtype=None, order='K', fill_value=None):
-    """Construct (multi-dim) array from nested dictionaries"""
+def dict2array(obj, dtype=None, order='K', fill_value=None, xp=None):
+    """Construct (multi-dim) array from nested dictionaries.
+
+    Backend-agnostic: ``xp=None`` (default) preserves the pre-port
+    ``np.array(...)`` behaviour bit-for-bit. Passing a backend
+    adapter routes through ``xp.asarray`` so JAX tracers stored in
+    the source dict propagate through (issue #154). The ``order``
+    argument is only honoured on numpy; JAX doesn't expose a
+    memory-order flag and silently ignores it.
+    """
     arr_list = dict2list(obj)
     if fill_value is not None:
         pad_nested_ragged_lists(arr_list, fill_value)
-    return np.array(arr_list, dtype=dtype, order=order)
+    if xp is None:
+        return np.array(arr_list, dtype=dtype, order=order)
+    if dtype is None:
+        return xp.asarray(arr_list)
+    return xp.asarray(arr_list, dtype=dtype)
 
 
 def check_int_nbt(int_arr, nbt_arr):
@@ -134,14 +146,24 @@ def find_indices_with_tol(a, v, atol, rtol):
     return idcs
 
 
-def get_enclosing_points(x, xp, fp):
+def get_enclosing_points(x, xp_mesh, fp):
+    """Return (x1, y1, x2, y2) for the mesh intervals enclosing each
+    query x.
+
+    Mesh (xp_mesh) and query (x) are always converted to numpy for
+    the ``find_interval`` index lookup (panel-finding is inherently
+    nondifferentiable). ``fp`` (the tabulated function values) is
+    NOT force-converted, so a JAX tracer ``fp`` propagates through
+    the advanced-index lookup ``fp[idcs]`` -- essential for the
+    dict-source autodiff path (issue #154).
+    """
     x = np.asarray(x)
-    xp = np.asarray(xp)
-    fp = np.asarray(fp)
-    idcs1 = find_interval(xp, x)
+    xp_mesh = np.asarray(xp_mesh)
+    # NB: no `fp = np.asarray(fp)` -- keep tracers intact.
+    idcs1 = find_interval(xp_mesh, x)
     idcs2 = idcs1 + 1
-    x1 = xp[idcs1]
-    x2 = xp[idcs2]
+    x1 = xp_mesh[idcs1]
+    x2 = xp_mesh[idcs2]
     y1 = fp[idcs1]
     y2 = fp[idcs2]
     return x1, y1, x2, y2

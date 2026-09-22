@@ -221,3 +221,108 @@ def test_interp_tab2_jax_grad_flows_through_amplitude():
     predicted = (val_at_2 - val_at_0) / 2.0
     np.testing.assert_allclose(val, predicted, rtol=1e-13)
     assert val_at_0 == pytest.approx(0.0, abs=1e-14)
+
+
+# ---- (5) Issue #154 -- JAX tracer flows through endf_interp1d /
+# interp_legendre_coeffs / evaluate_interp_legendre_polynomials
+# from the FP argument end-to-end.
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_endf_interp1d_jax_grad_from_fp():
+    """`jax.grad` of `sum(endf_interp1d(x, mesh, fp, ...))` wrt
+    `fp` returns a finite non-zero gradient. Pre-PR the numpy-only
+    per-scheme interp broke the tracer chain at
+    `get_enclosing_points`; now the arithmetic path is xp-native.
+    """
+    from endf_userpy.primitives.interpolation import endf_interp1d
+    import jax
+    import jax.numpy as jnp
+    xp_jax = array_ns.get_backend('jax')
+    mesh = np.array([0.0, 1.0, 2.0, 3.0])
+    int_arr = np.array([2], dtype=int)
+    nbt_arr = np.array([4], dtype=int)
+    x_query = np.array([0.5, 1.5, 2.5])
+
+    def loss(fp):
+        out = endf_interp1d(
+            x_query, mesh, fp, int_arr, nbt_arr, xp=xp_jax,
+        )
+        return jnp.sum(out)
+
+    fp0 = jnp.array([1.0, 2.0, 4.0, 8.0])
+    grad = np.asarray(jax.grad(loss)(fp0))
+    assert np.all(np.isfinite(grad))
+    # lin-lin interp: at each x_query the derivative wrt each fp
+    # entry equals the linear-interp coefficient; sum-derivative wrt
+    # each fp entry is the count of times it contributes weighted
+    # by the local coefficient. All strictly positive here.
+    assert np.all(grad > 0.0)
+    # Finite-diff sanity on one component
+    eps = 1e-4
+    fp_p = fp0.at[1].add(eps)
+    fp_m = fp0.at[1].add(-eps)
+    fd = (float(loss(fp_p)) - float(loss(fp_m))) / (2.0 * eps)
+    np.testing.assert_allclose(grad[1], fd, rtol=1e-4)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_evaluate_interp_legendre_jax_grad_from_coeffs():
+    """`jax.grad` of the Legendre-reconstructed distribution wrt
+    the per-degree coefficient array returns a finite, non-zero
+    gradient. This is the primary issue #154 use case: user stores
+    a JAX tracer in the coefficient array and gets gradients
+    end-to-end."""
+    import jax
+    import jax.numpy as jnp
+    xp_jax = array_ns.get_backend('jax')
+    coeffs0, xp_mesh, int_arr, nbt_arr, x, mu = _hand_legendre_inputs()
+    coeffs_j = jnp.asarray(coeffs0)
+
+    def loss(coeffs):
+        out = evaluate_interp_legendre_polynomials(
+            x, mu, xp_mesh, coeffs, int_arr, nbt_arr, xp=xp_jax,
+        )
+        return jnp.sum(out)
+
+    grad = np.asarray(jax.grad(loss)(coeffs_j))
+    assert grad.shape == coeffs_j.shape
+    assert np.all(np.isfinite(grad))
+    assert np.any(grad != 0.0)
+    # Finite-diff sanity on the (1, 2) coefficient
+    eps = 1e-6
+    cp = coeffs_j.at[1, 2].add(eps)
+    cm = coeffs_j.at[1, 2].add(-eps)
+    fd = (float(loss(cp)) - float(loss(cm))) / (2.0 * eps)
+    np.testing.assert_allclose(grad[1, 2], fd, rtol=1e-4, atol=1e-8)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_dict2array_preserves_jax_tracer():
+    """`dict2array(..., xp=jax_backend)` preserves JAX tracer values
+    stored in the source dict; the returned array is jnp-native and
+    `jax.grad` reaches back through it."""
+    from endf_userpy.primitives.helpers import dict2array
+    import jax
+    import jax.numpy as jnp
+    xp_jax = array_ns.get_backend('jax')
+
+    def loss(theta):
+        src = {1: [theta, 0.5, 0.25], 2: [0.4, 0.2, 0.1]}
+        arr = dict2array(src, dtype=float, xp=xp_jax)
+        return jnp.sum(arr)
+
+    val = float(loss(1.0))
+    grad = float(jax.grad(loss)(1.0))
+    # d/dtheta of sum([theta, 0.5, 0.25, 0.4, 0.2, 0.1]) = 1.0
+    np.testing.assert_allclose(grad, 1.0, rtol=1e-12)
+    np.testing.assert_allclose(val, 1.0 + 0.5 + 0.25 + 0.4 + 0.2 + 0.1)
+
+
+def test_dict2array_default_matches_pre_port_numpy():
+    """Backward compat: `xp=None` (the default) reproduces the
+    pre-port `np.array(...)` behaviour bit-for-bit."""
+    from endf_userpy.primitives.helpers import dict2array
+    src = {1: [1.0, 2.0], 2: [3.0, 4.0]}
+    out = dict2array(src, dtype=float, order='C')
+    np.testing.assert_array_equal(out, np.array([[1.0, 2.0], [3.0, 4.0]]))
