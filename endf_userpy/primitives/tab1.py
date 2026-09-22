@@ -51,7 +51,7 @@ class TAB1:
     intp: np.ndarray
 
 
-def interp(tab1: TAB1, x_query, xp, outside_value=0.0) -> Any:
+def interp(tab1: TAB1, x_query, xp, outside_value=0.0, side='right') -> Any:
     """ENDF-6 TAB1 interpolation.
 
     ``x_query`` can be a scalar or array of the same backend as
@@ -65,9 +65,25 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0) -> Any:
       4 (log-lin): y1 * exp((x - x1) * log(y2/y1) / (x2 - x1))
       5 (log-log): y1 * exp(log(x/x1) * log(y2/y1) / log(x2/x1))
 
-    Degenerate panels (x1==x2 or y1==y2) collapse to law 1
-    (constant y1) to avoid divide-by-zero. Extrapolation returns
-    ``outside_value`` (default 0.0).
+    Degenerate panels (x1==x2 or y1==y2) collapse to law 1 to
+    avoid divide-by-zero; the returned constant follows the
+    ``side`` selection (``y1`` for ``side='left'``, ``y2`` for
+    ``side='right'``). Extrapolation returns ``outside_value``
+    (default 0.0).
+
+    ``side`` — endpoint selection at a step discontinuity:
+    ENDF-6 encodes a discontinuity by placing two adjacent
+    x-values equal (with different y-values). A query at exactly
+    that shared x is ambiguous: the left-limit is the y before
+    the step, the right-limit is the y after. NJOY reconr's
+    ``find_interval`` uses ``side='right'`` internally so its
+    downstream lookups return the right-limit, and this library's
+    own :func:`endf_interp1d` matches that convention already.
+    ``primitives.tab1.interp`` now defaults to ``'right'`` as well
+    so its behaviour agrees with NJOY at doubled-E points. Pass
+    ``side='left'`` to force the left-limit (matches libnew and
+    some other downstream tools; see issue #136). Away from
+    doubled x-values the two settings produce identical results.
 
     Note on ``outside_value``: pass ``float('nan')`` to flag
     out-of-mesh queries at the caller boundary (mirrors the
@@ -76,6 +92,8 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0) -> Any:
     can't raise cleanly under JAX tracing); use ``nan`` and
     check.
     """
+    if side not in ('right', 'left'):
+        raise ValueError(f"side must be 'right' or 'left', got {side!r}")
     x = xp.asarray(x_query, dtype=xp.float64)
 
     tab_x = xp.asarray(tab1.x, dtype=xp.float64)
@@ -83,8 +101,11 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0) -> Any:
     tab_nbt = xp.asarray(tab1.nbt, dtype=xp.int32)
     tab_intp = xp.asarray(tab1.intp, dtype=xp.int32)
 
-    # Locate the containing panel for each query point.
-    i = xp.clip(xp.searchsorted(tab_x, x, side='left'), 1, len(tab_x) - 1)
+    # Locate the containing panel for each query point. `side` picks
+    # which of the two neighbouring panels a query that lands
+    # exactly on a doubled x-value belongs to: 'right' -> next panel
+    # (right-limit / NJOY convention), 'left' -> previous panel.
+    i = xp.clip(xp.searchsorted(tab_x, x, side=side), 1, len(tab_x) - 1)
     k = xp.searchsorted(tab_nbt, i, side='left')
 
     x1 = tab_x[i - 1]
@@ -93,9 +114,15 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0) -> Any:
     y2 = tab_y[i]
     law = tab_intp[k] % 10
 
-    # Collapse degenerate cases to constant y1.
-    degenerate = (x1 == x2) | (y1 == y2)
-    law = xp.where(degenerate, 1, law)
+    # Collapse degenerate panels to law 1. For `side='right'` the
+    # constant is y2 (right-limit at a doubled x); for `side='left'`
+    # it is y1 (left-limit). Encoded via a synthetic law code so the
+    # dispatch stays vectorised.
+    degen_y_ok = (y1 == y2)
+    degen_x = (x1 == x2)
+    degenerate = degen_x | degen_y_ok
+    const_law_code = 1 if side == 'left' else 6
+    law = xp.where(degenerate, const_law_code, law)
 
     # Out-of-range -> sentinel 0 -> `outside_value`.
     out_of_range = (x < x1) | (x > x2)
@@ -210,8 +237,16 @@ def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0):
     )
 
     outside = xp.full_like(x, float(outside_value))
+    # Law code 6 is a private-to-this-module marker used by
+    # `interp(side='right')` to pick the right-limit (y2) at a
+    # doubled-x discontinuity instead of the default constant-y1
+    # collapse of law 1. Not an ENDF-6 law code; never surfaces
+    # to the caller.
+    right_const = y2
     return xp.select(
-        [law == 0, law == 1, law == 2, law == 3, law == 4, law == 5],
-        [outside, const_law, lin_lin, lin_log, log_lin, log_log],
+        [law == 0, law == 1, law == 2, law == 3,
+         law == 4, law == 5, law == 6],
+        [outside, const_law, lin_lin, lin_log,
+         log_lin, log_log, right_const],
         default=float(outside_value),
     )
