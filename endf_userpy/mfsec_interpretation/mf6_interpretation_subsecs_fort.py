@@ -16,13 +16,21 @@ module. Once every LAW has a Python implementation, ``endf6.f90``
 can move to ``tests_fortran/`` and drop out of the wheel entirely.
 """
 import numpy as np
-from ..fortran.endf6 import (
-    mf6_get_law1,
-    mf6_get_law1_disc_lines,
-    mf6_get_law2,
-    mf6_get_law6,
-    mf6_get_law7,
-)
+from ..fortran import HAS_FORTRAN, _stub
+if HAS_FORTRAN:
+    from ..fortran.endf6 import (
+        mf6_get_law1,
+        mf6_get_law1_disc_lines,
+        mf6_get_law2,
+        mf6_get_law6,
+        mf6_get_law7,
+    )
+else:
+    mf6_get_law1 = _stub('mf6_get_law1')
+    mf6_get_law1_disc_lines = _stub('mf6_get_law1_disc_lines')
+    mf6_get_law2 = _stub('mf6_get_law2')
+    mf6_get_law6 = _stub('mf6_get_law6')
+    mf6_get_law7 = _stub('mf6_get_law7')
 from ..primitives.properties import (
     get_AWI, get_AWR, get_QI, get_ZA, get_ZAI,
 )

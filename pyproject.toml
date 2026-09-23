@@ -1,4 +1,10 @@
 [build-system]
+# ``numpy`` is only needed at build time when the Fortran extension
+# is being compiled (ENDF_USERPY_BUILD_FORTRAN=1). Left in the
+# always-required build set because pip does not know whether the
+# extension will be built until setup.py runs; the extra runtime
+# cost of installing numpy at build time is negligible and it is a
+# runtime dependency anyway.
 requires = ["setuptools", "wheel", "numpy>=2.0"]
 build-backend = "setuptools.build_meta"
 
@@ -28,10 +34,16 @@ build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
 # *-win32 / *-manylinux_i686: skip 32-bit.
 # *-manylinux_aarch64: aarch64 needs QEMU; not enabled in this workflow yet.
 skip = "*-musllinux_* *-win32 *-manylinux_i686 *-manylinux_aarch64"
-# Wheel smoke test: builds an MF6 LAW1 distribution for Be-9 (n,2n),
-# which delegates to the Fortran feep_*_law1con routines. If the
-# extension or its bundled runtime libs are broken on a given
-# platform, this fails before the wheel ever ships.
+# Source installs are pure-Python by default (`pip install .`).
+# Binary wheel builds opt into the Fortran extension so users on
+# supported platforms get it for free from PyPI without needing
+# gfortran locally. See setup.py for the toggle.
+environment = { ENDF_USERPY_BUILD_FORTRAN = "1" }
+# Wheel smoke test: builds an MF6 LAW1 distribution for Be-9 (n,2n).
+# With the extension present this exercises the Fortran-backed
+# oracle path; with a pure-Python wheel it exercises the Python
+# reconstruction. Either way, if the wheel's extension or runtime
+# libs are broken on a platform, this fails before the wheel ships.
 # {project} is replaced by cibuildwheel with the project root path;
 # the script locates its data file relative to its own location.
 test-command = "python {project}/tests/wheel_smoke.py"

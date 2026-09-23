@@ -5,10 +5,15 @@ Preserved as the equivalence oracle for the Python port in
 these; parity tests use them to pin the Python port.
 """
 import numpy as np
-from ..fortran.endf6 import (
-    trans2yield as trans2yield_fort,
-    init_trans2yield as init_trans2yield_fort,
-)
+from ..fortran import HAS_FORTRAN, _stub
+if HAS_FORTRAN:
+    from ..fortran.endf6 import (
+        trans2yield as trans2yield_fort,
+        init_trans2yield as init_trans2yield_fort,
+    )
+else:
+    trans2yield_fort = _stub('trans2yield')
+    init_trans2yield_fort = _stub('init_trans2yield')
 from ..primitives import properties as prop
 from ..primitives.helpers import dict2array
 from .mf12_interpretation_helpers import (
