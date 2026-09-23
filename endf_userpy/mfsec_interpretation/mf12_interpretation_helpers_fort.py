@@ -11,13 +11,9 @@ from ..fortran.endf6 import (
 )
 from ..primitives import properties as prop
 from ..primitives.helpers import dict2array
-from ..mfsec_interpretation import mf3_interpretation as mf3_interp
 from .mf12_interpretation_helpers import (
-    DISCRETE_MT_SERIES,
-    INV_DISCRETE_SERIES_MAP,
     MAX_NUM_LEVEL,
     MAX_NK,
-    get_discrete_series_mts,
     get_available_series_mts,
 )
 
