@@ -17,19 +17,48 @@ from ..primitives import array_ns
 from .mf6_interpretation_helpers import (
     pad_outside_energydist_values,
 )
-from . import mf6_law1_epintegral, mf6_law1_preproc
-# Re-export the Fortran adaptive-mesh wrapper under the historical
-# name so callers that reach for the adaptive integrator can still
-# find it. Will be replaced by a Python port in PR-B (issue #47).
-from .mf6_interpretation_integrals_fort import (
-    get_energydist_from_subsec_law1_dynamic_mesh_fort
-    as get_energydist_from_subsec_law1_dynamic_mesh,
-)
+from . import mf6_law1_adaptive, mf6_law1_epintegral, mf6_law1_preproc
 
 __all__ = [
     'get_energydist_from_subsec_law1',
     'get_energydist_from_subsec_law1_dynamic_mesh',
 ]
+
+
+def get_energydist_from_subsec_law1_dynamic_mesh(
+    endf_dict, mt, subsec_num, e_scalar, energies_out_hint=None,
+    to_lab=True, n_gl=10, tol=1.0e-3, max_depth=20, max_points=100_000,
+):
+    """Adaptive-linearization port of Fortran ``feep_full_law1con``.
+
+    Returns ``(ep_mesh, f_mesh, dev_mesh)``: a densified ``E'`` mesh
+    plus ``f(E, E')`` values on it, where linear interpolation of
+    ``f_mesh`` between the returned ``ep_mesh`` points is accurate
+    to ``tol`` relative over the whole mesh.
+
+    Signature departs from the pre-port Fortran-backed wrapper:
+
+    - takes one scalar incident ``e_scalar`` (Fortran did the same
+      internally; the old wrapper looped externally);
+    - takes an optional ``energies_out_hint`` list of ``E'`` values
+      the caller wants included (matches the Fortran ``epu``);
+    - returns the full densified mesh and its values instead of
+      interpolating back to the caller's grid. Callers who want
+      values on their own grid can trivially ``np.interp`` on the
+      returned pair.
+
+    See :mod:`mf6_law1_adaptive` for the algorithm and tolerance
+    knobs. The Fortran-backed reference remains at
+    :func:`mf6_interpretation_integrals_fort.get_energydist_from_subsec_law1_dynamic_mesh_fort`.
+    """
+    data = mf6_law1_preproc.mf6_law1_data_from_endf_dict(
+        endf_dict, mt, subsec_num,
+    )
+    return mf6_law1_adaptive.linearize_law1_spectrum(
+        data, e_scalar, energies_out_hint=energies_out_hint,
+        to_lab=to_lab, n_gl=n_gl, tol=tol,
+        max_depth=max_depth, max_points=max_points,
+    )
 
 
 def get_energydist_from_subsec_law1(
