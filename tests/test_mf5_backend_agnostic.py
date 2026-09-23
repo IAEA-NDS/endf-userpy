@@ -9,7 +9,6 @@ closed-form physics with numpy defaults). This file exercises the
 """
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 
 import numpy as np
