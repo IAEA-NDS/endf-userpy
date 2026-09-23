@@ -1,206 +1,64 @@
+"""Public MF6 LAW=1 continuum ``E'``-integral wrappers.
+
+Backend-agnostic (numpy default; ``xp=array_ns.get_backend('jax')``
+threads a JAX tracer through). Composes the preproc dataclass
+(:mod:`mf6_law1_preproc`) with the backend-agnostic
+``mu``-integrator (:mod:`mf6_law1_epintegral`).
+
+The historical Fortran-backed implementations remain in
+:mod:`mf6_interpretation_integrals_fort` as the equivalence oracle
+for the port; ``get_energydist_from_subsec_law1_dynamic_mesh`` is a
+compatibility re-export of the Fortran adaptive variant (PR-B in
+the LAW=1 series will replace it with a pure-Python adaptive port).
+"""
 import numpy as np
-from ..fortran.endf6 import (
-    feep_full_law1con,
-    feep_points_law1con,
-)
+
+from ..primitives import array_ns
 from .mf6_interpretation_helpers import (
     pad_outside_energydist_values,
 )
-from ..primitives.helpers import (
-    dict2array,
-    convert_interp_repr,
-    find_interval,
-    find_indices_with_tol,
-)
-from ..primitives.properties import (
-    get_AWR,
-    get_AWI,
-    get_ZA,
-    get_ZAI,
+from . import mf6_law1_epintegral, mf6_law1_preproc
+# Re-export the Fortran adaptive-mesh wrapper under the historical
+# name so callers that reach for the adaptive integrator can still
+# find it. Will be replaced by a Python port in PR-B (issue #47).
+from .mf6_interpretation_integrals_fort import (
+    get_energydist_from_subsec_law1_dynamic_mesh_fort
+    as get_energydist_from_subsec_law1_dynamic_mesh,
 )
 
-
-# NOTE: This call the fortran function `feep_full_law1con`
-#       that densifies the emission energy mesh to guarantee
-#       a specific upper bound for the linearization.
-# TODO: The full potential of the fortran function still
-#       needs to be leveraged at the Python level
-@pad_outside_energydist_values
-def get_energydist_from_subsec_law1_dynamic_mesh(
-    endf_dict, mt, subsec_num, energies_in, energies_out, to_lab
-):
-    sec = endf_dict[6][mt]
-    sec['subsection'][subsec_num]['LAW'] == 1
-    eu = energies_in
-    neu = len(eu)
-    epu = energies_out
-    nepu = len(epu)
-    awr = get_AWR(endf_dict)
-    awi = get_AWI(endf_dict)
-    za = get_ZA(endf_dict)
-    zai = get_ZAI(endf_dict)
-    lct = sec['LCT'] if to_lab else 1
-    # subsection variables
-    subsec = sec['subsection'][subsec_num]
-    zap = subsec['ZAP']
-    awp = subsec['AWP']
-    lang = subsec['LANG']
-    lep = subsec['LEP']
-    ei_mesh = dict2array(subsec['E'], dtype=float)
-    int_arr = np.array(subsec['INT'], dtype=int)
-    nbt_arr = np.array(subsec['NBT'], dtype=int)
-    ei_interp = convert_interp_repr(int_arr, nbt_arr)
-    nd_arr = dict2array(subsec['ND'], dtype=int)
-    na_arr = dict2array(subsec['NA'], dtype=int)
-
-    # determine effective LCT based on emitted particle (CM or LAB)
-    if lct in (1, 2):
-        eff_lct = lct
-    elif lct == 3:
-        eff_lct = 1 if awp > 4 else 2
-    else:
-        raise NotImplementedError(f'LCT={lct} not implemented')
-
-    # find enclosing energy intervals
-    idcs = find_interval(ei_mesh, energies_in)
-
-    result_dim = (neu, nepu)
-    result_arr = np.zeros(result_dim, dtype=np.float64)
-
-    tol=1e-3
-    epu = np.array(energies_out, dtype=np.float64, order='F', copy=True)
-    nepu = len(epu)
-    nepmax = int(max(1e5, nepu + 3e4))
-
-    for i in range(result_arr.shape[0]):
-        curidx = idcs[i]
-        # `feep_points_law1con` / `feep_full_law1con` declare the
-        # first argument as a scalar double; f2py's implicit
-        # `double_from_pyobj` chain calls `.item()` on any ndim>0
-        # input, which emits `DeprecationWarning: Conversion of an
-        # array with ndim > 0 to a scalar is deprecated` on NumPy
-        # >= 1.25 and becomes a hard `TypeError` in a future
-        # release. Extract the scalar explicitly (issue #83).
-        cur_eu = float(eu[i])
-        lei = ei_interp[curidx].item()
-
-        e1 = ei_mesh[curidx].item()
-        nd1 = nd_arr[curidx].item()
-        na1 = na_arr[curidx].item()
-        ep1 = dict2array(subsec['Ep'][curidx+1], dtype=float, order='F')
-        b1 = dict2array(subsec['b'][curidx+1], dtype=float, order='F')
-
-        e2 = ei_mesh[curidx+1].item()
-        nd2 = nd_arr[curidx+1].item()
-        na2 = na_arr[curidx+1].item()
-        ep2 = dict2array(subsec['Ep'][curidx+2], dtype=float, order='F')
-        b2 = dict2array(subsec['b'][curidx+2], dtype=float, order='F')
-
-        ep = np.zeros(nepmax, dtype=np.float64)
-        feep = np.zeros(nepmax, dtype=np.float64, order='F')
-        fdev = np.zeros(nepmax, dtype=np.float64, order='F')
-
-        nep_arr = np.zeros(1, dtype=np.int64)
-
-        # NOTE: nep1 and nep2 automatically inferred
-        #       from ep1 and ep2, respectively and therefore
-        #       not passed.
-        feep_full_law1con(
-            cur_eu,
-            awr, awi, awp, za, zai, zap, eff_lct, lang, lep, lei,
-            e1, nd1, na1, ep1, b1, e2, nd2, na2, ep2, b2,
-            tol, nepu, epu, nepmax, ep, feep, fdev, nep_arr
-        )
-
-        nep = nep_arr.item()
-
-        eouts = ep[:nep]
-        idcs = find_indices_with_tol(eouts, epu, rtol=1e-8, atol=1e-10)
-        result_arr[i,:] = feep[idcs]
-
-    return result_arr
+__all__ = [
+    'get_energydist_from_subsec_law1',
+    'get_energydist_from_subsec_law1_dynamic_mesh',
+]
 
 
 @pad_outside_energydist_values
 def get_energydist_from_subsec_law1(
-    endf_dict, mt, subsec_num, energies_in, energies_out, to_lab
+    endf_dict, mt, subsec_num, energies_in, energies_out, to_lab,
+    xp=None, n_gl=10, n_polar_subpanels=4,
 ):
-    sec = endf_dict[6][mt]
-    sec['subsection'][subsec_num]['LAW'] == 1
-    eu = energies_in
-    neu = len(eu)
-    epu = energies_out
-    nepu = len(epu)
-    awr = get_AWR(endf_dict)
-    awi = get_AWI(endf_dict)
-    za = get_ZA(endf_dict)
-    zai = get_ZAI(endf_dict)
-    lct = sec['LCT'] if to_lab else 1
-    # subsection variables
-    subsec = sec['subsection'][subsec_num]
-    zap = subsec['ZAP']
-    awp = subsec['AWP']
-    lang = subsec['LANG']
-    lep = subsec['LEP']
-    ei_mesh = dict2array(subsec['E'], dtype=float)
-    int_arr = np.array(subsec['INT'], dtype=int)
-    nbt_arr = np.array(subsec['NBT'], dtype=int)
-    ei_interp = convert_interp_repr(int_arr, nbt_arr)
-    nd_arr = dict2array(subsec['ND'], dtype=int)
-    na_arr = dict2array(subsec['NA'], dtype=int)
+    """Backend-agnostic ``f(E, E')`` for one MF6 LAW=1 continuum
+    subsection.
 
-    # determine effective LCT based on emitted particle (CM or LAB)
-    if lct in (1, 2):
-        eff_lct = lct
-    elif lct == 3:
-        eff_lct = 1 if awp > 4 else 2
-    else:
-        raise NotImplementedError(f'LCT={lct} not implemented')
+    Same signature as before plus optional backend-controls. Passing
+    ``xp=array_ns.get_backend('jax')`` and storing a tracer in
+    ``endf_dict[6][mt]['subsection'][subsec_num]['b'][panel][row][col]``
+    lets ``jax.grad`` reach back to the file-stored parameters.
 
-    # find enclosing energy intervals
-    idcs = find_interval(ei_mesh, energies_in)
-
-    result_dim = (neu, nepu)
-    result_arr = np.zeros(result_dim, dtype=np.float64)
-
-    tol=1e-3
-    epu = np.array(energies_out, dtype=np.float64, order='F', copy=True)
-    nepu = len(epu)
-
-    for i in range(result_arr.shape[0]):
-        curidx = idcs[i]
-        # `feep_points_law1con` / `feep_full_law1con` declare the
-        # first argument as a scalar double; f2py's implicit
-        # `double_from_pyobj` chain calls `.item()` on any ndim>0
-        # input, which emits `DeprecationWarning: Conversion of an
-        # array with ndim > 0 to a scalar is deprecated` on NumPy
-        # >= 1.25 and becomes a hard `TypeError` in a future
-        # release. Extract the scalar explicitly (issue #83).
-        cur_eu = float(eu[i])
-        lei = ei_interp[curidx].item()
-
-        e1 = ei_mesh[curidx].item()
-        nd1 = nd_arr[curidx].item()
-        na1 = na_arr[curidx].item()
-        ep1 = dict2array(subsec['Ep'][curidx+1], dtype=float, order='F')
-        b1 = dict2array(subsec['b'][curidx+1], dtype=float, order='F')
-
-        e2 = ei_mesh[curidx+1].item()
-        nd2 = nd_arr[curidx+1].item()
-        na2 = na_arr[curidx+1].item()
-        ep2 = dict2array(subsec['Ep'][curidx+2], dtype=float, order='F')
-        b2 = dict2array(subsec['b'][curidx+2], dtype=float, order='F')
-
-        feep = np.zeros(nepu, dtype=np.float64, order='F')
-        fdev = np.zeros(nepu, dtype=np.float64, order='F')
-
-        feep_points_law1con(
-            cur_eu,
-            awr, awi, awp, za, zai, zap, eff_lct, lang, lep, lei,
-            e1, nd1, na1, ep1, b1, e2, nd2, na2, ep2, b2,
-            tol, nepu, epu, feep, fdev
-        )
-
-        result_arr[i,:] = feep
-
-    return result_arr
+    Numerics: fixed polar-angle Gauss-Legendre (default
+    ``n_gl=10`` per subpanel, ``n_polar_subpanels=4``) matches the
+    Fortran Romberg reference to within a few 1e-3 relative on
+    realistic corpus files. See :mod:`mf6_law1_epintegral` for
+    accuracy notes.
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    data = mf6_law1_preproc.mf6_law1_data_from_endf_dict(
+        endf_dict, mt, subsec_num, xp=xp,
+    )
+    ein = np.asarray(energies_in, dtype=float)
+    eout = np.asarray(energies_out, dtype=float)
+    return mf6_law1_epintegral.integrate_law1_spectrum(
+        data, ein, eout, to_lab, xp=xp,
+        n_gl=n_gl, n_polar_subpanels=n_polar_subpanels,
+    )
