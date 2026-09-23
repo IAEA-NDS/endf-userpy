@@ -37,6 +37,8 @@ import math
 
 import numpy as np
 
+from ..primitives import array_ns
+from ..primitives.helpers import dict2array
 from .mf2_interpretation_reichmoore import RMData
 from .mf2_interpretation_mlbw_preproc import (
     _KN,
@@ -49,7 +51,7 @@ from .mf2_interpretation_mlbw_preproc import (
 
 
 def rm_data_from_endf_dict(
-    endf_dict, isotope_idx: int = 1, range_idx: int = 1,
+    endf_dict, isotope_idx: int = 1, range_idx: int = 1, xp=None,
 ) -> RMData:
     """Build an :class:`RMData` from a parsed ENDF-6 dict.
 
@@ -76,11 +78,27 @@ def rm_data_from_endf_dict(
         Natural-size dataclass ready for
         :func:`mf2_interpretation_reichmoore.reconstruct`.
 
+    ``xp`` : optional backend adapter (``array_ns.get_backend(name)``).
+        ``xp=None`` (default) is numpy and preserves the pre-port
+        behaviour bit-for-bit. Passing a JAX adapter routes the
+        per-resonance width and energy marshaling (``ER``, ``GN``,
+        ``GG``) through :func:`~primitives.helpers.dict2array`'s
+        xp-aware code path so JAX tracers stored at those dict
+        leaves propagate through the dataclass into the R-matrix
+        reconstruction (issue #159, dict-first parity with MF6
+        LAW=2). ``AJ`` (channel-spin sign marker + |J| bucketing),
+        ``SPI`` / ``AWRI`` (channel radius, g_J denominator), and
+        the fission-channel widths ``GFA`` / ``GFB`` (used in the
+        ``has_gfa`` / ``has_gfb`` Python-side ``group_nfis``
+        classification) stay concrete numpy on purpose.
+
     Raises
     ------
     ValueError
         If the requested range is not (LRU=1, LRF=3).
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     awi, spin_inc = _incident_particle_from_endf(endf_dict)
 
     d151 = endf_dict[2][151]
@@ -152,9 +170,14 @@ def rm_data_from_endf_dict(
             awri_ref = awri
 
         aj_arr = list(d_l['AJ'].values())
-        er_arr = list(d_l['ER'].values())
-        gn_arr = list(d_l['GN'].values())
-        gg_arr = list(d_l['GG'].values())
+        # ER / GN / GG are the leaves users trace for autodiff; route
+        # through dict2array's xp-aware path so JAX tracers survive.
+        er_arr = dict2array(d_l['ER'], dtype=float, xp=xp)
+        gn_arr = dict2array(d_l['GN'], dtype=float, xp=xp)
+        gg_arr = dict2array(d_l['GG'], dtype=float, xp=xp)
+        # GFA / GFB stay concrete: they feed the has_gfa / has_gfb
+        # Python-side test that fixes group_nfis (a static int per
+        # group), and they are not typical fitting targets.
         gfa_arr = list(d_l.get('GFA', {}).values()) or [0.0] * len(aj_arr)
         gfb_arr = list(d_l.get('GFB', {}).values()) or [0.0] * len(aj_arr)
 
@@ -169,9 +192,9 @@ def rm_data_from_endf_dict(
                 spin_mark = 0
             key = (L, j2, spin_mark)
             per_JPi.setdefault(key, []).append((
-                float(er_arr[i]),
-                float(gn_arr[i]),
-                float(gg_arr[i]),
+                er_arr[i],
+                gn_arr[i],
+                gg_arr[i],
                 float(gfa_arr[i]),
                 float(gfb_arr[i]),
             ))
@@ -292,6 +315,10 @@ def rm_data_from_endf_dict(
     a = _channel_radius(r_ap_val_range, awri_ref, naps)
     r_a = _radius_tab1_from_ap(a, emax)
 
+    # Integer-typed group / channel bookkeeping stays on numpy.
+    # Per-resonance ER / GN / GG lists may contain JAX tracer
+    # scalars; route through xp so they survive into the dataclass.
+    # GFA / GFB kept on numpy (see the per-resonance loop above).
     return RMData(
         abn=abn,
         spi=spi,
@@ -302,9 +329,9 @@ def rm_data_from_endf_dict(
         group_g=group_g,
         group_nfis=group_nfis,
         res_group=np.asarray(res_group_list, dtype=np.int32),
-        res_er=np.asarray(res_er_list, dtype=np.float64),
-        res_gn=np.asarray(res_gn_list, dtype=np.float64),
-        res_gg=np.asarray(res_gg_list, dtype=np.float64),
+        res_er=xp.asarray(res_er_list, dtype=xp.float64),
+        res_gn=xp.asarray(res_gn_list, dtype=xp.float64),
+        res_gg=xp.asarray(res_gg_list, dtype=xp.float64),
         res_gf1=np.asarray(res_gf1_list, dtype=np.float64),
         res_gf2=np.asarray(res_gf2_list, dtype=np.float64),
         group_r_a=group_r_a_arr,
