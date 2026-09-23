@@ -517,6 +517,7 @@ def _get_particle_production_xs_impl(
 def get_particle_production_dxs_dE(
     endf_dict, reaction, particle, energies_in, energies_out,
     broadening=None, above_range='warn_nan', resonance_range='warn',
+    xp=None,
 ):
     """Energy-differential cross section for particle production.
 
@@ -540,16 +541,24 @@ def get_particle_production_dxs_dE(
     resonance_range : str, default ``'warn'``
         Policy for incident energies inside the file's
         resolved-resonance region. Matches ``get_reaction_xs``.
+    xp : optional backend adapter (issue #169). ``xp=None`` (default)
+        resolves to numpy and is bit-identical to the pre-port
+        behaviour. Passing ``xp=array_ns.get_backend('jax')`` threads
+        the reconstruction through JAX so ``jax.grad`` reaches
+        file-side leaves (e.g. MF6 LAW=1 ``b`` coefficients) end-
+        to-end. Broadened paths are numpy-only in this PR and are
+        materialised to xp-native at the return boundary.
     """
     with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_particle_production_dxs_dE_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
-            broadening,
+            broadening, xp=xp,
         )
 
 
 def _get_particle_production_dxs_dE_impl(
     endf_dict, reaction, particle, energies_in, energies_out, broadening,
+    xp=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
@@ -567,10 +576,15 @@ def _get_particle_production_dxs_dE_impl(
         _warn_law1_discrete_dropped_from_unbroadened_dxs_dE(
             endf_dict, zap, user_mts,
         )
+        # Only forward ``xp`` when the caller explicitly set it, so
+        # downstream ``func`` stubs written against the pre-port
+        # signature (no ``xp`` kwarg) still work on the default
+        # numpy path.
+        extra = {'xp': xp} if xp is not None else {}
         return quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_dexs, select,
             endf_dict, zap, energies_in, energies_out,
-            mts=mts,
+            mts=mts, **extra,
         )
 
     def cont_compute(endf_dict, mt, zap, einc, eouts):
