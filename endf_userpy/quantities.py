@@ -1,6 +1,7 @@
 import contextlib
 import numpy as np
 import warnings
+from .primitives import array_ns
 from .primitives import physical_constants as physconst
 from .primitives import properties as prop
 from .primitives import reactions as reac
@@ -299,7 +300,7 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
 def get_reaction_xs(
     endf_dict, reaction, energies_in, mt5_contrib=True,
     above_range='warn_nan', resonance_range='warn',
-    include_resonance=False, resonance_backend=None,
+    include_resonance=False, resonance_backend=None, xp=None,
 ):
     """Cross section for `reaction` on the incident energy grid.
 
@@ -336,6 +337,14 @@ def get_reaction_xs(
     30-40x faster on real actinide files after the first-call
     warm-up; ``'jax'`` enables autodiff through the resonance
     parameters.
+
+    `xp` (default ``None``: numpy): optional backend adapter that
+    threads through the whole reaction-xs computation (issue #169
+    tier-2). When combined with ``include_resonance=True`` and a
+    JAX adapter, ``jax.grad`` reaches file-side MF2 dict-stored
+    resonance parameters end-to-end. The MT5 fallback path stays
+    numpy internally and gets materialised at the boundary; its
+    autodiff support is tracked as remaining tier-2 work.
     """
     ctx = (
         quant_mt_zap.resonance_reconstruction_ctx(
@@ -348,16 +357,21 @@ def get_reaction_xs(
             resonance_range_ctx(resonance_range), \
             ctx:
         return _get_reaction_xs_impl(
-            endf_dict, reaction, energies_in, mt5_contrib,
+            endf_dict, reaction, energies_in, mt5_contrib, xp=xp,
         )
 
 
-def _get_reaction_xs_impl(endf_dict, reaction, energies_in, mt5_contrib):
+def _get_reaction_xs_impl(
+    endf_dict, reaction, energies_in, mt5_contrib, xp=None,
+):
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
     iter_mts = avail_mts.copy()
     iter_mts.update(user_mts)
-    xs = np.zeros_like(energies_in, dtype=float)
+    energies_in_xp = xp.asarray(energies_in)
+    xs = xp.zeros_like(energies_in_xp, dtype=xp.float64)
     proj = prop.get_projectile(endf_dict)
     for mt in sorted(iter_mts):
         module_logger.debug(f'consider MT={mt} for reaction xs')
@@ -367,34 +381,47 @@ def _get_reaction_xs_impl(endf_dict, reaction, energies_in, mt5_contrib):
         mt_available = mt in avail_mts
         if should_select and mt_available:
             module_logger.debug(f'select MT={mt} for reaction xs')
-            cur_xs = quant_mt_zap.compute_xs(endf_dict, mt, energies_in)
-            xs += cur_xs
+            # ``compute_xs`` takes xp and returns xp-native on the
+            # resonance-composition branch; MF3-only branch materialises
+            # numpy and gets promoted via xp.asarray inside compute_xs.
+            cur_xs = quant_mt_zap.compute_xs(
+                endf_dict, mt, energies_in, xp=xp,
+            )
+            xs = xs + cur_xs
 
-        # add associated MT5 component if available and permissible
+        # MT5 fallback component: numpy-internal for now (tier-2
+        # remainder). Kept on the numpy code path with the
+        # ``energies_in`` numpy input from the caller; result is
+        # scattered into the xp-native accumulator via a boolean
+        # mask + xp.at[..].set for jax, or xp-side assignment for
+        # numpy.
         if (mt in user_mts
                 and mt5_contrib
                 and 5 not in user_mts
                 and not reac.any_ancestor_in_mts(5, user_mts)
                 and reac.is_unique_path_to_residual(proj, mt)):
             if not mt_available or not should_select:
-                cur_xs = np.zeros_like(energies_in, dtype=float)
-            # `mt_available` is a Python bool (from `mt in avail_mts`),
-            # so the pre-fix `~np.bool(mt_available)` cast was doing
-            # nothing useful (and `np.bool` was removed in numpy 1.24
-            # anyway -- issue #15). Ternary form makes the two branches
-            # explicit: if the MT is not in the file, include every
-            # incident energy in the MT5 sum; otherwise include only
-            # those where the MT's own XS is zero.
+                cur_xs_np = np.zeros_like(np.asarray(energies_in), dtype=float)
+            else:
+                cur_xs_np = np.asarray(cur_xs, dtype=float)
             eincs_sel = (
-                (cur_xs == 0.0) if mt_available
-                else np.ones_like(energies_in, dtype=bool)
+                (cur_xs_np == 0.0) if mt_available
+                else np.ones_like(np.asarray(energies_in), dtype=bool)
             )
             mt5_xs = quant_mt_zap.compute_xs_mt5_contrib(
-                endf_dict, mt, energies_in[eincs_sel]
+                endf_dict, mt, np.asarray(energies_in)[eincs_sel]
             )
-            xs[eincs_sel] += mt5_xs
             if np.any(mt5_xs != 0.0):
                 module_logger.debug(f'include MF6/MT5 component for MT={mt}')
+            # Scatter mt5_xs (numpy) into the xp-native xs
+            # accumulator on the eincs_sel positions.
+            idxs = np.where(eincs_sel)[0]
+            if xp.name == 'jax':
+                xs = xs.at[idxs].add(xp.asarray(mt5_xs))
+            else:
+                xs_np = np.asarray(xs)
+                xs_np[eincs_sel] = xs_np[eincs_sel] + mt5_xs
+                xs = xs_np
     return xs
 
 
