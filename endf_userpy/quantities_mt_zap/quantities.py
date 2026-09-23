@@ -262,10 +262,9 @@ def compute_prodxs(endf_dict, mt, zap, energies_in, xp=None):
         and mt not in endf_dict.get(3, {})
         and mt in endf_dict.get(13, {})
     ):
-        result = mf13_interp.compute_total_photon_production_xs(
-            endf_dict, mt, energies_in,
+        return mf13_interp.compute_total_photon_production_xs(
+            endf_dict, mt, energies_in, xp=xp,
         )
-        return xp.asarray(result) if xp.name != 'numpy' else result
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     )
@@ -307,12 +306,12 @@ def compute_daxs(
         xp = array_ns.get_backend('numpy')
     if _is_mf13_only_gamma(endf_dict, mt, zap):
         prodxs = mf13_interp.compute_total_photon_production_xs(
-            endf_dict, mt, energies_in,
+            endf_dict, mt, energies_in, xp=xp,
         ).reshape(-1, 1)
         angdist = compute_angdist_values(
             endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
         )
-        return angdist * xp.asarray(prodxs) / (2 * np.pi)
+        return angdist * prodxs / (2 * np.pi)
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
@@ -344,12 +343,12 @@ def compute_dexs(
     # MF13-only gamma fast path (issue #130).
     if _is_mf13_only_gamma(endf_dict, mt, zap):
         prodxs = mf13_interp.compute_total_photon_production_xs(
-            endf_dict, mt, energies_in,
+            endf_dict, mt, energies_in, xp=xp,
         ).reshape(-1, 1)
         energydist = compute_energydist_values(
             endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
         )
-        return energydist * xp.asarray(prodxs)
+        return energydist * prodxs
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
@@ -394,7 +393,7 @@ def compute_ddxs(
 
 def compute_ddxs_from_mf15_mf14(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
-    to_lab=True,
+    to_lab=True, xp=None,
 ):
     """Unbroadened DDX contribution from MF15 continuum gamma
     spectrum + MF14 angular. Gamma-only peer of
@@ -422,11 +421,19 @@ def compute_ddxs_from_mf15_mf14(
     convention as the 1D dxs/dE path from issue #103; the warning
     from that path fires for the same file).
 
+    ``xp=None`` (default) is numpy; passing an xp adapter threads
+    tracers through MF12/MF13/MF14/MF15 leaves so ``jax.grad``
+    reaches the gamma-composition file-side parameters. MF3 xs
+    stays numpy internally.
+
     Returns
     -------
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``. Same units
     and shape as ``compute_ddxs``.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF15 continuum unbroadened DDX is gamma-only; got '
@@ -438,7 +445,7 @@ def compute_ddxs_from_mf15_mf14(
     n_einc = len(energies_in)
     n_eouts = len(energies_out)
     n_mus = len(angle_cosines_out)
-    result_zero = np.zeros((n_einc, n_eouts, n_mus), dtype=float)
+    result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
 
     if not properties.has_mf15_mt(endf_dict, mt):
         return result_zero
@@ -451,7 +458,7 @@ def compute_ddxs_from_mf15_mf14(
     #    MF3/MF12 lookup.
     if mt not in endf_dict.get(3, {}) and mt in endf_dict.get(13, {}):
         weight = mf13_interp.compute_total_photon_production_xs(
-            endf_dict, mt, energies_in,
+            endf_dict, mt, energies_in, xp=xp,
         )   # (n_einc,)
     else:
         if not properties.has_mf12_mt(endf_dict, mt):
@@ -463,26 +470,27 @@ def compute_ddxs_from_mf15_mf14(
         if not np.any(cont_mask):
             return result_zero
         yields_all = mf12_interp.compute_photon_yields(
-            endf_dict, mt, energies_in, pes,
+            endf_dict, mt, energies_in, pes, xp=xp,
         )
-        y_cont = yields_all[:, cont_mask].sum(axis=1)   # (n_einc,)
+        cont_idcs = np.where(cont_mask)[0]
+        y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)   # (n_einc,)
         xs = mf3_interp.compute_cross_section(
             endf_dict, mt, energies_in,
-        )   # (n_einc,)
-        weight = xs * y_cont
+        )   # (n_einc,), numpy
+        weight = xp.asarray(xs) * y_cont
 
     # Continuum angular from MF14 Eg=0 entry (LI=0), else isotropic.
     if properties.has_mf14_mt(endf_dict, mt) and endf_dict[14][mt]['LI'] == 0:
         cont_angdist = mf14_interp.compute_angdist_values(
             endf_dict, mt, energies_in,
-            np.array([0.0]), angle_cosines_out,
+            np.array([0.0]), angle_cosines_out, xp=xp,
         )
         f_cont = cont_angdist[:, 0, :]
     else:
-        f_cont = np.full((n_einc, n_mus), 0.5, dtype=float)
+        f_cont = xp.full((n_einc, n_mus), 0.5, dtype=xp.float64)
 
     spec = mf15_interp.compute_spectrum(
-        endf_dict, mt, energies_in, energies_out,
+        endf_dict, mt, energies_in, energies_out, xp=xp,
     )   # (n_einc, n_eouts)
     ddx = (
         weight.reshape(-1, 1, 1)

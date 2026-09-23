@@ -48,10 +48,8 @@ def compute_angdist_values(
     """Composition-layer angular distribution.
 
     ``xp=None`` (default) is numpy. Passing a JAX adapter threads
-    tracers through the MF4 or MF6 branches end-to-end. The MF14
-    gamma-angdist fallback runs on numpy internally and returns
-    xp-native at the boundary (autodiff wrt MF14 leaves is tracked
-    as tier-2 remaining under issue #169).
+    tracers through the MF4, MF6 and MF14 (gamma) branches end-to-
+    end so ``jax.grad`` reaches file-side leaves in every path.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -98,9 +96,9 @@ def compute_angdist_values(
 
     if zap == _G_ZAP and has_mf14_mt(endf_dict, mt):
         module_logger.debug('--> found gamma angular distribution in MF14')
-        return xp.asarray(_compute_mf14_gamma_angdist(
-            endf_dict, mt, energies_in, angle_cosines_out,
-        ))
+        return _compute_mf14_gamma_angdist(
+            endf_dict, mt, energies_in, angle_cosines_out, xp=xp,
+        )
 
     module_logger.debug(
         f'no angular distribution reconstructable for MT={mt}, '
@@ -145,7 +143,7 @@ def _compute_mf6_law1_disc_angdist(
 
 
 def _compute_mf14_gamma_angdist(
-    endf_dict, mt, energies_in, angle_cosines_out,
+    endf_dict, mt, energies_in, angle_cosines_out, xp=None,
 ):
     """Yield-weighted gamma angular distribution from MF14 + MF12.
 
@@ -170,6 +168,8 @@ def _compute_mf14_gamma_angdist(
     upstream; a MT reaching that branch will raise NotImplementedError
     from ``mf14_interp.compute_angdist_values``.
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     energies_in = np.asarray(energies_in, dtype=float)
     angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
     n_einc = len(energies_in)
@@ -178,41 +178,50 @@ def _compute_mf14_gamma_angdist(
     mtsec = endf_dict[14][mt]
     if mtsec['LI'] == 1:
         # Fully isotropic: f(mu) = 1/2, integrates to 1 over mu.
-        return np.full((n_einc, n_mus), 0.5, dtype=float)
+        return xp.full((n_einc, n_mus), 0.5, dtype=xp.float64)
 
     if not has_mf12_mt(endf_dict, mt):
         # LI=0 without MF12 yields is a degenerate case: fall back
         # to isotropic rather than guess a partition.
-        return np.full((n_einc, n_mus), 0.5, dtype=float)
+        return xp.full((n_einc, n_mus), 0.5, dtype=xp.float64)
 
     pes = np.asarray(mf12_interp.get_photon_energies(endf_dict, mt), dtype=float)
     yields_all = mf12_interp.compute_photon_yields(
-        endf_dict, mt, energies_in, pes,
+        endf_dict, mt, energies_in, pes, xp=xp,
     )
-    y_total = yields_all.sum(axis=1)
+    y_total = xp.sum(yields_all, axis=1)
 
     disc_mask = pes > 0.0
     disc_pes = pes[disc_mask]
-    disc_yields = yields_all[:, disc_mask]
-    y_cont = yields_all[:, ~disc_mask].sum(axis=1) if np.any(~disc_mask) else np.zeros(n_einc)
+    disc_idcs = np.where(disc_mask)[0]
+    cont_idcs = np.where(~disc_mask)[0]
+    disc_yields = yields_all[:, disc_idcs]
+    if cont_idcs.size > 0:
+        y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)
+    else:
+        y_cont = xp.zeros(n_einc, dtype=xp.float64)
 
     if len(disc_pes) == 0:
         # Only continuum-placeholder photons (no MF14 per-line data
         # applies): isotropic.
-        return np.full((n_einc, n_mus), 0.5, dtype=float)
+        return xp.full((n_einc, n_mus), 0.5, dtype=xp.float64)
 
     per_line = mf14_interp.compute_angdist_values(
-        endf_dict, mt, energies_in, disc_pes, angle_cosines_out,
+        endf_dict, mt, energies_in, disc_pes, angle_cosines_out, xp=xp,
     )  # (n_einc, n_disc, n_mus)
 
-    with np.errstate(divide='ignore', invalid='ignore'):
-        weights_disc = disc_yields / y_total[:, np.newaxis]
-        cont_frac = y_cont / y_total
-    weights_disc = np.where(np.isnan(weights_disc), 0.0, weights_disc)
-    cont_frac = np.where(np.isnan(cont_frac), 0.0, cont_frac)
+    # xp-safe divide: zero-out where y_total == 0 without producing
+    # NaN under jax (grad would then be NaN).
+    safe_total = xp.where(y_total > 0, y_total, 1.0)
+    weights_disc = xp.where(
+        (y_total > 0).reshape(-1, 1),
+        disc_yields / safe_total.reshape(-1, 1),
+        xp.asarray(0.0),
+    )
+    cont_frac = xp.where(y_total > 0, y_cont / safe_total, xp.asarray(0.0))
 
-    f_disc_avg = np.einsum('ei,eim->em', weights_disc, per_line)
-    f_cont = 0.5 * cont_frac[:, np.newaxis]
+    f_disc_avg = xp.einsum('ei,eim->em', weights_disc, per_line)
+    f_cont = 0.5 * cont_frac.reshape(-1, 1)
     return f_disc_avg + f_cont
 
 
@@ -222,11 +231,11 @@ def compute_energydist_values(
     """Composition-layer energy distribution.
 
     ``xp=None`` (default) is numpy. Passing a JAX adapter threads
-    tracers through the MF5 or MF6 branches. The
+    tracers through the MF5, MF6 and MF15 (gamma) branches end-to-
+    end so ``jax.grad`` reaches file-side leaves. The
     ``convert_angdist_to_energydist`` fallback (MF4 angdist -> E'
     via LAB Jacobian) runs on numpy internally and returns xp-
-    native at the boundary; the MF15 gamma-spectrum branch likewise
-    stays numpy pending its own tier-2 port.
+    native at the boundary.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -279,7 +288,7 @@ def compute_energydist_values(
     elif has_mf15_mt(endf_dict, mt) and zap == get_zap_for_particle('g'):
         module_logger.debug('--> found continuous gamma energy spectrum in MF15')
         spec = mf15_interp.compute_spectrum(
-            endf_dict, mt, energies_in, energies_out
+            endf_dict, mt, energies_in, energies_out, xp=xp,
         )
         # Weight the MF15 continuum shape by the continuum yield
         # fraction from MF12 (issue #54). `compute_dexs` multiplies
@@ -303,12 +312,17 @@ def compute_energydist_values(
             cont_mask = pes == 0.0
             if np.any(cont_mask):
                 yields_all = mf12_interp.compute_photon_yields(
-                    endf_dict, mt, energies_in, pes,
+                    endf_dict, mt, energies_in, pes, xp=xp,
                 )
-                y_cont = yields_all[:, cont_mask].sum(axis=1)
-                y_total = yields_all.sum(axis=1)
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    frac = np.where(y_total > 0, y_cont / y_total, 0.0)
+                cont_idcs = np.where(cont_mask)[0]
+                y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)
+                y_total = xp.sum(yields_all, axis=1)
+                # xp-safe divide: zero-out where y_total == 0 without
+                # producing NaN under jax (which would break grad).
+                safe_total = xp.where(y_total > 0, y_total, 1.0)
+                frac = xp.where(
+                    y_total > 0, y_cont / safe_total, xp.asarray(0.0),
+                )
                 spec = spec * frac.reshape(-1, 1)
             else:
                 # MF12 declares no Eg=0 continuum placeholder, so
@@ -333,13 +347,11 @@ def compute_energydist_values(
                         f"otherwise the drop is correct.",
                         UserWarning, stacklevel=2,
                     )
-                spec = np.zeros_like(spec)
+                spec = xp.zeros_like(spec)
         # No MF12 at all: MF15 stands alone, keep unweighted
         # behaviour so the reaction-string yield fallback (mult=1
         # for (n,g)) times MF15 still integrates to sigma.
-        # MF15 path is currently numpy-only; convert to xp at the
-        # boundary.
-        return xp.asarray(spec) if xp.name != 'numpy' else spec
+        return spec
 
     # No representable continuous energy spectrum for this (MT, ZAP):
     # either MF6 with only LAW=1 ND>0 discrete-line content (handled

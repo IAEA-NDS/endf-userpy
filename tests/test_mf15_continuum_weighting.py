@@ -182,11 +182,11 @@ def test_synthetic_mf15_branch_weights_by_ycont_fraction(monkeypatch):
     def fake_get_photon_energies(endf_dict, mt):
         return np.array([0.0, 1e6, 2e6])  # one Eg=0, two discrete
 
-    def fake_compute_photon_yields(endf_dict, mt, eincs, pes):
+    def fake_compute_photon_yields(endf_dict, mt, eincs, pes, **_):
         # y_cont = 0.3, discrete = 0.4 + 0.3 = 0.7, Y_total = 1.0
         return np.tile(np.array([0.3, 0.4, 0.3]), (len(eincs), 1))
 
-    def fake_compute_spectrum(endf_dict, mt, eincs, eouts):
+    def fake_compute_spectrum(endf_dict, mt, eincs, eouts, **_):
         # Return a nonzero, non-degenerate reference spectrum
         return np.tile(np.linspace(0.5, 1.5, len(eouts)), (len(eincs), 1))
 
@@ -225,10 +225,10 @@ def test_synthetic_no_eg0_placeholder_drops_mf15(monkeypatch):
     def fake_get_photon_energies(endf_dict, mt):
         return np.array([1e6, 2e6])  # discrete only, no Eg=0
 
-    def fake_compute_photon_yields(endf_dict, mt, eincs, pes):
+    def fake_compute_photon_yields(endf_dict, mt, eincs, pes, **_):
         return np.tile(np.array([0.4, 0.6]), (len(eincs), 1))
 
-    def fake_compute_spectrum(endf_dict, mt, eincs, eouts):
+    def fake_compute_spectrum(endf_dict, mt, eincs, eouts, **_):
         return np.ones((len(eincs), len(eouts)))
 
     monkeypatch.setattr(d1d, 'has_mf5_mt', lambda d, m: False)
@@ -260,7 +260,7 @@ def test_synthetic_no_mf12_keeps_unweighted(monkeypatch):
     Keep the unweighted behaviour so the reaction-string yield
     fallback (mult=1 for (n,g)) times MF15 still integrates to
     sigma."""
-    def fake_compute_spectrum(endf_dict, mt, eincs, eouts):
+    def fake_compute_spectrum(endf_dict, mt, eincs, eouts, **_):
         return np.full((len(eincs), len(eouts)), 3.14)
 
     monkeypatch.setattr(d1d, 'has_mf5_mt', lambda d, m: False)
