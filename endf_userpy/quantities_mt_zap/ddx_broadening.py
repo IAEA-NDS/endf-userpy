@@ -318,7 +318,7 @@ def compute_ddx_discrete_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out, angle_cosines_out,
     kernel,
-    to_lab=True,
+    to_lab=True, xp=None,
 ):
     """DDX of the 2-body discrete-level part of (MT, ZAP), with the
     kinematic delta delta(E_out - E_out_kin(E_in, mu)) replaced by
@@ -338,6 +338,15 @@ def compute_ddx_discrete_broadened(
         offsets and return values of the same shape (most numpy-based
         kernels satisfy this automatically). Should integrate to ~1
         over its support so the production cross section is conserved.
+    xp : optional backend adapter (issue #169). ``xp=None`` (default)
+        is numpy; passing a JAX adapter routes the angular
+        reconstruction and the pointwise kernel evaluation through
+        JAX so ``jax.grad`` reaches file-side leaves and the
+        ``kernel`` closure's parameters. MF3 xs and the 2-body
+        kinematic ``E_out_kin`` computation stay numpy (they depend
+        on the file's masses and Q, not on grad-live parameters);
+        materialised via ``xp.asarray`` at the multiplication
+        boundary.
 
     Returns
     -------
@@ -345,16 +354,20 @@ def compute_ddx_discrete_broadened(
         Broadened discrete DDX, shape `(n_einc, n_eouts, n_mus)`. Same
         units as `compute_ddxs`.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     energies_in = np.asarray(energies_in, dtype=float)
     energies_out = np.asarray(energies_out, dtype=float)
     angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
 
     angdist = _compute_discrete_angdist(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+        xp=xp,
     )  # (n_einc, n_mus)
     eout_kin = _compute_eout_kin(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
-    )  # (n_einc, n_mus)
+    )  # (n_einc, n_mus); numpy, depends on masses/Q only
 
     # K(E_out_j - E_out_kin(E_in_i, mu_k)) for every grid cell.
     delta = (
@@ -363,24 +376,32 @@ def compute_ddx_discrete_broadened(
     )
     feasible = np.isfinite(eout_kin) & (eout_kin >= 0.0)
     delta = np.where(feasible[:, None, :], delta, 0.0)
-    kernel_vals = np.asarray(kernel(delta))
-    kernel_vals = np.where(feasible[:, None, :], kernel_vals, 0.0)
+    kernel_vals = kernel(xp.asarray(delta))
+    kernel_vals = xp.where(
+        xp.asarray(feasible[:, None, :]), kernel_vals, xp.asarray(0.0),
+    )
 
-    angdist_b = angdist.reshape(angdist.shape[0], 1, angdist.shape[1])
+    angdist_b = angdist.reshape(
+        angdist.shape[0], 1, angdist.shape[1],
+    )
     yields = _compute_discrete_yields(
         endf_dict, mt, zap, energies_in,
     ).reshape(-1, 1, 1)
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
-    return kernel_vals * angdist_b * xs * yields / (2 * np.pi)
+    return (
+        kernel_vals * angdist_b
+        * xp.asarray(xs) * xp.asarray(yields)
+        / (2 * np.pi)
+    )
 
 
 def compute_ddx_law1_discrete_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out, angle_cosines_out,
     kernel,
-    to_lab=True,
+    to_lab=True, xp=None,
 ):
     """DDX contribution from MF6/LAW=1 discrete-energy lines (ND>0),
     with the kinematic delta at each line replaced by `kernel`.
@@ -409,10 +430,19 @@ def compute_ddx_law1_discrete_broadened(
     channel; calling on a MT/ZAP with no LAW=1 ND>0 content returns
     a zero DDX.
 
+    ``xp=None`` (default) is numpy; passing a JAX adapter routes the
+    per-line kernel accumulation through JAX so ``jax.grad`` reaches
+    the ``kernel`` closure's parameters and file-side leaves via
+    ``compute_law1_discrete_lines`` (which is already xp-aware from
+    prior tier-1 PRs). MF3 xs and MF6 yields stay numpy internally.
+
     Returns
     -------
     ddx : ndarray of shape (n_einc, n_eouts, n_mus).
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     energies_in = np.asarray(energies_in, dtype=float)
     energies_out = np.asarray(energies_out, dtype=float)
     angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
@@ -420,22 +450,25 @@ def compute_ddx_law1_discrete_broadened(
     ep_disc_lab, amp_disc = mf6_interp.compute_law1_discrete_lines(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
     )
-    # Shapes: (n_einc, n_mus, K)
-    ddx = np.zeros(
-        (len(energies_in), len(energies_out), len(angle_cosines_out)),
-        dtype=float,
-    )
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    n_mus = len(angle_cosines_out)
     if ep_disc_lab.shape[-1] == 0:
-        return ddx
+        return xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
+
+    ddx = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
+    ep_disc_lab_xp = xp.asarray(ep_disc_lab)
+    amp_disc_xp = xp.asarray(amp_disc)
+    eouts_xp = xp.asarray(energies_out)
 
     # (1, n_eouts, 1) - (n_einc, 1, n_mus) -> (n_einc, n_eouts, n_mus)
     for k in range(ep_disc_lab.shape[-1]):
-        pos = ep_disc_lab[:, np.newaxis, :, k]  # (n_einc, 1, n_mus)
-        amp = amp_disc[:, np.newaxis, :, k]     # same shape
+        pos = ep_disc_lab_xp[:, None, :, k]  # (n_einc, 1, n_mus)
+        amp = amp_disc_xp[:, None, :, k]     # same shape
         # Cells where the map failed have amp == 0; the kernel value
         # at whatever pos happens to be there is multiplied by zero.
-        delta = energies_out[np.newaxis, :, np.newaxis] - pos
-        ddx += np.asarray(kernel(delta)) * amp
+        delta = eouts_xp[None, :, None] - pos
+        ddx = ddx + kernel(delta) * amp
 
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True,
@@ -443,13 +476,14 @@ def compute_ddx_law1_discrete_broadened(
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
-    return ddx * yields * xs / (2 * np.pi)
+    return ddx * xp.asarray(yields) * xp.asarray(xs) / (2 * np.pi)
 
 
 def compute_ddx_mf12_discrete_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out, angle_cosines_out,
     kernel,
+    xp=None,
 ):
     """DDX contribution from MF12 discrete photon lines with the MF14
     angular distribution factored in, and each Dirac peak at Eg_i
@@ -489,6 +523,9 @@ def compute_ddx_mf12_discrete_broadened(
     -------
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF12 discrete-line broadening is gamma-only; got '
@@ -500,59 +537,62 @@ def compute_ddx_mf12_discrete_broadened(
     n_einc = len(energies_in)
     n_eouts = len(energies_out)
     n_mus = len(angle_cosines_out)
-    result = np.zeros((n_einc, n_eouts, n_mus), dtype=float)
+    result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
     if not has_mf12_mt(endf_dict, mt):
-        return result
+        return result_zero
 
     photon_energies = mf12_interp.get_photon_energies(endf_dict, mt)
     if photon_energies is None:
-        return result
+        return result_zero
     photon_energies = np.asarray(photon_energies, dtype=float)
     disc_mask = photon_energies > 0.0
     if not np.any(disc_mask):
-        return result
+        return result_zero
 
     yields_all = mf12_interp.compute_photon_yields(
-        endf_dict, mt, energies_in, photon_energies,
+        endf_dict, mt, energies_in, photon_energies, xp=xp,
     )
     Eg_disc = photon_energies[disc_mask]
-    yields_disc = yields_all[:, disc_mask]  # (n_einc, n_disc)
+    disc_idcs = np.where(disc_mask)[0]
+    yields_disc = yields_all[:, disc_idcs]  # (n_einc, n_disc)
 
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
-    )  # (n_einc,)
-    weight_E = yields_disc * xs[:, np.newaxis]  # (n_einc, n_disc)
+    )  # (n_einc,), numpy
+    weight_E = yields_disc * xp.asarray(xs[:, None])  # (n_einc, n_disc)
 
     # Per-line angular distribution f_i(mu | Ein), shape
     # (n_einc, n_disc, n_mus).
     if has_mf14_mt(endf_dict, mt):
         mtsec14 = endf_dict[14][mt]
         if mtsec14['LI'] == 1:
-            per_line_angdist = np.full(
-                (n_einc, len(Eg_disc), n_mus), 0.5, dtype=float,
+            per_line_angdist = xp.full(
+                (n_einc, len(Eg_disc), n_mus), 0.5, dtype=xp.float64,
             )
         else:
             per_line_angdist = mf14_interp.compute_angdist_values(
                 endf_dict, mt, energies_in, Eg_disc, angle_cosines_out,
+                xp=xp,
             )
     else:
-        per_line_angdist = np.full(
-            (n_einc, len(Eg_disc), n_mus), 0.5, dtype=float,
+        per_line_angdist = xp.full(
+            (n_einc, len(Eg_disc), n_mus), 0.5, dtype=xp.float64,
         )
 
+    result = result_zero
     for k in range(len(Eg_disc)):
-        e_kernel = np.asarray(kernel(energies_out - Eg_disc[k]))
+        e_kernel = kernel(xp.asarray(energies_out) - Eg_disc[k])
         # (n_einc, 1, 1) * (1, n_eouts, 1) * (n_einc, 1, n_mus)
-        result += (
+        result = result + (
             weight_E[:, k].reshape(-1, 1, 1)
             * e_kernel.reshape(1, -1, 1)
             * per_line_angdist[:, k, :].reshape(n_einc, 1, n_mus)
         )
-    return np.clip(result / (2 * np.pi), 0.0, None)
+    return xp.clip(result / (2 * np.pi), 0.0, None)
 
 
 def compute_dxs_dE_mf12_discrete_broadened(
-    endf_dict, mt, zap, energies_in, energies_out, kernel,
+    endf_dict, mt, zap, energies_in, energies_out, kernel, xp=None,
 ):
     """1D dxs/dE contribution from discrete photon lines declared in
     MF12, with each Dirac peak at Eg_i replaced by ``kernel``.
@@ -587,6 +627,9 @@ def compute_dxs_dE_mf12_discrete_broadened(
     substituting ``mf13_interp.compute_photon_production_xs`` for
     ``sigma * y_i`` line by line.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF12 discrete-line broadening is gamma-only; got '
@@ -594,51 +637,53 @@ def compute_dxs_dE_mf12_discrete_broadened(
         )
     energies_in = np.asarray(energies_in, dtype=float)
     energies_out = np.asarray(energies_out, dtype=float)
-    result = np.zeros(
-        (len(energies_in), len(energies_out)), dtype=float,
+    result_zero = xp.zeros(
+        (len(energies_in), len(energies_out)), dtype=xp.float64,
     )
     if not has_mf12_mt(endf_dict, mt):
-        return result
+        return result_zero
 
     photon_energies = mf12_interp.get_photon_energies(endf_dict, mt)
     if photon_energies is None:
-        return result
+        return result_zero
     photon_energies = np.asarray(photon_energies, dtype=float)
     disc_mask = photon_energies > 0.0
     if not np.any(disc_mask):
-        return result
+        return result_zero
 
     # compute_photon_yields returns shape (n_einc, n_photen). We
     # request the full set (including any Eg=0 placeholder) so the
     # underlying reader keeps a consistent index; we then slice out
     # the discrete rows.
     yields_all = mf12_interp.compute_photon_yields(
-        endf_dict, mt, energies_in, photon_energies,
+        endf_dict, mt, energies_in, photon_energies, xp=xp,
     )
     Eg_disc = photon_energies[disc_mask]
-    yields_disc = yields_all[:, disc_mask]  # (n_einc, n_disc_lines)
+    disc_idcs = np.where(disc_mask)[0]
+    yields_disc = yields_all[:, disc_idcs]  # (n_einc, n_disc_lines)
 
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
-    )  # (n_einc,)
-    weight = (yields_disc * xs[:, np.newaxis])  # (n_einc, n_disc_lines)
+    )  # (n_einc,), numpy
+    weight = yields_disc * xp.asarray(xs[:, None])  # (n_einc, n_disc_lines)
 
     # Per-line kernel folding. Loop over the K discrete lines rather
     # than materialising a (n_einc, n_eouts, K) tensor -- K is small
     # for LO=2 partial channels (typically 1..a few) and moderate for
     # LO=1 capture files (~300 for Al-27) but the loop stays flat
     # anyway and keeps memory linear in n_eouts.
+    result = result_zero
+    eouts_xp = xp.asarray(energies_out)
     for k in range(len(Eg_disc)):
-        delta = energies_out - Eg_disc[k]  # (n_eouts,)
-        result += (
-            np.asarray(kernel(delta))[np.newaxis, :]
-            * weight[:, k].reshape(-1, 1)
+        delta = eouts_xp - Eg_disc[k]
+        result = result + (
+            kernel(delta)[None, :] * weight[:, k].reshape(-1, 1)
         )
-    return np.clip(result, 0.0, None)
+    return xp.clip(result, 0.0, None)
 
 
 def compute_dxs_dE_mf13_discrete_broadened(
-    endf_dict, mt, zap, energies_in, energies_out, kernel,
+    endf_dict, mt, zap, energies_in, energies_out, kernel, xp=None,
 ):
     """1D dxs/dE contribution from discrete photon lines declared in
     MF13, with each Dirac peak at ``Eg_i`` replaced by ``kernel``.
@@ -658,6 +703,9 @@ def compute_dxs_dE_mf13_discrete_broadened(
     continuum-spectrum placeholder combined with MF15 (same
     convention as MF12) and is excluded here.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF13 discrete-line broadening is gamma-only; got '
@@ -665,39 +713,41 @@ def compute_dxs_dE_mf13_discrete_broadened(
         )
     energies_in = np.asarray(energies_in, dtype=float)
     energies_out = np.asarray(energies_out, dtype=float)
-    result = np.zeros(
-        (len(energies_in), len(energies_out)), dtype=float,
+    result_zero = xp.zeros(
+        (len(energies_in), len(energies_out)), dtype=xp.float64,
     )
     if not has_mf13_mt(endf_dict, mt):
-        return result
+        return result_zero
 
     photon_energies = mf13_interp.get_photon_energies(endf_dict, mt)
     if photon_energies is None or len(photon_energies) == 0:
-        return result
+        return result_zero
     photon_energies = np.asarray(photon_energies, dtype=float)
     disc_mask = photon_energies > 0.0
     if not np.any(disc_mask):
-        return result
+        return result_zero
     Eg_disc = photon_energies[disc_mask]
 
     # (n_einc, n_disc): per-line photon-production XS in barn.
     prod_xs = mf13_interp.compute_photon_production_xs(
-        endf_dict, mt, energies_in, Eg_disc,
+        endf_dict, mt, energies_in, Eg_disc, xp=xp,
     )
 
+    result = result_zero
+    eouts_xp = xp.asarray(energies_out)
     for k in range(len(Eg_disc)):
-        delta = energies_out - Eg_disc[k]
-        result += (
-            np.asarray(kernel(delta))[np.newaxis, :]
-            * prod_xs[:, k].reshape(-1, 1)
+        delta = eouts_xp - Eg_disc[k]
+        result = result + (
+            kernel(delta)[None, :] * prod_xs[:, k].reshape(-1, 1)
         )
-    return np.clip(result, 0.0, None)
+    return xp.clip(result, 0.0, None)
 
 
 def compute_ddx_mf13_discrete_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out, angle_cosines_out,
     kernel,
+    xp=None,
 ):
     """DDX contribution from MF13 discrete photon lines with the
     MF14 angular distribution factored in, and each Dirac peak at
@@ -715,6 +765,9 @@ def compute_ddx_mf13_discrete_broadened(
     -------
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF13 discrete-line broadening is gamma-only; got '
@@ -726,22 +779,22 @@ def compute_ddx_mf13_discrete_broadened(
     n_einc = len(energies_in)
     n_eouts = len(energies_out)
     n_mus = len(angle_cosines_out)
-    result = np.zeros((n_einc, n_eouts, n_mus), dtype=float)
+    result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
     if not has_mf13_mt(endf_dict, mt):
-        return result
+        return result_zero
 
     photon_energies = mf13_interp.get_photon_energies(endf_dict, mt)
     if photon_energies is None or len(photon_energies) == 0:
-        return result
+        return result_zero
     photon_energies = np.asarray(photon_energies, dtype=float)
     disc_mask = photon_energies > 0.0
     if not np.any(disc_mask):
-        return result
+        return result_zero
     Eg_disc = photon_energies[disc_mask]
 
     # (n_einc, n_disc): per-line photon-production XS in barn.
     prod_xs = mf13_interp.compute_photon_production_xs(
-        endf_dict, mt, energies_in, Eg_disc,
+        endf_dict, mt, energies_in, Eg_disc, xp=xp,
     )
 
     # Per-line angular distribution f_i(mu | Ein), shape
@@ -751,33 +804,36 @@ def compute_ddx_mf13_discrete_broadened(
     if has_mf14_mt(endf_dict, mt):
         mtsec14 = endf_dict[14][mt]
         if mtsec14['LI'] == 1:
-            per_line_angdist = np.full(
-                (n_einc, len(Eg_disc), n_mus), 0.5, dtype=float,
+            per_line_angdist = xp.full(
+                (n_einc, len(Eg_disc), n_mus), 0.5, dtype=xp.float64,
             )
         else:
             per_line_angdist = mf14_interp.compute_angdist_values(
                 endf_dict, mt, energies_in, Eg_disc, angle_cosines_out,
+                xp=xp,
             )
     else:
-        per_line_angdist = np.full(
-            (n_einc, len(Eg_disc), n_mus), 0.5, dtype=float,
+        per_line_angdist = xp.full(
+            (n_einc, len(Eg_disc), n_mus), 0.5, dtype=xp.float64,
         )
 
+    result = result_zero
+    eouts_xp = xp.asarray(energies_out)
     for k in range(len(Eg_disc)):
-        e_kernel = np.asarray(kernel(energies_out - Eg_disc[k]))
-        result += (
+        e_kernel = kernel(eouts_xp - Eg_disc[k])
+        result = result + (
             prod_xs[:, k].reshape(-1, 1, 1)
             * e_kernel.reshape(1, -1, 1)
             * per_line_angdist[:, k, :].reshape(n_einc, 1, n_mus)
         )
-    return np.clip(result / (2 * np.pi), 0.0, None)
+    return xp.clip(result / (2 * np.pi), 0.0, None)
 
 
 def compute_ddx_mf15_continuum_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
-    to_lab=True,
+    to_lab=True, xp=None,
     **convolve_kwargs,
 ):
     """DDX contribution from the MF15 continuous gamma spectrum,
@@ -829,6 +885,9 @@ def compute_ddx_mf15_continuum_broadened(
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``. Units match
     `compute_ddx_continuous_broadened`: barn / eV / sr.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF15 continuum broadening is gamma-only; got '
@@ -840,7 +899,7 @@ def compute_ddx_mf15_continuum_broadened(
     n_einc = len(energies_in)
     n_eouts = len(energies_out)
     n_mus = len(angle_cosines_out)
-    result_zero = np.zeros((n_einc, n_eouts, n_mus), dtype=float)
+    result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
 
     if not has_mf15_mt(endf_dict, mt):
         return result_zero
@@ -855,8 +914,8 @@ def compute_ddx_mf15_continuum_broadened(
     #    lookup needed.
     if mt not in endf_dict.get(3, {}) and mt in endf_dict.get(13, {}):
         weight = mf13_interp.compute_total_photon_production_xs(
-            endf_dict, mt, energies_in,
-        )   # (n_einc,)
+            endf_dict, mt, energies_in, xp=xp,
+        )   # (n_einc,), xp-native
     else:
         # Continuum yield from MF12 (the Eg=0 placeholder subsection).
         # If MF12 has no Eg=0 placeholder, the continuum yield is
@@ -871,13 +930,14 @@ def compute_ddx_mf15_continuum_broadened(
         if not np.any(cont_mask):
             return result_zero
         yields_all = mf12_interp.compute_photon_yields(
-            endf_dict, mt, energies_in, pes,
+            endf_dict, mt, energies_in, pes, xp=xp,
         )
-        y_cont = yields_all[:, cont_mask].sum(axis=1)   # (n_einc,)
+        cont_idcs = np.where(cont_mask)[0]
+        y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)   # (n_einc,)
         xs = mf3_interp.compute_cross_section(
             endf_dict, mt, energies_in,
-        )   # (n_einc,)
-        weight = xs * y_cont
+        )   # (n_einc,), numpy
+        weight = xp.asarray(xs) * y_cont
         # NOTE on normalisation: the 1D dxs/dE path composes
         # `compute_dexs = compute_yields * xs * compute_energydist_values`
         # where compute_yields returns Y_total (all photons: discrete
@@ -898,12 +958,12 @@ def compute_ddx_mf15_continuum_broadened(
     if has_mf14_mt(endf_dict, mt) and endf_dict[14][mt]['LI'] == 0:
         cont_angdist = mf14_interp.compute_angdist_values(
             endf_dict, mt, energies_in,
-            np.array([0.0]), angle_cosines_out,
+            np.array([0.0]), angle_cosines_out, xp=xp,
         )
         # Shape (n_einc, 1, n_mus) -> (n_einc, n_mus).
         f_cont = cont_angdist[:, 0, :]
     else:
-        f_cont = np.full((n_einc, n_mus), 0.5, dtype=float)
+        f_cont = xp.full((n_einc, n_mus), 0.5, dtype=xp.float64)
 
     # Broaden the MF15 spectrum along E_out. adaptive_convolve
     # expects f(eout) returning an array with the E_out axis last;
@@ -911,12 +971,12 @@ def compute_ddx_mf15_continuum_broadened(
     # -- f_cont is broadcast in afterwards.
     def f_spec(eout_internal):
         return mf15_interp.compute_spectrum(
-            endf_dict, mt, energies_in, eout_internal,
+            endf_dict, mt, energies_in, eout_internal, xp=xp,
         )
 
     broadened_spec = adaptive_convolve(
         f_spec, kernel, energies_out,
-        kernel_width=kernel_width,
+        kernel_width=kernel_width, xp=xp,
         **convolve_kwargs,
     )  # shape (n_einc, n_eouts)
 
@@ -929,7 +989,7 @@ def compute_ddx_mf15_continuum_broadened(
     )
     # FFT roundoff can produce sub-eps negatives at the tails; clip
     # for consistency with the other broadened folders.
-    return np.clip(ddx / (2 * np.pi), 0.0, None)
+    return xp.clip(ddx / (2 * np.pi), 0.0, None)
 
 
 def compute_dxs_dE_law1_discrete_broadened(
@@ -938,6 +998,7 @@ def compute_dxs_dE_law1_discrete_broadened(
     kernel,
     to_lab=True,
     n_mu_internal=64,
+    xp=None,
 ):
     """1D analogue of `compute_ddx_law1_discrete_broadened`: DDX of
     MF6/LAW=1 ND>0 discrete lines with the kinematic delta replaced
@@ -968,28 +1029,40 @@ def compute_dxs_dE_law1_discrete_broadened(
     dxs_dE : ndarray of shape (n_einc, n_eouts). Same units as
     `compute_dexs`.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if n_mu_internal < 2:
         raise ValueError('n_mu_internal must be >= 2')
     mus = np.linspace(-1.0, 1.0, n_mu_internal)
     ddx = compute_ddx_law1_discrete_broadened(
         endf_dict, mt, zap,
         energies_in, energies_out, mus,
-        kernel, to_lab=to_lab,
+        kernel, to_lab=to_lab, xp=xp,
     )
-    return trapezoid(ddx, mus, axis=-1) * (2 * np.pi)
+    # trapezoid over mu. Use xp.trapezoid on JAX (traced arrays cannot
+    # go through numpy's trapezoid without materialising); the numpy
+    # backend still routes through the np_compat shim.
+    if xp.name == 'numpy':
+        return trapezoid(ddx, mus, axis=-1) * (2 * np.pi)
+    return xp.trapezoid(ddx, xp.asarray(mus), axis=-1) * (2 * np.pi)
 
 
 def _compute_discrete_angdist(
-    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=None,
 ):
     """Angular distribution g(mu|E_in) for a 2-body discrete channel."""
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if has_mf6_mt(endf_dict, mt) and mf6_help.has_angdist_part(endf_dict, mt, zap):
         return mf6_interp.compute_angdist_values(
             endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+            xp=xp,
         )
     if has_mf4_mt(endf_dict, mt) and not has_mf5_mt(endf_dict, mt):
         return mf4_interp.compute_angdist_values(
-            endf_dict, mt, energies_in, angle_cosines_out, to_lab,
+            endf_dict, mt, energies_in, angle_cosines_out, to_lab, xp=xp,
         )
     raise ValueError(
         f"MT={mt}, ZAP={zap} has no 2-body discrete-level angular "
