@@ -32,19 +32,27 @@ __all__ = [
 ]
 
 
-@pad_outside_energydist_values
 def get_energydist_from_subsec_law1(
     endf_dict, mt, subsec_num, energies_in, energies_out, to_lab,
-    xp=None, n_gl=10,
+    xp=None, n_gl=10, panel_idx=None,
 ):
     """Backend-agnostic ``f(E, E')`` for one MF6 LAW=1 continuum
     subsection.
 
-    Same signature as before plus optional backend controls.
     Passing ``xp=array_ns.get_backend('jax')`` and storing a tracer
     in ``endf_dict[6][mt]['subsection'][subsec_num]['b'][panel][row]
     [col]`` lets ``jax.grad`` reach back to the file-stored
     parameters.
+
+    ``panel_idx`` (Python int) is the entry point for ``jax.grad``
+    wrt ``energies_in`` / ``energies_out``: with a static panel
+    choice, both arrays are kept xp-native and flow through the
+    integrator as tracers. The caller must keep ``energies_in``
+    inside ``[ei_mesh[panel_idx], ei_mesh[panel_idx + 1]]`` --
+    grad across a panel knot is undefined (the amplitude has
+    physical C0 kinks there). The default ``panel_idx=None`` uses
+    the section-wide multi-panel dispatcher and applies the
+    standard outside-range zero-padding.
 
     Numerics: kink-aware polar-angle Gauss-Legendre. Subpanels are
     aligned with the LEP-piecewise ``E'`` knots of the two
@@ -54,6 +62,23 @@ def get_energydist_from_subsec_law1(
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    if panel_idx is not None:
+        return _get_energydist_from_subsec_law1_single_panel(
+            endf_dict, mt, subsec_num, energies_in, energies_out,
+            to_lab, xp=xp, n_gl=n_gl, panel_idx=panel_idx,
+        )
+    return _get_energydist_from_subsec_law1_multi_panel(
+        endf_dict, mt, subsec_num, energies_in, energies_out,
+        to_lab, xp=xp, n_gl=n_gl,
+    )
+
+
+@pad_outside_energydist_values
+def _get_energydist_from_subsec_law1_multi_panel(
+    endf_dict, mt, subsec_num, energies_in, energies_out, to_lab,
+    xp=None, n_gl=10,
+):
+    """Section-wide dispatcher with outside-range zero-padding."""
     data = mf6_law1_preproc.mf6_law1_data_from_endf_dict(
         endf_dict, mt, subsec_num, xp=xp,
     )
@@ -61,4 +86,20 @@ def get_energydist_from_subsec_law1(
     eout = np.asarray(energies_out, dtype=float)
     return mf6_law1_epintegral.integrate_law1_spectrum(
         data, ein, eout, to_lab, xp=xp, n_gl=n_gl,
+    )
+
+
+def _get_energydist_from_subsec_law1_single_panel(
+    endf_dict, mt, subsec_num, energies_in, energies_out, to_lab,
+    xp, n_gl, panel_idx,
+):
+    """Autodiff-safe single-panel path. No decorator, no numpy
+    conversion of ``energies_in`` / ``energies_out`` (tracers pass
+    through)."""
+    data = mf6_law1_preproc.mf6_law1_data_from_endf_dict(
+        endf_dict, mt, subsec_num, xp=xp,
+    )
+    return mf6_law1_epintegral.integrate_law1_spectrum(
+        data, energies_in, energies_out, to_lab,
+        xp=xp, n_gl=n_gl, panel_idx=panel_idx,
     )
