@@ -1,4 +1,26 @@
+"""ENDF-6 MF4 angular-distribution reconstruction.
+
+Backend-agnostic since issue #169: every reconstruction function
+accepts an optional ``xp=None`` argument that routes the numerics
+through the caller's backend adapter (numpy default; JAX via
+``array_ns.get_backend('jax')``). With ``xp=jax``, JAX tracers
+stored at file-side leaves -- Legendre coefficients under
+``mf4sec['a']`` / ``mf4sec['al']``, tabulated probabilities under
+``mf4sec['angtable'][row]['f'][mu_idx]`` -- propagate through
+``dict2array`` and the primitives-layer helpers
+(``evaluate_interp_legendre_polynomials``, ``interp_tab2``,
+``convert_angcos_to_cmsys``, ``convert_angdist_to_labsys``,
+``compute_r2``) into the returned distribution, so ``jax.grad``
+reaches back to any tabulated angular parameter end-to-end.
+
+Query-energy autodiff is a separate concern (query masking in
+:func:`pad_outside_angdist_values` cannot pass tracers through the
+outside-range branch). For the fully-inside case the decorator
+short-circuits and lets tracers flow.
+"""
 import numpy as np
+
+from ..primitives import array_ns
 from ..primitives.interpolation import (
     evaluate_interp_legendre_polynomials,
     interp_tab2,
@@ -32,108 +54,164 @@ def has_isotropic_angdist_repr(endf_dict, mt):
     return mf4sec[mt]['LTT'] == 0 and mf4sec[mt]['LI'] == 1
 
 
-def _convert_legendre_to_numpy_array(coeffs_dict):
+def _convert_legendre_to_numpy_array(coeffs_dict, xp=None):
+    """Convert the raw ENDF Legendre coefficient dict into the
+    ``(n_energies, max_L+1)`` array the reconstruction consumes.
+
+    The L=0 slot is set to 1.0 (ENDF omits it because it's fixed by
+    the ``f(mu) = (1/2) sum_L (2L+1) a_L P_L(mu)`` normalisation),
+    every row is padded to the max length across energies, and each
+    column ``L`` is scaled by ``(L + 1/2)``.
+
+    Backend-agnostic (issue #169): ``xp=None`` (default) is numpy;
+    passing a JAX adapter routes each per-energy coefficient row
+    through ``dict2array(..., xp=xp)`` so tracers stored at
+    ``coeffs_dict[E_idx][L]`` propagate into the returned 2D
+    array.
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     num_energies = len(coeffs_dict)
-    num_coeffs_per_energy = [len(v)+1 for _, v in coeffs_dict.items()]
-    max_num_coeffs = np.max(num_coeffs_per_energy)
-    coeffs_arr = np.zeros((num_energies, max_num_coeffs), dtype=float)
+    num_coeffs_per_energy = [len(v) + 1 for _, v in coeffs_dict.items()]
+    max_num_coeffs = int(np.max(num_coeffs_per_energy))
+    # Assemble each row through dict2array so JAX tracers at the
+    # per-coefficient leaves survive; pad to max_num_coeffs with 0.
+    rows = []
     for en_idx in range(num_energies):
         num_coeffs = num_coeffs_per_energy[en_idx]
-        coeffs_arr[en_idx, 1:num_coeffs] = \
-            dict2array(coeffs_dict[en_idx+1])
-    coeffs_arr[:,0] = 1.0
-    # apply factors (l+1/2)
-    coeffs_arr *= np.arange(coeffs_arr.shape[1]).reshape(1,-1) + 0.5
-    return coeffs_arr
+        row_coeffs = dict2array(
+            coeffs_dict[en_idx + 1], dtype=float, xp=xp,
+        )
+        # Prepend the fixed L=0 entry (1.0) and pad trailing zeros.
+        pad_after = max_num_coeffs - num_coeffs
+        pieces = [xp.asarray([1.0], dtype=xp.float64), row_coeffs]
+        if pad_after > 0:
+            pieces.append(xp.zeros(pad_after, dtype=xp.float64))
+        rows.append(xp.concatenate(pieces))
+    coeffs_arr = xp.stack(rows, axis=0)
+    # Apply the (L + 1/2) factor column-wise.
+    l_factor = xp.arange(max_num_coeffs, dtype=coeffs_arr.dtype) + 0.5
+    return coeffs_arr * l_factor[None, :]
 
 
-def compute_angdist_from_isotropic(endf_dict, mt, energies, angle_cosines):
+def compute_angdist_from_isotropic(
+    endf_dict, mt, energies, angle_cosines, xp=None,
+):
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     mu = angle_cosines
-    mu = mu.reshape(1,-1) if mu.ndim == 1 else mu
+    mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
     m = len(energies)
     n = mu.shape[1]
-    return np.full((m, n), 0.5, dtype=float)
+    return xp.full((m, n), 0.5, dtype=xp.float64)
 
 
-def compute_angdist_from_legrepr(endf_dict, mt, energies, angle_cosines):
+def compute_angdist_from_legrepr(
+    endf_dict, mt, energies, angle_cosines, xp=None,
+):
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     mf4sec = endf_dict[4][mt]
     mu = angle_cosines
-    # get the energy mesh and bookkeeping information
-    incident_energies = dict2array(mf4sec['E'])
+    incident_energies = dict2array(mf4sec['E'], dtype=float, xp=xp)
     nbt_arr = np.array(mf4sec['NBT'], dtype=int)
     int_arr = np.array(mf4sec['INT'], dtype=int)
-    # convert Legendre coefficients to numpy array
-    coeffs_arr = _convert_legendre_to_numpy_array(mf4sec['a'])
-    # compute the angular distribution in the laboratory system
+    coeffs_arr = _convert_legendre_to_numpy_array(mf4sec['a'], xp=xp)
     f = evaluate_interp_legendre_polynomials(
-        energies, mu, incident_energies, coeffs_arr, int_arr, nbt_arr
+        energies, mu, incident_energies, coeffs_arr,
+        int_arr, nbt_arr, xp=xp,
     )
     return f
 
 
-def compute_angdist_from_tabulated(endf_dict, mt, energies, angle_cosines):
+def compute_angdist_from_tabulated(
+    endf_dict, mt, energies, angle_cosines, xp=None,
+):
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     mf4sec = endf_dict[4][mt]
-    en_mesh = dict2array(mf4sec['E'], dtype=float)
+    en_mesh = dict2array(mf4sec['E'], dtype=float, xp=xp)
     nbt_arr = np.array(mf4sec['energy_table']['NBT'], dtype=int)
     int_arr = np.array(mf4sec['energy_table']['INT'], dtype=int)
     tab1_records = list(mf4sec['angtable'].values())
     return interp_tab2(
         energies, angle_cosines, en_mesh, int_arr, nbt_arr,
-        tab1_records, 'mu', 'f'
+        tab1_records, 'mu', 'f', xp=xp,
     )
 
 
-def compute_angdist_from_mixed(endf_dict, mt, energies, angle_cosines):
+def compute_angdist_from_mixed(
+    endf_dict, mt, energies, angle_cosines, xp=None,
+):
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     mf4sec = endf_dict[4][mt]
-    en_mesh = dict2array(mf4sec['E'], dtype=float)
-    # prepare Legendre interpolation info for low energies
+    en_mesh = dict2array(mf4sec['E'], dtype=float, xp=xp)
+    # Legendre part covers energies below the split.
     num_ens1 = mf4sec['NE1']
     en_mesh1 = en_mesh[:num_ens1]
     nbt_arr1 = np.array(mf4sec['leg_int']['NBT'])
     int_arr1 = np.array(mf4sec['leg_int']['INT'])
-    coeffs_arr = _convert_legendre_to_numpy_array(mf4sec['al'])
+    coeffs_arr = _convert_legendre_to_numpy_array(mf4sec['al'], xp=xp)
     assert num_ens1 == coeffs_arr.shape[0]
-    # prepare tabulated iterpolation info for high energies
+    # Tabulated part covers energies above the split.
     num_ens2 = mf4sec['NE2']
-    en_mesh2 = en_mesh[num_ens1-1:]
+    en_mesh2 = en_mesh[num_ens1 - 1:]
     assert num_ens2 == len(en_mesh2)
     nbt_arr2 = np.array(mf4sec['ang_int']['NBT'])
     int_arr2 = np.array(mf4sec['ang_int']['INT'])
     tab1_records = list(mf4sec['angtable'].values())
     assert num_ens2 == len(tab1_records)
-    # interpolate according to region
-    break_energy = en_mesh[num_ens1-1]
+    # Split queries at the file-side break energy. `is_lower` is a
+    # concrete numpy bool over the query axis; for query-energy
+    # autodiff you would need to trace this branch, which is out of
+    # scope for issue #169's dict-first port.
+    break_energy = float(en_mesh[num_ens1 - 1])
     mu = angle_cosines
     mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
-    is_lower = energies < break_energy
-    energies_lower = energies[is_lower]
-    mu_lower = mu[is_lower,:]
+    energies_np = np.asarray(energies)
+    is_lower = energies_np < break_energy
+    energies_lower = energies_np[is_lower]
+    mu_lower = mu[is_lower, :]
     f_lower = evaluate_interp_legendre_polynomials(
-        energies_lower, mu_lower, en_mesh1, coeffs_arr, int_arr1, nbt_arr1
+        energies_lower, mu_lower, en_mesh1, coeffs_arr,
+        int_arr1, nbt_arr1, xp=xp,
     )
-    energies_upper = energies[~is_lower]
-    mu_upper = mu[~is_lower,:]
+    energies_upper = energies_np[~is_lower]
+    mu_upper = mu[~is_lower, :]
     f_upper = interp_tab2(
         energies_upper, mu_upper, en_mesh2, int_arr2, nbt_arr2,
-        tab1_records, 'mu', 'f'
+        tab1_records, 'mu', 'f', xp=xp,
     )
-    # assemble the result
-    f = np.zeros((len(energies), mu.shape[1]), dtype=float)
-    f[is_lower] = f_lower
-    f[~is_lower] = f_upper
+    # Assemble the result. Under xp=jax we scatter with `.at[].set()`;
+    # on numpy we use ordinary boolean indexing.
+    n_out = (len(energies_np), mu.shape[1])
+    f = xp.zeros(n_out, dtype=f_lower.dtype)
+    lower_idx = np.where(is_lower)[0]
+    upper_idx = np.where(~is_lower)[0]
+    if xp.name == 'jax':
+        f = f.at[lower_idx].set(f_lower)
+        f = f.at[upper_idx].set(f_upper)
+    else:
+        f[is_lower] = f_lower
+        f[~is_lower] = f_upper
     return f
 
 
-def _compute_r2(endf_dict, mt, energies):
+def _compute_r2(endf_dict, mt, energies, xp=None):
     awi = get_AWI(endf_dict)
     awr = get_AWR(endf_dict)
     awp = get_AWP(endf_dict, mt)
     q = get_QI(endf_dict, mt)
-    return compute_r2(energies, awi, awr, awp, q)
+    return compute_r2(energies, awi, awr, awp, q, xp=xp)
 
 
 @pad_outside_angdist_values
-def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
+def compute_angdist_values(
+    endf_dict, mt, energies, angle_cosines, to_lab=True, xp=None,
+):
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     mf4sec = endf_dict[4][mt]
     ltt = mf4sec['LTT']
     li = mf4sec['LI']
@@ -143,19 +221,27 @@ def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
     if lct == 1:
         mu_eff = mu
     elif lct == 2:
-        r2 = _compute_r2(endf_dict, mt, energies)
-        mu_eff = convert_angcos_to_cmsys(mu, r2)
+        r2 = _compute_r2(endf_dict, mt, energies, xp=xp)
+        mu_eff = convert_angcos_to_cmsys(mu, r2, xp=xp)
     else:
         raise ValueError(f'Unknown reference system (LCT={lct}).')
     # perform the appropriate interpolation
     if ltt == 0 and li == 1:
-        f_eff = compute_angdist_from_isotropic(endf_dict, mt, energies, mu_eff)
+        f_eff = compute_angdist_from_isotropic(
+            endf_dict, mt, energies, mu_eff, xp=xp,
+        )
     elif ltt == 1 and li == 0:
-        f_eff = compute_angdist_from_legrepr(endf_dict, mt, energies, mu_eff)
+        f_eff = compute_angdist_from_legrepr(
+            endf_dict, mt, energies, mu_eff, xp=xp,
+        )
     elif ltt == 2 and li == 0:
-        f_eff = compute_angdist_from_tabulated(endf_dict, mt, energies, mu_eff)
+        f_eff = compute_angdist_from_tabulated(
+            endf_dict, mt, energies, mu_eff, xp=xp,
+        )
     elif ltt == 3 and li == 0:
-        f_eff = compute_angdist_from_mixed(endf_dict, mt, energies, mu_eff)
+        f_eff = compute_angdist_from_mixed(
+            endf_dict, mt, energies, mu_eff, xp=xp,
+        )
     else:
         raise ValueError(
             'Unknown angular distribution representation '
@@ -178,7 +264,7 @@ def compute_angdist_values(endf_dict, mt, energies, angle_cosines, to_lab=True):
     if lct == 1:
         f_lab = f_eff
     else:
-        f_lab = convert_angdist_to_labsys(mu_eff, f_eff, r2)
-        f_lab = np.where(np.isnan(f_lab), 0.0, f_lab)
-        f_lab = np.clip(f_lab, 0.0, None)
+        f_lab = convert_angdist_to_labsys(mu_eff, f_eff, r2, xp=xp)
+        f_lab = xp.where(xp.isnan(f_lab), 0.0, f_lab)
+        f_lab = xp.clip(f_lab, 0.0, None)
     return f_lab
