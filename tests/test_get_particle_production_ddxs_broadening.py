@@ -68,11 +68,11 @@ def stub_quantities(monkeypatch):
         state['calls'].append(('cont', mt, id(kernel), kernel_width))
         return state['cont_return'][mt]
 
-    def fake_disc_broadened(endf_dict, mt, zap, einc, eouts, mus, kernel):
+    def fake_disc_broadened(endf_dict, mt, zap, einc, eouts, mus, kernel, **_):
         state['calls'].append(('disc', mt, id(kernel), None))
         return state['disc_return'][mt]
 
-    def fake_law1_disc_broadened(endf_dict, mt, zap, einc, eouts, mus, kernel):
+    def fake_law1_disc_broadened(endf_dict, mt, zap, einc, eouts, mus, kernel, **_):
         state['calls'].append(('law1_disc', mt, id(kernel), None))
         return state['law1_disc_return'][mt]
 
@@ -90,7 +90,7 @@ def stub_quantities(monkeypatch):
         state['calls'].append(('dexs_plain', mt, None, None))
         return state['dexs_return'][mt]
 
-    def fake_dxs_dE_law1_disc_broadened(endf_dict, mt, zap, einc, eouts, kernel):
+    def fake_dxs_dE_law1_disc_broadened(endf_dict, mt, zap, einc, eouts, kernel, **_):
         state['calls'].append(('dexs_law1_disc', mt, id(kernel), None))
         return state['dexs_law1_disc_return'][mt]
 

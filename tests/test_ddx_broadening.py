@@ -45,7 +45,7 @@ def patched_environment(monkeypatch):
         ),
     }
 
-    def fake_law1_lines(endf_dict, mt, zap, einc, mus, to_lab=True):
+    def fake_law1_lines(endf_dict, mt, zap, einc, mus, to_lab=True, **_):
         return state['law1_lines'](einc, mus)
 
     def fake_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True, **_):
@@ -62,10 +62,10 @@ def patched_environment(monkeypatch):
     def fake_xs(endf_dict, mt, einc):
         return state['xs'](einc)
 
-    def fake_angdist_mf4(endf_dict, mt, einc, mus, to_lab=True):
+    def fake_angdist_mf4(endf_dict, mt, einc, mus, to_lab=True, **_):
         return state['angdist'](einc, mus)
 
-    def fake_angdist_mf6(endf_dict, mt, zap, einc, mus, to_lab=True):
+    def fake_angdist_mf6(endf_dict, mt, zap, einc, mus, to_lab=True, **_):
         return state['angdist'](einc, mus)
 
     monkeypatch.setattr(ddxb, 'compute_dist2d_values', fake_dist2d)

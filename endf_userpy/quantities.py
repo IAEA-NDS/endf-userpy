@@ -630,7 +630,7 @@ def _get_particle_production_dxs_dE_impl(
     def law1_disc_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_law1_discrete_broadened(
             endf_dict, mt, zap, einc, eouts,
-            kernel=kernel,
+            kernel=kernel, xp=xp,
         )
 
     def law1_disc_select(endf_dict, mt, zap, einc, eouts):
@@ -643,7 +643,7 @@ def _get_particle_production_dxs_dE_impl(
     def mf12_disc_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_mf12_discrete_broadened(
             endf_dict, mt, zap, einc, eouts,
-            kernel=kernel,
+            kernel=kernel, xp=xp,
         )
 
     def mf12_disc_select(endf_dict, mt, zap, einc, eouts):
@@ -656,7 +656,7 @@ def _get_particle_production_dxs_dE_impl(
     def mf13_disc_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_mf13_discrete_broadened(
             endf_dict, mt, zap, einc, eouts,
-            kernel=kernel,
+            kernel=kernel, xp=xp,
         )
 
     def mf13_disc_select(endf_dict, mt, zap, einc, eouts):
@@ -860,7 +860,7 @@ def _get_particle_production_ddxs_impl(
     def disc_compute(endf_dict, mt, zap, einc, eouts, mus):
         return ddxb.compute_ddx_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
-            kernel=kernel,
+            kernel=kernel, xp=xp,
         )
 
     def disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -873,7 +873,7 @@ def _get_particle_production_ddxs_impl(
     def law1_disc_compute(endf_dict, mt, zap, einc, eouts, mus):
         return ddxb.compute_ddx_law1_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
-            kernel=kernel,
+            kernel=kernel, xp=xp,
         )
 
     def law1_disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -886,7 +886,7 @@ def _get_particle_production_ddxs_impl(
     def mf12_disc_compute(endf_dict, mt, zap, einc, eouts, mus):
         return ddxb.compute_ddx_mf12_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
-            kernel=kernel,
+            kernel=kernel, xp=xp,
         )
 
     def mf12_disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -899,7 +899,7 @@ def _get_particle_production_ddxs_impl(
     def mf13_disc_compute(endf_dict, mt, zap, einc, eouts, mus):
         return ddxb.compute_ddx_mf13_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
-            kernel=kernel,
+            kernel=kernel, xp=xp,
         )
 
     def mf13_disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -912,7 +912,7 @@ def _get_particle_production_ddxs_impl(
     def mf15_cont_compute(endf_dict, mt, zap, einc, eouts, mus):
         return ddxb.compute_ddx_mf15_continuum_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
-            kernel=kernel, kernel_width=kernel_width,
+            kernel=kernel, kernel_width=kernel_width, xp=xp,
         )
 
     def mf15_cont_select(endf_dict, mt, zap, einc, eouts, mus):
