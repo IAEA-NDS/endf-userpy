@@ -154,15 +154,12 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
         # the physics is easier to see with a clean zero here.)
         return xp.zeros((n_e_sub, n_ep), dtype=data.b_panels.dtype)
 
-    # Panel-pair Ep bounds at each incident e (unit-base transformed
-    # from panel-1 and panel-2 continuum boundaries).
-    ep1min = float(data.ep_panels[p1, nd1])
+    # Panel-pair Ep upper bound at each incident e (unit-base
+    # transformed from panel-1 and panel-2 continuum tail).
     ep1max = float(data.ep_panels[p1, nep1 - 1])
-    ep2min = float(data.ep_panels[p2, nd2])
     ep2max = float(data.ep_panels[p2, nep2 - 1])
     e_bc = e_sub[:, None]                                        # (nE, 1)
     yslope = (e_bc - e1) / (e2 - e1)                             # (nE, 1)
-    epmin_eff = ep1min + yslope * (ep2min - ep1min)              # (nE, 1)
     epmax_eff = ep1max + yslope * (ep2max - ep1max)              # (nE, 1)
 
     # mu_min per (E, Ep) via the LAB-frame kinematic cutoff.
@@ -219,13 +216,19 @@ def _mu_min_bc(data, eff_lct, e_bc, ep_bc, epmax_eff, xp):
             xp.broadcast_shapes(e_bc.shape, ep_bc.shape),
         )
     c0 = float(np.sqrt(data.awi * data.awp) / (data.awi + data.awr))
+    if c0 == 0.0:
+        # Photon/massless ejectile: no LAB<->CM shift, LAB cutoff
+        # collapses to mu_min = -1 (full range).
+        return xp.broadcast_to(
+            xp.asarray(-1.0, dtype=e_bc.dtype),
+            xp.broadcast_shapes(e_bc.shape, ep_bc.shape),
+        )
     c0_sq_e = (c0 * c0) * e_bc
     # Guard ep <= 0 so sqrt(ep * e) doesn't NaN out or divide by
     # zero; the where at the end masks those cells back to umin = 1
     # (empty domain). e_bc is always > 0 in the inside-mask path.
     ep_safe = xp.where(ep_bc > 0.0, ep_bc, 1.0)
-    sqrt_epe = xp.sqrt(ep_safe * e_bc)
-    denom_safe = xp.where(sqrt_epe > 0.0, 2.0 * c0 * sqrt_epe, 1.0)
+    denom_safe = 2.0 * c0 * xp.sqrt(ep_safe * e_bc)
     umin_raw = (ep_bc + c0_sq_e - epmax_eff) / denom_safe
     umin_clamped = xp.clip(umin_raw, -1.0, 1.0)
     return xp.where(ep_bc > 0.0, umin_clamped, 1.0)
