@@ -815,8 +815,6 @@ def _get_particle_production_ddxs_impl(
         # return zero from that branch. Sum in a separate MF15+MF14
         # contribution the same way the broadened dispatcher does
         # for compute_ddx_mf15_continuum_broadened.
-        # compute_ddxs is xp-aware (issue #169); compute_ddxs_from_mf15_mf14
-        # is numpy-only, so its result is lifted to xp at the boundary.
         cont_extra = {'xp': xp} if xp is not None else {}
         cont_unbroad = quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_ddxs,
@@ -836,13 +834,11 @@ def _get_particle_production_ddxs_impl(
                 selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
-            mts=mts,
+            mts=mts, **cont_extra,
         )
         parts = [p for p in (cont_unbroad, mf15_unbroad) if p is not None]
         if not parts:
             return None
-        if xp is not None:
-            parts = [xp.asarray(p) for p in parts]
         total = parts[0]
         for p in parts[1:]:
             total = total + p

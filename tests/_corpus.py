@@ -67,3 +67,15 @@ def resolve_al27() -> str | None:
         os.environ.get('AL27_ENDF'),
         os.path.join(_CORPUS_DIR, 'endfb81_n_Al-27.endf'),
     )
+
+
+def resolve_c12() -> str | None:
+    """Resolve the C-12 ENDF file (JENDL-5). Used by the MF14
+    Legendre-branch parity tests (issue #169 tier-2 photon path):
+    JENDL-5 C-12 MT51 is one of the rare corpus MTs that carries
+    MF14 LI=0 LTT=1 per-line Legendre coefficients rather than
+    the fully-isotropic LI=1 fallback."""
+    return _first_existing(
+        os.environ.get('C12_ENDF'),
+        os.path.join(_CORPUS_DIR, 'jendl5_n_C-12.endf'),
+    )
