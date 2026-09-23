@@ -64,7 +64,7 @@ def stub_quantities(monkeypatch):
         return True
 
     def fake_cont_broadened(endf_dict, mt, zap, einc, eouts, mus,
-                            kernel, kernel_width):
+                            kernel, kernel_width, **_):
         state['calls'].append(('cont', mt, id(kernel), kernel_width))
         return state['cont_return'][mt]
 
@@ -82,7 +82,7 @@ def stub_quantities(monkeypatch):
         return state['cont_return'][mt]
 
     def fake_dxs_dE_broadened(endf_dict, mt, zap, einc, eouts,
-                              kernel, kernel_width):
+                              kernel, kernel_width, **_):
         state['calls'].append(('dexs_b', mt, id(kernel), kernel_width))
         return state['dexs_return'][mt]
 

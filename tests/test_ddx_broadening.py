@@ -48,10 +48,10 @@ def patched_environment(monkeypatch):
     def fake_law1_lines(endf_dict, mt, zap, einc, mus, to_lab=True):
         return state['law1_lines'](einc, mus)
 
-    def fake_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True):
+    def fake_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True, **_):
         return state['dexs'](einc, eouts)
 
-    def fake_dist2d(endf_dict, mt, zap, einc, eouts, mus, to_lab=True):
+    def fake_dist2d(endf_dict, mt, zap, einc, eouts, mus, to_lab=True, **_):
         return state['dist2d'](einc, eouts, mus)
 
     def fake_yields(endf_dict, mt, zap, einc, include_discrete=True, level=None):
@@ -867,7 +867,7 @@ def test_dxs_dE_law1_disc_real_be9_gamma_line():
 def test_dxs_dE_broadened_returns_zeros_on_compute_dexs_indexerror(
     patched_environment, monkeypatch,
 ):
-    def raising_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True):
+    def raising_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True, **_):
         raise IndexError(
             'Required data to reconstruct energy spectrum for MT=X not available.'
         )
@@ -893,7 +893,7 @@ def test_dxs_dE_broadened_returns_zeros_on_get_ejectile_assertionerror(
     AssertionError on multi-non-neutron-ejectile MTs (e.g. Fe-56
     (n,pα) 112 with ejectiles [(1,'p'), (1,'a')]). The folder must
     swallow and return zeros so cumulative summation still works."""
-    def raising_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True):
+    def raising_dexs(endf_dict, mt, zap, einc, eouts, to_lab=True, **_):
         raise AssertionError()
     monkeypatch.setattr(ddxb, 'compute_dexs', raising_dexs)
     einc = np.array([1.4e7])
