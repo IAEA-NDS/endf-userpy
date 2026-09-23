@@ -577,3 +577,153 @@ def test_jax_can_substitute_group_r_ap_and_autodiff():
         'gradient of elastic w.r.t. L=1 group r_ap must be non-zero '
         'at r_ap=0.9 (potential elastic depends on it via sin(phi_1)).'
     )
+
+
+# ============================================================
+# Dict-first JAX autodiff (issue #159): thread xp through the
+# preproc so tracers stored at ER / GN / GG dict leaves propagate
+# into the reconstruction end-to-end.
+# ============================================================
+
+
+PU239_CORPUS = os.path.join(
+    os.path.dirname(__file__), 'data_law1_adhoc', 'cendl32_n_Pu-239.endf',
+)
+
+
+def _pu239_available():
+    return os.path.exists(PU239_CORPUS)
+
+
+def test_xp_numpy_matches_default_bitwise_rm():
+    """Pass an explicit xp=numpy adapter and check the returned
+    dataclass is bit-for-bit identical to the xp=None default.
+    Guards against accidental behavioural drift on the numpy path
+    from the xp threading."""
+    d = _minimal_rm_endf_dict(
+        l_groups=[
+            (0, [(100.0, 3.0, 0.001, 0.04, 0.0, 0.0)]),
+            (1, [(200.0, 4.0, 0.002, 0.05, 0.0, 0.0)]),
+        ],
+    )
+    default = pre.rm_data_from_endf_dict(d)
+    xp_np = array_ns.get_backend('numpy')
+    with_xp = pre.rm_data_from_endf_dict(d, xp=xp_np)
+    np.testing.assert_array_equal(default.res_er, with_xp.res_er)
+    np.testing.assert_array_equal(default.res_gn, with_xp.res_gn)
+    np.testing.assert_array_equal(default.res_gg, with_xp.res_gg)
+    np.testing.assert_array_equal(default.res_gf1, with_xp.res_gf1)
+    np.testing.assert_array_equal(default.res_gf2, with_xp.res_gf2)
+    np.testing.assert_array_equal(default.group_g, with_xp.group_g)
+
+
+@pytest.mark.skipif(not _pu239_available(), reason='Pu-239 corpus not present')
+def test_xp_jax_matches_numpy_on_pu239_rm():
+    """JAX adapter reproduces the numpy result on a real corpus
+    file (no perturbation; just adapter equivalence)."""
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(PU239_CORPUS)
+    data_np = pre.rm_data_from_endf_dict(d)
+    try:
+        import jax  # noqa: F401
+    except ImportError:
+        pytest.skip('jax not installed')
+    xp_jx = array_ns.get_backend('jax')
+    data_jx = pre.rm_data_from_endf_dict(d, xp=xp_jx)
+    np.testing.assert_allclose(
+        np.asarray(data_np.res_er), np.asarray(data_jx.res_er), rtol=1e-14,
+    )
+    np.testing.assert_allclose(
+        np.asarray(data_np.res_gn), np.asarray(data_jx.res_gn), rtol=1e-14,
+    )
+
+
+@pytest.mark.skipif(not _pu239_available(), reason='Pu-239 corpus not present')
+def test_jax_grad_from_dict_stored_ER_matches_finite_diff_pu239_rm():
+    """Primary issue #159 demonstration for R-M: write a JAX tracer
+    into ``endf_dict[2][151]['isotope'][1]['range'][1]['l_group'][1]
+    ['ER'][row]``, call the preproc with ``xp=jax``, run the full
+    ``rm.reconstruct`` chain, and confirm ``jax.grad`` matches
+    central finite-diff."""
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError:
+        pytest.skip('jax not installed')
+    import copy
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(PU239_CORPUS)
+    l_group = (
+        d[2][151]['isotope'][1]['range'][1].get('l_group')
+        or d[2][151]['isotope'][1]['range'][1]['spingroup']
+    )
+    d_l1 = l_group[1]
+    er_row = list(d_l1['ER'].keys())[3]
+    original = float(d_l1['ER'][er_row])
+    xp_jx = array_ns.get_backend('jax')
+    energies = jnp.array([1.0e2, 1.0e3, 1.0e4])
+
+    def loss(theta):
+        d_t = copy.deepcopy(d)
+        l_t = (
+            d_t[2][151]['isotope'][1]['range'][1].get('l_group')
+            or d_t[2][151]['isotope'][1]['range'][1]['spingroup']
+        )
+        l_t[1]['ER'][er_row] = theta
+        data_t = pre.rm_data_from_endf_dict(d_t, xp=xp_jx)
+        recon = rm.reconstruct(data_t, energies, xp_jx)
+        return jnp.sum(recon['sct'])
+
+    val = float(loss(jnp.array(original)))
+    grad = float(jax.grad(loss)(jnp.array(original)))
+    assert np.isfinite(grad)
+    assert val > 0.0
+    eps = 1.0e-3
+    lp = float(loss(jnp.array(original + eps)))
+    lm = float(loss(jnp.array(original - eps)))
+    fd = (lp - lm) / (2.0 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-20)
+
+
+@pytest.mark.skipif(not _pu239_available(), reason='Pu-239 corpus not present')
+def test_jax_grad_from_dict_stored_GN_matches_finite_diff_pu239_rm():
+    """Same as the ER test but for a neutron-width leaf on the R-M
+    path."""
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError:
+        pytest.skip('jax not installed')
+    import copy
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(PU239_CORPUS)
+    l_group = (
+        d[2][151]['isotope'][1]['range'][1].get('l_group')
+        or d[2][151]['isotope'][1]['range'][1]['spingroup']
+    )
+    d_l1 = l_group[1]
+    gn_row = list(d_l1['GN'].keys())[3]
+    original = float(d_l1['GN'][gn_row])
+    xp_jx = array_ns.get_backend('jax')
+    energies = jnp.array([1.0e2, 1.0e3, 1.0e4])
+
+    def loss(theta):
+        d_t = copy.deepcopy(d)
+        l_t = (
+            d_t[2][151]['isotope'][1]['range'][1].get('l_group')
+            or d_t[2][151]['isotope'][1]['range'][1]['spingroup']
+        )
+        l_t[1]['GN'][gn_row] = theta
+        data_t = pre.rm_data_from_endf_dict(d_t, xp=xp_jx)
+        recon = rm.reconstruct(data_t, energies, xp_jx)
+        return jnp.sum(recon['sct'])
+
+    val = float(loss(jnp.array(original)))
+    grad = float(jax.grad(loss)(jnp.array(original)))
+    assert np.isfinite(grad)
+    assert val > 0.0
+    eps = 1.0e-6 * abs(original) if original != 0.0 else 1.0e-6
+    lp = float(loss(jnp.array(original + eps)))
+    lm = float(loss(jnp.array(original - eps)))
+    fd = (lp - lm) / (2.0 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-20)

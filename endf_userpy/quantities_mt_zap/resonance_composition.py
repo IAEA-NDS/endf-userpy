@@ -124,8 +124,11 @@ def _reconstruct_lru1_range(endf_dict, iso_i, rng_i, rng, energies, xp):
         recon = mf2_interpretation_mlbw.reconstruct(data, energies, xp)
         return recon, _MLBW_MT_TO_KEYS
     if lrf == 3:
+        # Thread xp into the preproc so JAX tracers stored at
+        # per-resonance dict leaves (ER / GN / GG) survive into
+        # the R-matrix reconstruction (issue #159).
         data = mf2_interpretation_reichmoore_preproc.rm_data_from_endf_dict(
-            endf_dict, isotope_idx=iso_i, range_idx=rng_i,
+            endf_dict, isotope_idx=iso_i, range_idx=rng_i, xp=xp,
         )
         recon = mf2_interpretation_reichmoore.reconstruct(data, energies, xp)
         return recon, _RM_MT_TO_KEYS
