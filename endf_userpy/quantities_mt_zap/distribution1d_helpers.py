@@ -3,7 +3,8 @@ from scipy.integrate import simpson
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf6_interpretation_integrals as mf6_integral
 from ..mfsec_interpretation import mf6_law7_integrals as mf6_law7
-from ..primitives import conversion_relativistic as conv_relat 
+from ..primitives import array_ns
+from ..primitives import conversion_relativistic as conv_relat
 from ..primitives.properties import (
     get_QM,
     get_QI,
@@ -72,7 +73,7 @@ def _adaptive_simpson_along_axis(
 
 
 def integrate_mf6_dist2d_over_eout(
-    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True, xp=None,
 ):
     """Angular distribution from the MF6 2D distribution, integrated
     over outgoing energy on `[0, (E_in + q) * 1.1]`.
@@ -81,12 +82,18 @@ def integrate_mf6_dist2d_over_eout(
     single-subsection LAW=7 case (issue #69: sub-permille accuracy on
     the tabulated-slice unit-base interpolant that the general
     adaptive Simpson path only resolves to ~1 %). Everything else
-    routes through `_integrate_mf6_over_eout_adaptive_simpson`:
-    per-E_in adaptive Simpson doubling over a shared E' mesh, one
-    vectorised dist2d call per level instead of `n_mu * (~2000)`
-    scalar calls that the previous scipy.quad path incurred
-    (issue #46).
+    routes through `_integrate_mf6_over_eout_adaptive_simpson`.
+
+    ``xp=None`` (default) is numpy. Under ``xp=jax`` the LAW=7 fast
+    path and the adaptive-Simpson fallback both currently run on
+    numpy internally and materialise the result to xp-native at the
+    return boundary (autodiff through this integrator is not
+    supported yet -- tracked as tier-2 remaining work in issue
+    #169). The complementary ``integrate_mf6_dist2d_over_mu`` path
+    IS end-to-end xp-native for LAW=1 (fast path).
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     mtsec = endf_dict[6][mt]
     subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
     if len(subsec_nums) == 1:
@@ -95,13 +102,15 @@ def integrate_mf6_dist2d_over_eout(
             module_logger.debug(
                 f'use knot-aware LAW=7 integrator for MT={mt}',
             )
-            return mf6_law7.integrate_law7_subsec_over_eout(
+            result = mf6_law7.integrate_law7_subsec_over_eout(
                 endf_dict, mt, subsec_nums[0],
                 energies_in, angle_cosines_out, to_lab,
             )
-    return _integrate_mf6_over_eout_adaptive_simpson(
+            return xp.asarray(result) if xp.name != 'numpy' else result
+    result = _integrate_mf6_over_eout_adaptive_simpson(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
     )
+    return xp.asarray(result) if xp.name != 'numpy' else result
 
 
 def _integrate_mf6_over_eout_adaptive_simpson(
@@ -162,21 +171,35 @@ def _integrate_mf6_dist2d_over_mu_default(
 
 
 def integrate_mf6_dist2d_over_mu(
-    endf_dict, mt, zap, energies_in, energies_out, to_lab=True
+    endf_dict, mt, zap, energies_in, energies_out, to_lab=True, xp=None,
 ):
+    """Energy distribution from MF6 dist2d, integrated over mu.
+
+    ``xp=None`` (default) is numpy. Under ``xp=jax`` the LAW=1
+    single-subsection fast path is end-to-end xp-native (routes
+    through the ported ``get_energydist_from_subsec_law1`` and
+    accepts JAX tracers throughout, so ``jax.grad`` reaches
+    file-side coefficients via this integrator). The
+    general-purpose adaptive-Simpson fallback stays numpy and
+    materialises the result to xp-native at the return boundary.
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     mtsec = endf_dict[6][mt]
     subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
     if len(subsec_nums) == 1:
         law = mtsec['subsection'][subsec_nums[0]]['LAW']
         if law == 1 and USE_FORTRAN_INTEGRATION:
-            module_logger.debug(f'use Fortran integration routine for MT={mt}')
+            module_logger.debug(f'use xp-native integrator for MT={mt}')
             return mf6_integral.get_energydist_from_subsec_law1(
-                endf_dict, mt, subsec_nums[0], energies_in, energies_out, to_lab
+                endf_dict, mt, subsec_nums[0],
+                energies_in, energies_out, to_lab, xp=xp,
             )
-    # general-purpose integration routine
-    return _integrate_mf6_dist2d_over_mu_default(
+    # general-purpose integration routine (numpy internally)
+    result = _integrate_mf6_dist2d_over_mu_default(
         endf_dict, mt, zap, energies_in, energies_out, to_lab
     )
+    return xp.asarray(result) if xp.name != 'numpy' else result
 
 
 def _prepare_angdist_to_energydist_conversion(
@@ -218,7 +241,8 @@ def _prepare_angdist_to_energydist_conversion(
 
 
 def convert_angdist_to_energydist(
-    compute_angdist_func, endf_dict, mt, zap, energies_in, energies_out, to_lab
+    compute_angdist_func, endf_dict, mt, zap, energies_in, energies_out,
+    to_lab, xp=None,
 ):
     """dxs/dE from a stored angular distribution via the LAB
     kinematic Jacobian: for a two-body reaction the outgoing
@@ -269,6 +293,8 @@ def convert_angdist_to_energydist(
             np.array([ein], dtype=float),
             mu_row, to_lab,
         )
-        energydist[i, :] = angdist_row[0, :] * np.abs(jacvals[i, :])
+        energydist[i, :] = np.asarray(angdist_row[0, :]) * np.abs(jacvals[i, :])
     energydist[~feasible] = 0.0
+    if xp is not None and xp.name != 'numpy':
+        return xp.asarray(energydist)
     return energydist

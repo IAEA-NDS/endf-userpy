@@ -7,6 +7,7 @@ from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
 from ..mfsec_interpretation import mf12_interpretation as mf12_interp
 from ..mfsec_interpretation import mf14_interpretation as mf14_interp
 from ..mfsec_interpretation import mf15_interpretation as mf15_interp
+from ..primitives import array_ns
 from ..primitives.physical_constants import get_zap_for_particle
 from ..primitives.properties import (
     is_zap_consistent,
@@ -40,7 +41,20 @@ module_logger = logging.getLogger(__name__)
 _mf15_no_placeholder_warned = set()
 
 
-def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
+def compute_angdist_values(
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True,
+    xp=None,
+):
+    """Composition-layer angular distribution.
+
+    ``xp=None`` (default) is numpy. Passing a JAX adapter threads
+    tracers through the MF4 or MF6 branches end-to-end. The MF14
+    gamma-angdist fallback runs on numpy internally and returns
+    xp-native at the boundary (autodiff wrt MF14 leaves is tracked
+    as tier-2 remaining under issue #169).
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if not is_zap_consistent(endf_dict, mt, zap):
         raise ValueError(f'MT={mt} and ZAP={zap} are not consistent')
 
@@ -49,7 +63,7 @@ def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, t
     if has_mf4_mt(endf_dict, mt) and zap == _N_ZAP:
         module_logger.debug('--> found discrete LAW in MF4')
         return mf4_interp.compute_angdist_values(
-            endf_dict, mt, energies_in, angle_cosines_out, to_lab
+            endf_dict, mt, energies_in, angle_cosines_out, to_lab, xp=xp,
         )
 
     elif has_mf6_mt(endf_dict, mt):
@@ -58,55 +72,43 @@ def compute_angdist_values(endf_dict, mt, zap, energies_in, angle_cosines_out, t
         if mf6_help.has_cont_part(endf_dict, mt, zap):
             module_logger.debug('--> integrate MF6')
             found_angdist = True
-            angdist += integrate_mf6_dist2d_over_eout(
-                endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
+            angdist = angdist + integrate_mf6_dist2d_over_eout(
+                endf_dict, mt, zap, energies_in, angle_cosines_out,
+                to_lab, xp=xp,
             )
         if mf6_help.has_angdist_part(endf_dict, mt, zap):
             module_logger.debug('--> found discrete LAW in MF6')
             found_angdist = True
-            angdist += mf6_interp.compute_angdist_values(
-                endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
+            angdist = angdist + mf6_interp.compute_angdist_values(
+                endf_dict, mt, zap, energies_in, angle_cosines_out,
+                to_lab, xp=xp,
             )
-        # LAW=1 discrete-line angular content (issue #55). The
-        # angular info lives inside the LAW=1 subsection itself
-        # (through the LANG parameter and the b(k) amplitude
-        # coefficients), so has_angdist_part above -- which only
-        # recognises LAW=2/3/4 -- does not admit it. Read via
-        # mf6_interp.compute_law1_discrete_lines and sum the
-        # per-line amp_disc(mu, k) over k. amp_disc has the per-
-        # line yield weight embedded so the sum has the correct
-        # (y_disc / Y_total) normalisation relative to compute_daxs.
         if mf6_help.has_disc_part(endf_dict, mt, zap):
             module_logger.debug('--> found LAW=1 discrete-line angular in MF6')
             found_angdist = True
-            angdist += _compute_mf6_law1_disc_angdist(
+            # The LAW=1 discrete-line path is currently numpy-only
+            # (compute_law1_discrete_lines has not been xp-threaded);
+            # convert to xp at the boundary so the composed sum stays
+            # on the caller's backend.
+            angdist = angdist + xp.asarray(_compute_mf6_law1_disc_angdist(
                 endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
-            )
+            ))
         if found_angdist:
             return angdist
 
-    # Gamma with MF14 angular distribution (issue #36 D2). MF14
-    # declares the angular distribution per photon line, and MF12
-    # provides the per-line yields that combine them into the total
-    # gamma angular distribution for this MT.
     if zap == _G_ZAP and has_mf14_mt(endf_dict, mt):
         module_logger.debug('--> found gamma angular distribution in MF14')
-        return _compute_mf14_gamma_angdist(
+        return xp.asarray(_compute_mf14_gamma_angdist(
             endf_dict, mt, energies_in, angle_cosines_out,
-        )
+        ))
 
-    # No representable angular distribution for this (MT, ZAP): MF6
-    # exists but has no subsection for this ZAP and no MF14 either,
-    # or no relevant MF section at all. Return zeros so cumulative
-    # summation over MTs stays well-defined; used to raise
-    # IndexError, which crashed get_particle_production_dxs_dmu for
-    # common gamma-production files after PR #35 admitted these
-    # MTs into the sum.
     module_logger.debug(
         f'no angular distribution reconstructable for MT={mt}, '
         f'ZAP={zap}; returning zeros'
     )
-    return np.zeros((len(energies_in), len(angle_cosines_out)), dtype=float)
+    return xp.zeros(
+        (len(energies_in), len(angle_cosines_out)), dtype=xp.float64,
+    )
 
 
 def _compute_mf6_law1_disc_angdist(
@@ -214,7 +216,20 @@ def _compute_mf14_gamma_angdist(
     return f_disc_avg + f_cont
 
 
-def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
+def compute_energydist_values(
+    endf_dict, mt, zap, energies_in, energies_out, to_lab=True, xp=None,
+):
+    """Composition-layer energy distribution.
+
+    ``xp=None`` (default) is numpy. Passing a JAX adapter threads
+    tracers through the MF5 or MF6 branches. The
+    ``convert_angdist_to_energydist`` fallback (MF4 angdist -> E'
+    via LAB Jacobian) runs on numpy internally and returns xp-
+    native at the boundary; the MF15 gamma-spectrum branch likewise
+    stays numpy pending its own tier-2 port.
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if not is_zap_consistent(endf_dict, mt, zap):
         raise ValueError(f'MT={mt} and ZAP={zap} are not consistent')
 
@@ -228,7 +243,7 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
             )
         module_logger.debug('--> found energy spectrum in MF5')
         return mf5_interp.compute_spectrum(
-            endf_dict, mt, energies_in, energies_out
+            endf_dict, mt, energies_in, energies_out, xp=xp,
         )
 
     elif has_mf4_mt(endf_dict, mt) and zap == _N_ZAP:
@@ -239,24 +254,24 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
                     endf_dict, mt, energies_in, energies_out, to_lab
                 )
             ),
-            endf_dict, mt, zap, energies_in, energies_out, to_lab
+            endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
         )
 
     elif has_mf6_mt(endf_dict, mt):
         found_energydist = False
-        energydist = 0.0  # will be broadcasted to correct 2d shape
+        energydist = 0.0
         if mf6_help.has_cont_part(endf_dict, mt, zap):
             module_logger.debug('--> integrate MF6')
             found_energydist = True
-            energydist += integrate_mf6_dist2d_over_mu(
-                endf_dict, mt, zap, energies_in, energies_out, to_lab
+            energydist = energydist + integrate_mf6_dist2d_over_mu(
+                endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
             )
         if mf6_help.has_angdist_part(endf_dict, mt, zap):
             module_logger.debug('--> found discrete angdist in MF6')
             found_energydist = True
-            energydist += convert_angdist_to_energydist(
+            energydist = energydist + convert_angdist_to_energydist(
                 mf6_interp.compute_angdist_values,
-                endf_dict, mt, zap, energies_in, energies_out, to_lab
+                endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
             )
         if found_energydist:
             return energydist
@@ -322,7 +337,9 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
         # No MF12 at all: MF15 stands alone, keep unweighted
         # behaviour so the reaction-string yield fallback (mult=1
         # for (n,g)) times MF15 still integrates to sigma.
-        return spec
+        # MF15 path is currently numpy-only; convert to xp at the
+        # boundary.
+        return xp.asarray(spec) if xp.name != 'numpy' else spec
 
     # No representable continuous energy spectrum for this (MT, ZAP):
     # either MF6 with only LAW=1 ND>0 discrete-line content (handled
@@ -336,4 +353,6 @@ def compute_energydist_values(endf_dict, mt, zap, energies_in, energies_out, to_
         f'no continuum or angdist energy spectrum reconstructable for '
         f'MT={mt}, ZAP={zap}; returning zeros'
     )
-    return np.zeros((len(energies_in), len(energies_out)), dtype=float)
+    return xp.zeros(
+        (len(energies_in), len(energies_out)), dtype=xp.float64,
+    )
