@@ -2,23 +2,24 @@
 port plus numpy-vs-JAX parity plus ``jax.grad`` sanity.
 
 Correctness is pinned against a high-precision scipy.integrate.quad
-reference (epsrel=1e-10, adaptive) rather than against the Fortran
+reference (epsrel=1e-13, adaptive) rather than against the Fortran
 Romberg reference. Rationale: the Fortran uses per-subpanel Romberg
-with rtol=1e-3 and the integrand has kinks from the LEP-piecewise
-Ep structure as mu varies, so Fortran itself sits ~1e-3 from the
-true integral. Comparing the port against Fortran conflates the
-port's quadrature error with Fortran's own. scipy.quad's adaptive
-kink-aware quadrature converges below any tolerance we care about,
-so the port's accuracy claim scales cleanly with n_gl /
-n_polar_subpanels.
+with rtol=1e-3, so comparing the port against Fortran conflates the
+port's quadrature error with Fortran's own. scipy.quad on the other
+hand can converge to any tolerance we want -- provided we hand it
+the kink locations via ``points=``, since the integrand has C0
+kinks at every LEP-piecewise Ep' knot the amplitude crosses as mu
+varies. Without the kink hints scipy.quad's own error stalls at
+~1e-3; with them it converges below 1e-5, so the port's accuracy
+claim scales cleanly with n_gl / n_polar_subpanels.
 
 Pins:
-- Port at defaults (n_gl=10, n_polar_subpanels=4) matches
-  scipy.quad truth to rtol=5e-3.
-- Port at high order (n_gl=32, n_polar_subpanels=16) matches
-  scipy.quad truth to rtol=1.5e-3 (demonstrates user-controllable
-  accuracy: ~3x tighter for ~13x more mu nodes; slow convergence
-  is expected because the integrand carries LEP-piecewise kinks).
+- Port at defaults (n_gl=10, n_polar_subpanels=4) matches kink-aware
+  scipy.quad truth to rtol=3e-3.
+- Port at high order (n_gl=32, n_polar_subpanels=16) matches to
+  rtol=5e-4 (~5x tighter for ~13x more mu nodes; nice geometric
+  convergence, order limited by how well the polar-angle
+  subdivision resolves the Kalbach amplitude's own peak).
 - Port bit-identical numpy vs JAX (rtol=1e-11).
 - jax.grad reaches back from a dict-stored ``b`` leaf and matches
   finite-diff.
@@ -74,9 +75,14 @@ def _query_grid(subsec, panel_idx, n_ein=3, n_eout=40):
 
 
 def _scipy_quad_truth(endf_dict, mt, sn, panel_idx, E, Ep, to_lab=True):
-    """Adaptive high-precision reference for ``f(E, E')`` at one
+    """Kink-aware high-precision reference for ``f(E, E')`` at one
     ``(E, E')``: scipy.quad of ``f_amp(mu) * dinv(mu)`` from
-    ``umin`` to +1 with epsrel=1e-10.
+    ``umin`` to +1 with ``epsrel=1e-13`` and ``points=`` set to the
+    mu locations that map to the unit-base-transformed Ep' knots of
+    both bracketing panels (each such knot is a C0 kink of the
+    LEP-piecewise amplitude). Without ``points=``, adaptive
+    quadrature stalls at ~1e-3 relative on this integrand; with
+    it, the reference converges below 1e-5.
 
     Derives ``eff_lct`` from the section the same way the port does
     so the reference and the port share the same frame convention.
@@ -115,13 +121,25 @@ def _scipy_quad_truth(endf_dict, mt, sn, panel_idx, E, Ep, to_lab=True):
     b2 = dict2array(subsec['b'][p2 + 1], dtype=float)
     lei = 2  # Al-27 MF6 outer INT is lin-lin
 
-    # umin per feep_law1con line 3020 (LAB case)
+    # umin per feep_law1con line 3020 (CM case)
+    kink_pts = None
     if eff_lct == 2 or (eff_lct == 3 and awp < 4.0):
         c0 = float(np.sqrt(awi * awp) / (awi + awr))
         y_slope = (E - e1) / (e2 - e1)
-        epmax_eff = float(ep1[-1]) + y_slope * (float(ep2[-1]) - float(ep1[-1]))
+        ep1max = float(ep1[-1])
+        ep2max = float(ep2[-1])
+        epmax_eff = ep1max + y_slope * (ep2max - ep1max)
         umin_raw = (Ep + c0**2 * E - epmax_eff) / (2.0 * c0 * np.sqrt(Ep * E))
         umin = max(-1.0, min(1.0, umin_raw))
+        # Kink locations: for each Ep' knot in either panel, the
+        # unit-base image sits at knot * epmax_eff / epmax_panel;
+        # the amplitude has a C0 kink where mu maps to that image.
+        knots1 = np.asarray(ep1) * (epmax_eff / ep1max)
+        knots2 = np.asarray(ep2) * (epmax_eff / ep2max)
+        all_knots = np.unique(np.concatenate([knots1, knots2]))
+        mu_kinks = (Ep + c0**2 * E - all_knots) / (2.0 * c0 * np.sqrt(Ep * E))
+        inside = mu_kinks[(mu_kinks > umin + 1e-12) & (mu_kinks < 1.0 - 1e-12)]
+        kink_pts = sorted(inside.tolist()) or None
     else:
         umin = -1.0
 
@@ -137,15 +155,18 @@ def _scipy_quad_truth(endf_dict, mt, sn, panel_idx, E, Ep, to_lab=True):
 
     if umin >= 1.0:
         return 0.0
-    val, _ = quad(integrand, umin, 1.0, epsrel=1e-10, limit=2000)
+    val, _ = quad(
+        integrand, umin, 1.0,
+        epsrel=1e-13, limit=10000, points=kink_pts,
+    )
     return val
 
 
 @pytest.mark.parametrize(
     'n_gl,n_sub,rtol,label',
     [
-        (10, 4, 5e-3, 'defaults'),
-        (32, 16, 1.5e-3, 'high-order'),
+        (10, 4, 3e-3, 'defaults'),
+        (32, 16, 5e-4, 'high-order'),
     ],
 )
 def test_law1_epintegral_matches_scipy_quad_truth(
