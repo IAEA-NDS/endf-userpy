@@ -118,8 +118,11 @@ def _reconstruct_lru1_range(endf_dict, iso_i, rng_i, rng, energies, xp):
     LRF is not supported (caller then skips it)."""
     lrf = int(rng.get('LRF', 0))
     if lrf == 2:
+        # Thread xp into the preproc so JAX tracers stored at
+        # per-resonance dict leaves (ER / GN / GG / GF / GT / QX)
+        # survive into the reconstruction (issue #159).
         data = mf2_interpretation_mlbw_preproc.mlbw_data_from_endf_dict(
-            endf_dict, isotope_idx=iso_i, range_idx=rng_i,
+            endf_dict, isotope_idx=iso_i, range_idx=rng_i, xp=xp,
         )
         recon = mf2_interpretation_mlbw.reconstruct(data, energies, xp)
         return recon, _MLBW_MT_TO_KEYS

@@ -308,3 +308,151 @@ def test_nb93_reconstruction_matches_reference_at_a_few_energies():
     cap_peak = np.asarray(mlbw.reconstruct(data, einc_peak, xp)['cap'])
     e_peak_arg = float(einc_peak[np.argmax(cap_peak)])
     assert 30.0 < e_peak_arg < 40.0
+
+
+# ============================================================
+# Dict-first JAX autodiff (issue #159): thread xp through the
+# preproc so tracers stored at ER/GN/GG/GF/GT dict leaves
+# propagate into the reconstruction.
+# ============================================================
+
+
+def _jax_available():
+    return 'jax' in array_ns.available_backends()
+
+
+def test_xp_numpy_matches_default_bitwise():
+    """Pass an explicit xp=numpy adapter and check the returned
+    dataclass is bit-for-bit identical to the xp=None default.
+    Guards against accidental behavioural drift on the numpy path
+    when the xp threading was added."""
+    d = _minimal_endf_dict(
+        spi=0.5,
+        resonances=(
+            (100.0, 0.5, 0.8, 0.5, 0.3, 0.0),
+            (300.0, 0.5, 1.5, 1.0, 0.5, 0.0),
+        ),
+    )
+    default = pre.mlbw_data_from_endf_dict(d)
+    xp_np = array_ns.get_backend('numpy')
+    with_xp = pre.mlbw_data_from_endf_dict(d, xp=xp_np)
+    np.testing.assert_array_equal(default.res_er, with_xp.res_er)
+    np.testing.assert_array_equal(default.res_gn, with_xp.res_gn)
+    np.testing.assert_array_equal(default.res_gg, with_xp.res_gg)
+    np.testing.assert_array_equal(default.res_gf, with_xp.res_gf)
+    np.testing.assert_array_equal(default.res_gx, with_xp.res_gx)
+    np.testing.assert_array_equal(default.ch_g, with_xp.ch_g)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+@pytest.mark.skipif(not _nb93_available(), reason='Nb-93 ENDF file not available')
+def test_xp_jax_matches_numpy_on_nb93():
+    """The JAX adapter must produce the same dataclass values as
+    numpy on a real corpus file (no perturbation, just adapter
+    equivalence)."""
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp().parsefile(resolve_nb93(), include=[1, 2])
+    data_np = pre.mlbw_data_from_endf_dict(d)
+    xp_jx = array_ns.get_backend('jax')
+    data_jx = pre.mlbw_data_from_endf_dict(d, xp=xp_jx)
+    np.testing.assert_allclose(
+        np.asarray(data_np.res_er), np.asarray(data_jx.res_er), rtol=1e-14,
+    )
+    np.testing.assert_allclose(
+        np.asarray(data_np.res_gn), np.asarray(data_jx.res_gn), rtol=1e-14,
+    )
+    np.testing.assert_allclose(
+        np.asarray(data_np.ch_g), np.asarray(data_jx.ch_g), rtol=1e-14,
+    )
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+@pytest.mark.skipif(not _nb93_available(), reason='Nb-93 ENDF file not available')
+def test_jax_grad_from_dict_stored_ER_matches_finite_diff_nb93():
+    """Primary issue #159 demonstration: write a JAX tracer into a
+    resonance-energy leaf ``endf_dict[2][151]['isotope'][1]['range']
+    [1]['l_group'][1]['ER'][row]``, call the preproc with
+    ``xp=array_ns.get_backend('jax')``, and confirm ``jax.grad`` of
+    the reconstructed elastic-scattering cross section matches
+    central finite-difference. Proves the tracer survives from the
+    dict leaf, through :func:`~primitives.helpers.dict2array`, into
+    the dataclass, and through the reconstruction chain."""
+    import copy
+    import jax
+    import jax.numpy as jnp
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp().parsefile(resolve_nb93(), include=[1, 2])
+    l_group = (
+        d[2][151]['isotope'][1]['range'][1].get('l_group')
+        or d[2][151]['isotope'][1]['range'][1]['spingroup']
+    )
+    d_l1 = l_group[1]
+    er_row = list(d_l1['ER'].keys())[3]     # avoid the very first row
+    original = float(d_l1['ER'][er_row])
+    xp_jx = array_ns.get_backend('jax')
+    energies = jnp.array([1.0e2, 1.0e3, 1.0e4])
+
+    def loss(theta):
+        d_t = copy.deepcopy(d)
+        l_t = (
+            d_t[2][151]['isotope'][1]['range'][1].get('l_group')
+            or d_t[2][151]['isotope'][1]['range'][1]['spingroup']
+        )
+        l_t[1]['ER'][er_row] = theta
+        data_t = pre.mlbw_data_from_endf_dict(d_t, xp=xp_jx)
+        recon = mlbw.reconstruct(data_t, energies, xp_jx)
+        return jnp.sum(recon['sct'])
+
+    val = float(loss(jnp.array(original)))
+    grad = float(jax.grad(loss)(jnp.array(original)))
+    assert np.isfinite(grad)
+    assert val > 0.0
+    eps = 1.0e-3
+    lp = float(loss(jnp.array(original + eps)))
+    lm = float(loss(jnp.array(original - eps)))
+    fd = (lp - lm) / (2.0 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-20)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+@pytest.mark.skipif(not _nb93_available(), reason='Nb-93 ENDF file not available')
+def test_jax_grad_from_dict_stored_GN_matches_finite_diff_nb93():
+    """Same as the ER test but for a neutron-width leaf. GN feeds
+    directly into the R-matrix reduced-width amplitude, so the
+    grad is analytically nonzero and comfortably resolvable
+    against finite diff."""
+    import copy
+    import jax
+    import jax.numpy as jnp
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp().parsefile(resolve_nb93(), include=[1, 2])
+    l_group = (
+        d[2][151]['isotope'][1]['range'][1].get('l_group')
+        or d[2][151]['isotope'][1]['range'][1]['spingroup']
+    )
+    d_l1 = l_group[1]
+    gn_row = list(d_l1['GN'].keys())[3]
+    original = float(d_l1['GN'][gn_row])
+    xp_jx = array_ns.get_backend('jax')
+    energies = jnp.array([1.0e2, 1.0e3, 1.0e4])
+
+    def loss(theta):
+        d_t = copy.deepcopy(d)
+        l_t = (
+            d_t[2][151]['isotope'][1]['range'][1].get('l_group')
+            or d_t[2][151]['isotope'][1]['range'][1]['spingroup']
+        )
+        l_t[1]['GN'][gn_row] = theta
+        data_t = pre.mlbw_data_from_endf_dict(d_t, xp=xp_jx)
+        recon = mlbw.reconstruct(data_t, energies, xp_jx)
+        return jnp.sum(recon['sct'])
+
+    val = float(loss(jnp.array(original)))
+    grad = float(jax.grad(loss)(jnp.array(original)))
+    assert np.isfinite(grad)
+    assert val > 0.0
+    eps = 1.0e-6 * abs(original) if original != 0.0 else 1.0e-6
+    lp = float(loss(jnp.array(original + eps)))
+    lm = float(loss(jnp.array(original - eps)))
+    fd = (lp - lm) / (2.0 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-20)
