@@ -797,3 +797,172 @@ def test_ross_10_rejects_dof_above_four():
     xp = array_ns.get_backend('numpy')
     with pytest.raises(NotImplementedError, match=r'Ross-10 quadrature'):
         urr.reconstruct(data, np.array([5e3]), xp, quadrature='ross_10')
+
+
+# ============================================================
+# Dict-first JAX autodiff (issue #159): thread xp through the
+# preproc so tracers stored at ES / D / GN0 / GG / GF / GX
+# per-J-group dict leaves propagate into the URR reconstruction.
+# ============================================================
+
+
+import os
+
+from endf_userpy.primitives import array_ns
+
+PU239_CORPUS = os.path.join(
+    os.path.dirname(__file__), 'data_law1_adhoc', 'cendl32_n_Pu-239.endf',
+)
+
+
+def _pu239_available():
+    return os.path.exists(PU239_CORPUS)
+
+
+def test_xp_numpy_matches_default_bitwise_urr():
+    """xp=None default and xp=numpy adapter produce bit-identical
+    dataclass fields."""
+    d = _minimal_urr_endf_dict()
+    default = pre.urr_data_from_endf_dict(d)
+    xp_np = array_ns.get_backend('numpy')
+    with_xp = pre.urr_data_from_endf_dict(d, xp=xp_np)
+    np.testing.assert_array_equal(default.table_es, with_xp.table_es)
+    np.testing.assert_array_equal(default.table_d, with_xp.table_d)
+    np.testing.assert_array_equal(default.table_gn0, with_xp.table_gn0)
+    np.testing.assert_array_equal(default.table_gg, with_xp.table_gg)
+    np.testing.assert_array_equal(default.table_gf, with_xp.table_gf)
+    np.testing.assert_array_equal(default.table_gx, with_xp.table_gx)
+
+
+@pytest.mark.skipif(not _pu239_available(), reason='Pu-239 corpus not present')
+def test_xp_jax_matches_numpy_on_pu239_urr():
+    """JAX adapter matches numpy on a real corpus URR range
+    (adapter equivalence, no perturbation)."""
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(PU239_CORPUS)
+    data_np = pre.urr_data_from_endf_dict(d, isotope_idx=1, range_idx=2)
+    try:
+        import jax  # noqa: F401
+    except ImportError:
+        pytest.skip('jax not installed')
+    xp_jx = array_ns.get_backend('jax')
+    data_jx = pre.urr_data_from_endf_dict(
+        d, isotope_idx=1, range_idx=2, xp=xp_jx,
+    )
+    np.testing.assert_allclose(
+        np.asarray(data_np.table_gn0), np.asarray(data_jx.table_gn0),
+        rtol=1e-14,
+    )
+    np.testing.assert_allclose(
+        np.asarray(data_np.table_gg), np.asarray(data_jx.table_gg),
+        rtol=1e-14,
+    )
+    np.testing.assert_allclose(
+        np.asarray(data_np.table_es), np.asarray(data_jx.table_es),
+        rtol=1e-14,
+    )
+
+
+@pytest.mark.skipif(not _pu239_available(), reason='Pu-239 corpus not present')
+def test_jax_grad_from_dict_stored_GN0_matches_finite_diff_pu239_urr():
+    """Primary issue #159 demonstration for URR: write a JAX tracer
+    into a per-J-group ``GN0`` leaf, call the preproc with
+    ``xp=jax``, run ``urr.reconstruct`` at a query energy that
+    brackets the leaf's ``ES`` row, and confirm ``jax.grad`` of
+    the capture cross section matches central finite-difference."""
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError:
+        pytest.skip('jax not installed')
+    import copy
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(PU239_CORPUS)
+    d_range = d[2][151]['isotope'][1]['range'][2]
+    d_grp = d_range.get('l_group') or d_range.get('spingroup')
+    d_l1 = d_grp[1]
+    j_group = d_l1.get('subsec') or d_l1.get('j_group')
+    first_j_key = list(j_group.keys())[0]
+    d_j1 = j_group[first_j_key]
+    es_vals = list(d_j1['ES'].values())
+    # Bracket the query at the middle of ES so the interpolation
+    # touches this specific GN0 row and grad is analytically nonzero.
+    mid = len(es_vals) // 2
+    e_query_val = float(es_vals[mid])
+    gn0_key = list(d_j1['GN0'].keys())[mid]
+    original = float(d_j1['GN0'][gn0_key])
+    xp_jx = array_ns.get_backend('jax')
+    e_query = jnp.array([e_query_val])
+
+    def loss(theta):
+        d_t = copy.deepcopy(d)
+        r_t = d_t[2][151]['isotope'][1]['range'][2]
+        lg = r_t.get('l_group') or r_t.get('spingroup')
+        jg = lg[1].get('subsec') or lg[1].get('j_group')
+        jg[first_j_key]['GN0'][gn0_key] = theta
+        data_t = pre.urr_data_from_endf_dict(
+            d_t, isotope_idx=1, range_idx=2, xp=xp_jx,
+        )
+        recon = urr.reconstruct(data_t, e_query, xp_jx)
+        return jnp.sum(recon['cap'])
+
+    val = float(loss(jnp.array(original)))
+    grad = float(jax.grad(loss)(jnp.array(original)))
+    assert np.isfinite(grad)
+    assert val > 0.0
+    assert abs(grad) > 0.0
+    eps = 1e-3 * abs(original) if original != 0.0 else 1e-6
+    lp = float(loss(jnp.array(original + eps)))
+    lm = float(loss(jnp.array(original - eps)))
+    fd = (lp - lm) / (2.0 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-20)
+
+
+@pytest.mark.skipif(not _pu239_available(), reason='Pu-239 corpus not present')
+def test_jax_grad_from_dict_stored_GG_matches_finite_diff_pu239_urr():
+    """Same for the average gamma width ``GG`` (feeds the capture
+    channel directly)."""
+    try:
+        import jax
+        import jax.numpy as jnp
+    except ImportError:
+        pytest.skip('jax not installed')
+    import copy
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(PU239_CORPUS)
+    d_range = d[2][151]['isotope'][1]['range'][2]
+    d_grp = d_range.get('l_group') or d_range.get('spingroup')
+    d_l1 = d_grp[1]
+    j_group = d_l1.get('subsec') or d_l1.get('j_group')
+    first_j_key = list(j_group.keys())[0]
+    d_j1 = j_group[first_j_key]
+    es_vals = list(d_j1['ES'].values())
+    mid = len(es_vals) // 2
+    e_query_val = float(es_vals[mid])
+    gg_key = list(d_j1['GG'].keys())[mid]
+    original = float(d_j1['GG'][gg_key])
+    xp_jx = array_ns.get_backend('jax')
+    e_query = jnp.array([e_query_val])
+
+    def loss(theta):
+        d_t = copy.deepcopy(d)
+        r_t = d_t[2][151]['isotope'][1]['range'][2]
+        lg = r_t.get('l_group') or r_t.get('spingroup')
+        jg = lg[1].get('subsec') or lg[1].get('j_group')
+        jg[first_j_key]['GG'][gg_key] = theta
+        data_t = pre.urr_data_from_endf_dict(
+            d_t, isotope_idx=1, range_idx=2, xp=xp_jx,
+        )
+        recon = urr.reconstruct(data_t, e_query, xp_jx)
+        return jnp.sum(recon['cap'])
+
+    val = float(loss(jnp.array(original)))
+    grad = float(jax.grad(loss)(jnp.array(original)))
+    assert np.isfinite(grad)
+    assert val > 0.0
+    assert abs(grad) > 0.0
+    eps = 1e-3 * abs(original) if original != 0.0 else 1e-6
+    lp = float(loss(jnp.array(original + eps)))
+    lm = float(loss(jnp.array(original - eps)))
+    fd = (lp - lm) / (2.0 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-20)
