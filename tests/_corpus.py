@@ -69,6 +69,18 @@ def resolve_al27() -> str | None:
     )
 
 
+def resolve_h2() -> str | None:
+    """Resolve the H-2 ENDF file (JEFF-4.0). Used by the LAW=7
+    kink-aware mu-integration parity tests: JEFF-4.0 H-2 MT16
+    (n, 2n) is the corpus's canonical single-subsection LAW=7
+    case where the general adaptive-Simpson mu-integrator undershoots
+    the effective knot structure."""
+    return _first_existing(
+        os.environ.get('H2_ENDF'),
+        os.path.join(_CORPUS_DIR, 'jeff40_n_H-2.endf'),
+    )
+
+
 def resolve_c12() -> str | None:
     """Resolve the C-12 ENDF file (JENDL-5). Used by the MF14
     Legendre-branch parity tests (issue #169 tier-2 photon path):
