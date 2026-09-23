@@ -624,7 +624,7 @@ def _get_particle_production_dxs_dE_impl(
     def cont_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_broadened(
             endf_dict, mt, zap, einc, eouts,
-            kernel=kernel, kernel_width=kernel_width,
+            kernel=kernel, kernel_width=kernel_width, xp=xp,
         )
 
     def law1_disc_compute(endf_dict, mt, zap, einc, eouts):
@@ -847,7 +847,7 @@ def _get_particle_production_ddxs_impl(
     def cont_compute(endf_dict, mt, zap, einc, eouts, mus):
         return ddxb.compute_ddx_continuous_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
-            kernel=kernel, kernel_width=kernel_width,
+            kernel=kernel, kernel_width=kernel_width, xp=xp,
         )
 
     def cont_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -937,7 +937,7 @@ def _get_particle_production_ddxs_impl(
         cont = ddxb.compute_ddx_continuous_broadened_summed(
             endf_dict, cont_mts, zap,
             energies_in, energies_out, angle_cosines_out,
-            kernel=kernel, kernel_width=kernel_width,
+            kernel=kernel, kernel_width=kernel_width, xp=xp,
         )
     else:
         cont = quant_mt_zap.compute_cumulative_quantity(

@@ -71,7 +71,7 @@ def compute_ddx_continuous_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
-    to_lab=True,
+    to_lab=True, xp=None,
     **convolve_kwargs,
 ):
     """DDX of (MT, ZAP) convolved with `kernel` along E_out.
@@ -95,6 +95,13 @@ def compute_ddx_continuous_broadened(
         Characteristic kernel width in eV; passed to `adaptive_convolve`
         to set the initial internal-mesh spacing and the truncation
         range.
+    xp : optional backend adapter (issue #169). ``xp=None`` (default)
+        is numpy; passing a JAX adapter routes the underlying
+        ``compute_dist2d_values`` reconstruction and the FFT
+        convolution through JAX so ``jax.grad`` reaches file-side
+        leaves and the ``kernel`` closure's parameters. MF3 xs and
+        MF6 yields stay numpy internally (materialised via
+        ``xp.asarray`` at the multiplication boundary).
     **convolve_kwargs
         Forwarded to `adaptive_convolve` (e.g. `rtol`, `max_iter`,
         `richardson`).
@@ -105,6 +112,9 @@ def compute_ddx_continuous_broadened(
         Broadened DDX, shape `(n_einc, n_eouts, n_mus)`. Same units as
         `compute_ddxs`.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     energies_in = np.asarray(energies_in, dtype=float)
     energies_out = np.asarray(energies_out, dtype=float)
     angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
@@ -116,17 +126,18 @@ def compute_ddx_continuous_broadened(
         dist2d = compute_dist2d_values(
             endf_dict, mt, zap,
             energies_in, eout_internal, angle_cosines_out, to_lab,
+            xp=xp,
         )
-        return np.moveaxis(dist2d, 1, -1)
+        return xp.moveaxis(dist2d, 1, -1)
 
     # shape (n_einc, n_mus, n_eouts) after adaptive_convolve
     broadened = adaptive_convolve(
         f, kernel, energies_out,
-        kernel_width=kernel_width,
+        kernel_width=kernel_width, xp=xp,
         **convolve_kwargs,
     )
     # restore E_out as middle axis: (n_einc, n_eouts, n_mus)
-    ddx = np.moveaxis(broadened, -1, 1)
+    ddx = xp.moveaxis(broadened, -1, 1)
 
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False,
@@ -138,14 +149,17 @@ def compute_ddx_continuous_broadened(
     # adaptive_convolve can produce sub-eps negatives at the tails,
     # which trip users who assert non-negativity or plot on log axes.
     # Clip them here rather than in the generic primitive.
-    return np.clip(ddx * yields * xs / (2 * np.pi), 0.0, None)
+    return xp.clip(
+        ddx * xp.asarray(yields) * xp.asarray(xs) / (2 * np.pi),
+        0.0, None,
+    )
 
 
 def compute_ddx_continuous_broadened_summed(
     endf_dict, mts, zap,
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
-    to_lab=True,
+    to_lab=True, xp=None,
     **convolve_kwargs,
 ):
     """DDX of `sum_{MT in mts}` convolved with `kernel` along E_out
@@ -167,17 +181,24 @@ def compute_ddx_continuous_broadened_summed(
     routine, so the top-level dispatcher only routes through this
     function when `len(mts) >= 2`.
 
+    ``xp=None`` (default) is numpy; passing an xp adapter dispatches
+    the FFT and the per-mesh ``compute_dist2d_values`` reconstruction
+    through it so ``jax.grad`` reaches file-side leaves.
+
     Returns
     -------
     ddx : ndarray of shape `(n_einc, n_eouts, n_mus)`.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     einc = np.asarray(energies_in, dtype=float)
     eouts = np.asarray(energies_out, dtype=float)
     mus = np.asarray(angle_cosines_out, dtype=float)
 
     if len(mts) == 0:
-        return np.zeros(
-            (len(einc), len(eouts), len(mus)), dtype=float,
+        return xp.zeros(
+            (len(einc), len(eouts), len(mus)), dtype=xp.float64,
         )
 
     # Pre-compute the per-MT (yield * xs) scaling once. These depend
@@ -189,33 +210,34 @@ def compute_ddx_continuous_broadened_summed(
             endf_dict, mt, zap, einc, include_discrete=False,
         )
         xs = mf3_interp.compute_cross_section(endf_dict, mt, einc)
-        scales.append((y * xs).reshape(-1, 1, 1))
+        scales.append(xp.asarray((y * xs).reshape(-1, 1, 1)))
 
     def f_summed(eout_internal):
         total = None
         for mt, scale in zip(mts, scales):
             dist2d = compute_dist2d_values(
                 endf_dict, mt, zap, einc, eout_internal, mus, to_lab,
+                xp=xp,
             )
             # (n_einc, n_eout, n_mus) -> (n_einc, n_mus, n_eout)
-            contrib = np.moveaxis(dist2d, 1, -1) * scale
+            contrib = xp.moveaxis(dist2d, 1, -1) * scale
             total = contrib if total is None else total + contrib
         return total
 
     broadened = adaptive_convolve(
         f_summed, kernel, eouts,
-        kernel_width=kernel_width, **convolve_kwargs,
+        kernel_width=kernel_width, xp=xp, **convolve_kwargs,
     )
     # (n_einc, n_mus, n_eouts) -> (n_einc, n_eouts, n_mus)
-    ddx = np.moveaxis(broadened, -1, 1)
-    return np.clip(ddx / (2 * np.pi), 0.0, None)
+    ddx = xp.moveaxis(broadened, -1, 1)
+    return xp.clip(ddx / (2 * np.pi), 0.0, None)
 
 
 def compute_dxs_dE_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out,
     kernel, kernel_width,
-    to_lab=True,
+    to_lab=True, xp=None,
     **convolve_kwargs,
 ):
     """1D dxs/dE for (MT, ZAP) convolved with `kernel` along E_out.
@@ -237,6 +259,10 @@ def compute_dxs_dE_broadened(
         `kernel(delta_E)`. Should integrate to ~1 over its support.
     kernel_width : float
         Characteristic kernel width in eV.
+    xp : optional backend adapter (issue #169). ``xp=None`` (default)
+        is numpy; passing a JAX adapter routes ``compute_dexs`` and
+        the FFT convolution through JAX so ``jax.grad`` reaches
+        file-side leaves and the ``kernel`` closure's parameters.
     **convolve_kwargs
         Forwarded to `adaptive_convolve`.
 
@@ -246,21 +272,25 @@ def compute_dxs_dE_broadened(
         Broadened dxs/dE, shape `(n_einc, n_eouts)`. Same units as
         `compute_dexs`.
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     energies_in = np.asarray(energies_in, dtype=float)
     energies_out = np.asarray(energies_out, dtype=float)
 
     def f(eout_internal):
         return compute_dexs(
             endf_dict, mt, zap, energies_in, eout_internal, to_lab,
+            xp=xp,
         )
 
     try:
         # dxs/dE of a physical spectrum is non-negative; clip sub-eps
         # FFT-noise negatives from adaptive_convolve for the same
         # reason as in compute_ddx_continuous_broadened.
-        return np.clip(adaptive_convolve(
+        return xp.clip(adaptive_convolve(
             f, kernel, energies_out,
-            kernel_width=kernel_width,
+            kernel_width=kernel_width, xp=xp,
             **convolve_kwargs,
         ), 0.0, None)
     except (IndexError, AssertionError):
@@ -279,8 +309,8 @@ def compute_dxs_dE_broadened(
         # MT/ZAP; the LAW=1 discrete folder (dispatched separately)
         # or the 2-body folder handles the actual content. Return
         # zeros so cumulative summation is well-defined.
-        return np.zeros(
-            (len(energies_in), len(energies_out)), dtype=float,
+        return xp.zeros(
+            (len(energies_in), len(energies_out)), dtype=xp.float64,
         )
 
 

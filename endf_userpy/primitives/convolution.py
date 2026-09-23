@@ -29,12 +29,19 @@ class ConvergenceWarning(UserWarning):
 
 
 def _fftconvolve(values, kernel_vals, xp):
-    """Backend-dispatched fftconvolve(mode='same', axes=-1)."""
+    """Backend-dispatched fftconvolve(mode='same', axes=-1).
+
+    scipy.signal.fftconvolve broadcasts the leading (non-axis)
+    dimensions; jax.scipy.signal.fftconvolve requires them to match
+    exactly. Broadcast the kernel explicitly before the JAX call.
+    """
     if xp.name == 'numpy':
         return fftconvolve(values, kernel_vals, mode='same', axes=-1)
     if xp.name == 'jax':
         from jax.scipy.signal import fftconvolve as jax_fftconvolve
-        return jax_fftconvolve(values, kernel_vals, mode='same', axes=-1)
+        target_shape = values.shape[:-1] + kernel_vals.shape[-1:]
+        kernel_bcast = xp.broadcast_to(kernel_vals, target_shape)
+        return jax_fftconvolve(values, kernel_bcast, mode='same', axes=-1)
     raise ValueError(f'unsupported xp backend: {xp.name!r}')
 
 
