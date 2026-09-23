@@ -1,11 +1,8 @@
 import numpy as np
-from ..fortran.endf6 import (
-    trans2yield as trans2yield_fort,
-    init_trans2yield as init_trans2yield_fort,
-)
 from ..primitives import properties as prop
 from ..primitives.helpers import dict2array
 from ..mfsec_interpretation import mf3_interpretation as mf3_interp
+from . import mf12_trans2yield_kernel as _kernel
 
 
 DISCRETE_MT_SERIES = {
@@ -35,45 +32,40 @@ def get_available_series_mts(endf_dict, mt, include_ground_state=False):
     series_mts = get_discrete_series_mts(
         endf_dict, mt, include_ground_state=False
     )
-    avail_mts = mf3_interp.get_reaction_mts(endf_dict) 
-    avail_series_mts = [mt for mt in series_mts if mt in avail_mts] 
+    avail_mts = mf3_interp.get_reaction_mts(endf_dict)
+    avail_series_mts = [mt for mt in series_mts if mt in avail_mts]
     if not np.all(np.diff(avail_series_mts) == 1):
         raise IndexError('discrete MT number missing')
     return avail_series_mts
 
 
 def init_trans2yield(endf_dict, mt):
-    maxlevel = MAX_NUM_LEVEL
+    """Return ``(available_mts, state_cache)`` for the discrete
+    inelastic series containing ``mt``. Pure-Python port of the
+    Fortran ``init_trans2yield``; the Fortran-backed variant is
+    preserved as :func:`mf12_interpretation_helpers_fort.init_trans2yield_fort_wrapper`.
+    """
     elis = prop.get_ELIS(endf_dict)
     avail_series_mts = get_available_series_mts(endf_dict, mt, False)
-
-    nlevel = len(avail_series_mts)
-    qms = [prop.get_QM(endf_dict, mt) for mt in avail_series_mts]   
+    qms = [prop.get_QM(endf_dict, mt) for mt in avail_series_mts]
     qis = [prop.get_QI(endf_dict, mt) for mt in avail_series_mts]
 
-    ee = np.empty(maxlevel, dtype=float, order='F')  
-    a = np.empty((maxlevel, maxlevel), dtype=float, order='F')
-    r = np.empty((maxlevel, maxlevel), dtype=float, order='F')
-
-    init_trans2yield_fort(elis, nlevel, qms, qis, ee, r, a)
-    state_cache = {
-        'ee': ee, 'r': r, 'a': a
-    }
+    ee, r, a = _kernel.init_trans2yield(elis, qms, qis, MAX_NUM_LEVEL)
+    state_cache = {'ee': ee, 'r': r, 'a': a}
     return avail_series_mts, state_cache
 
 
 def trans2yield(endf_dict, mt, state_cache):
-    maxnk = MAX_NK 
-
-    ee = state_cache['ee']
-    r = state_cache['r']
-    a = state_cache['a']
-
+    """Convert the ``mt`` MF12 LO=2 section into photon lines,
+    updating ``state_cache`` in place. Pure-Python port; call in
+    ascending-MT order per :func:`init_trans2yield`'s
+    ``avail_series_mts`` so cascades resolve correctly.
+    """
     mtsec = endf_dict[12][mt]
-    esns = mtsec['ES_NS'] 
+    esns = mtsec['ES_NS']
     nt = len(mtsec['ES'])
-    esi = dict2array(mtsec['ES'], dtype=float, order='F')
-    tp = dict2array(mtsec['TP'], dtype=float, order='F')
+    esi = dict2array(mtsec['ES'], dtype=float)
+    tp = dict2array(mtsec['TP'], dtype=float)
 
     if mtsec['LO'] != 2:
         raise ValueError(
@@ -83,23 +75,14 @@ def trans2yield(endf_dict, mt, state_cache):
     if mtsec['LG'] == 1:
         gp = np.ones(nt, dtype=float)
     elif mtsec['LG'] == 2:
-        gp = dict2array(mtsec['GP'], dtype=float, order='F')
+        gp = dict2array(mtsec['GP'], dtype=float)
     else:
         raise ValueError(
             f'invalid value for LG encountered (LG={mtsec["LG"]})'
         )
 
-    # allocate variables for output vars from fortran subroutine
-    es = np.zeros(maxnk, dtype=float, order='F')  # energy level from which photon originates
-    eg = np.zeros(maxnk, dtype=float, order='F')  # photon energy
-    y = np.zeros(maxnk, dtype=float, order='F')  # photon yield
-    nko = np.empty(1, dtype=np.int64)  # number of transitions
-
-    # call fortran subroutine
-    trans2yield_fort(mt, esns, nt, esi, tp, gp, ee, r, a, maxnk, nko, es, eg, y)
-    nk = int(nko.item())
-    return {
-        'level_energy': es[:nk],
-        'photon_energy': eg[:nk],
-        'photon_yield': y[:nk],
-    }
+    return _kernel.trans2yield(
+        mt, esns, esi, tp, gp,
+        state_cache['ee'], state_cache['r'], state_cache['a'],
+        maxnk=MAX_NK,
+    )
