@@ -203,15 +203,46 @@ def resonance_reconstruction_ctx(include, backend=None):
         _resonance_backend_var.reset(tok_b)
 
 
-def compute_xs(endf_dict, mt, energies_in):
+def compute_xs(endf_dict, mt, energies_in, xp=None):
+    """Cross section for one MT.
+
+    Backend-agnostic (issue #169): ``xp=None`` (default) is numpy
+    and preserves the pre-port behaviour (raw MF3 returned as
+    numpy, resonance composition returned as numpy via
+    ``np.asarray`` at the boundary). Passing a JAX adapter, when
+    combined with ``resonance_reconstruction_ctx(include=True,
+    backend='jax')``, keeps the composed cross section xp-native
+    so ``jax.grad`` reaches file-side leaves (MF2 dict-stored
+    resonance parameters) through this entry.
+
+    Note: only the resonance composition is xp-native today; the
+    raw MF3 branch (used when ``include_resonance=False``) stays
+    numpy internally and returns numpy. See tier-2 remaining work
+    under issue #169 for the MF3 xp port.
+    """
+    from ..primitives import array_ns
     if _include_resonance_var.get():
-        from ..primitives import array_ns
-        backend_name = _resonance_backend_var.get() or 'numpy'
-        xp = array_ns.get_backend(backend_name)
-        return np.asarray(_res_comp.compute_reconstructed_cross_section(
-            endf_dict, mt, energies_in, xp,
-        ))
-    return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        # Prefer the caller-provided xp; fall back to the legacy
+        # ``resonance_backend`` context so pre-port callers keep
+        # working. If both are set the caller's xp wins.
+        if xp is None:
+            backend_name = _resonance_backend_var.get() or 'numpy'
+            xp_res = array_ns.get_backend(backend_name)
+        else:
+            xp_res = xp
+        result = _res_comp.compute_reconstructed_cross_section(
+            endf_dict, mt, energies_in, xp_res,
+        )
+        # Preserve pre-port behaviour on the numpy path (return
+        # numpy); on non-numpy xp keep the tracer alive so autodiff
+        # works end-to-end.
+        if xp_res.name == 'numpy':
+            return np.asarray(result)
+        return result
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+    if xp is not None and xp.name != 'numpy':
+        return xp.asarray(xs)
+    return xs
 
 
 def compute_prodxs(endf_dict, mt, zap, energies_in):
