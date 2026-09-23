@@ -52,8 +52,16 @@ def get_emission_energies(endf_dict, mt, zap, nofail=False):
 
 
 def compute_angdist_values(
-    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True,
+    xp=None,
 ):
+    """Angular distribution for one (MT, ZAP) summed over every
+    non-DDX MF6 subsection matching that ZAP.
+
+    ``xp=None`` (default) is numpy. Threading a JAX adapter passes
+    tracers through the per-subsection ``compute_angdist_from_subsec``
+    chain down to the LAW=2 kernel.
+    """
     check_mf6_exists(endf_dict)
     check_mt_exists_in_mf6(endf_dict, mt)
     zap = zap if zap is not None else get_ZAP(endf_dict, mt)
@@ -66,8 +74,9 @@ def compute_angdist_values(
             skipped_law = endf_dict[6][mt]['subsection'][subsec_num]['LAW']
             continue
         found_angdist = True
-        angdist += compute_angdist_from_subsec(
-            endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab
+        angdist = angdist + compute_angdist_from_subsec(
+            endf_dict, mt, subsec_num, energies_in, angle_cosines_out,
+            to_lab, xp=xp,
         )
     if not found_angdist:
         if not subsec_nums:
@@ -82,8 +91,16 @@ def compute_angdist_values(
 
 
 def compute_dist2d_values(
-    endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True
+    endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
+    to_lab=True, xp=None,
 ):
+    """Double-differential distribution for one (MT, ZAP) summed
+    over every DDX MF6 subsection matching that ZAP.
+
+    ``xp=None`` (default) is numpy. Threading a JAX adapter passes
+    tracers through the per-subsection dispatcher down to the
+    LAW=1 / LAW=6 / LAW=7 kernels.
+    """
     check_mf6_exists(endf_dict)
     check_mt_exists_in_mf6(endf_dict, mt)
     zap = zap if zap is not None else get_ZAP(endf_dict, mt)
@@ -96,8 +113,9 @@ def compute_dist2d_values(
             skipped_law = endf_dict[6][mt]['subsection'][subsec_num]['LAW']
             continue
         found_dist2d = True
-        dist2d += compute_dist2d_from_subsec(
-            endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out, to_lab
+        dist2d = dist2d + compute_dist2d_from_subsec(
+            endf_dict, mt, subsec_num,
+            energies_in, energies_out, angle_cosines_out, to_lab, xp=xp,
         )
     if not found_dist2d:
         if not subsec_nums:
