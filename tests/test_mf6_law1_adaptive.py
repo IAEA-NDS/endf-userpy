@@ -119,9 +119,6 @@ def test_linearize_mesh_endpoints_match_fortran_al27(al27_endf_dict):
     """The mesh endpoints (kinematic min/max E') match Fortran to
     machine precision -- both implementations compute them from
     the same closed-form CM<->LAB formula."""
-    from endf_userpy.mfsec_interpretation import (
-        mf6_interpretation_integrals_fort as fort_int,
-    )
     from endf_userpy.fortran.endf6 import feep_full_law1con
     from endf_userpy.primitives.helpers import dict2array
     from endf_userpy.primitives.properties import get_AWR, get_AWI, get_ZA, get_ZAI

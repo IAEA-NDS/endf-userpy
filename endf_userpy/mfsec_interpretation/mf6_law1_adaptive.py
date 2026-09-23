@@ -28,6 +28,48 @@ Algorithm mirrors the Fortran ``feep_full_law1con`` (endf6.f90 line
 Numpy-only. Adaptive bisection has data-dependent iteration count
 which is not JAX-friendly; a fixed-max-depth uniform-bisection
 variant can be added later if JAX is wanted here.
+
+Boundary behaviour at ``Ep -> 0``
+---------------------------------
+
+The LAB-frame emission spectrum rises like ``f(Ep) ~ C * sqrt(Ep)``
+near ``Ep = 0`` (the CM<->LAB Jacobian ``dinv = sqrt(Ep_CM/Ep_LAB)``
+diverges and the mu-integration domain shrinks simultaneously),
+which has infinite derivative at the boundary. For an interval
+``[eps1, eps2]``, the linear-interp error at the midpoint is
+``1 - ((sqrt(eps1) + sqrt(eps2))/2) / sqrt((eps1 + eps2)/2)``,
+which for ``eps1 > 0`` shrinks quickly under bisection but for
+``eps1 = 0`` evaluates to a fixed ``1 - 1/sqrt(2) ~= 0.293``,
+independent of ``eps2``. Bisecting from ``[0, w]`` all the way to
+``[0, w / 2**20]`` does not move that number: the leftmost interval
+always has ``eps1 = 0``, so the leftmost accepted mesh point (near
+the max-depth safety cap) inherits a ~29% relative interp error.
+
+**Both the Fortran** ``feep_full_law1con`` **and this port hit the
+same boundary error at the same midpoint** -- the parity test
+against Fortran confirms this (see
+``tests/test_mf6_law1_adaptive.py``). This is not a bug in either
+implementation; it is a limitation of bisecting a linear-interp
+representation against a non-analytic boundary.
+
+**Practical impact** on downstream use is negligible: the absolute
+values of ``f`` in the affected region (typically the first few
+tens of eV) are 4-5 orders of magnitude below the spectrum peak,
+so any integral over a physically meaningful outgoing-energy group
+picks up essentially nothing from there. Multi-group generators and
+Monte Carlo CDF builders that consume the linearized mesh are
+unaffected.
+
+**If the fine-structure of the boundary matters** (unusually
+fine-grained downstream grids sensitive down to sub-eV): call
+:func:`mf6_law1_epintegral.integrate_law1_spectrum` directly and
+use adaptive quadrature (e.g. ``scipy.integrate.quad`` with
+``points=`` set to the mesh knots) instead of relying on the
+linearized mesh. Options to change the port itself (a log-scale
+bisection near ``ep=0``, a leading boundary segment ``(0, 0) ->
+(ep_min, f_min)``, or non-linear interp laws per interval) are
+tracked in the issue backlog but not implemented; they add API
+complexity for a scenario nobody has yet needed.
 """
 from __future__ import annotations
 
@@ -36,7 +78,6 @@ import numpy as np
 from ..primitives import array_ns
 from ..primitives.helpers import convert_interp_repr, find_interval
 from . import mf6_law1_epintegral as _epint
-from . import mf6_law1_kernel as _kernel
 
 
 def linearize_law1_spectrum(
