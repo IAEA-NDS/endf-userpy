@@ -2,24 +2,15 @@
 port plus numpy-vs-JAX parity plus ``jax.grad`` sanity.
 
 Correctness is pinned against a high-precision scipy.integrate.quad
-reference (epsrel=1e-13, adaptive) rather than against the Fortran
-Romberg reference. Rationale: the Fortran uses per-subpanel Romberg
-with rtol=1e-3, so comparing the port against Fortran conflates the
-port's quadrature error with Fortran's own. scipy.quad on the other
-hand can converge to any tolerance we want -- provided we hand it
-the kink locations via ``points=``, since the integrand has C0
-kinks at every LEP-piecewise Ep' knot the amplitude crosses as mu
-varies. Without the kink hints scipy.quad's own error stalls at
-~1e-3; with them it converges below 1e-5, so the port's accuracy
-claim scales cleanly with n_gl / n_polar_subpanels.
+reference. Both the reference and the port are kink-aware: the port
+partitions the polar angle at every LEP-piecewise Ep' knot of the
+two bracketing panels, and scipy.quad receives the same kink
+locations via ``points=``. Within each subpanel the integrand is
+smooth (analytic per LEP piece) so GL converges exponentially in
+n_gl, and scipy.quad converges below 1e-5.
 
 Pins:
-- Port at defaults (n_gl=10, n_polar_subpanels=4) matches kink-aware
-  scipy.quad truth to rtol=3e-3.
-- Port at high order (n_gl=32, n_polar_subpanels=16) matches to
-  rtol=5e-4 (~5x tighter for ~13x more mu nodes; nice geometric
-  convergence, order limited by how well the polar-angle
-  subdivision resolves the Kalbach amplitude's own peak).
+- Port at defaults (n_gl=10) matches scipy.quad truth to rtol=1e-6.
 - Port bit-identical numpy vs JAX (rtol=1e-11).
 - jax.grad reaches back from a dict-stored ``b`` leaf and matches
   finite-diff.
@@ -163,19 +154,22 @@ def _scipy_quad_truth(endf_dict, mt, sn, panel_idx, E, Ep, to_lab=True):
 
 
 @pytest.mark.parametrize(
-    'n_gl,n_sub,rtol,label',
+    'n_gl,rtol',
     [
-        (10, 4, 3e-3, 'defaults'),
-        (32, 16, 5e-4, 'high-order'),
+        (4, 1e-6),
+        (6, 1e-9),
+        (10, 1e-13),
     ],
 )
 def test_law1_epintegral_matches_scipy_quad_truth(
-    al27_endf_dict, n_gl, n_sub, rtol, label,
+    al27_endf_dict, n_gl, rtol,
 ):
-    """Al-27 MT=91 continuum ``f(E, E')`` matches an adaptive
-    scipy.integrate.quad reference. Tolerance tightens by ~5x when
-    the caller passes higher order (n_gl=32, n_polar_subpanels=16),
-    confirming user-controllable accuracy."""
+    """Al-27 MT=91 continuum ``f(E, E')`` matches a kink-aware
+    scipy.integrate.quad reference. Both port and reference share
+    the same kink partition, so within each subpanel GL converges
+    exponentially in n_gl and hits the float64 floor at ~n_gl=10
+    (empirically ~1e-7 -> ~1e-11 -> ~1e-16 at nodes 4/6/10 per
+    subpanel)."""
     mt, sn = 91, 1
     subsec = al27_endf_dict[6][mt]['subsection'][sn]
     panel_idx = 7  # (E1, E2) = (1e7, 1.1e7) eV
@@ -183,8 +177,7 @@ def test_law1_epintegral_matches_scipy_quad_truth(
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
         py = np.asarray(py_int.get_energydist_from_subsec_law1(
-            al27_endf_dict, mt, sn, e_in, e_out, True,
-            n_gl=n_gl, n_polar_subpanels=n_sub,
+            al27_endf_dict, mt, sn, e_in, e_out, True, n_gl=n_gl,
         ))
     truth = np.zeros_like(py)
     for i, E in enumerate(e_in):
@@ -196,8 +189,9 @@ def test_law1_epintegral_matches_scipy_quad_truth(
     mask = truth > 1e-15
     rd = np.abs(py[mask] - truth[mask]) / truth[mask]
     assert rd.max() < rtol, (
-        f'[{label}] max rel diff vs scipy.quad truth {rd.max():.3e} '
-        f'exceeds {rtol:.0e}; median {np.median(rd):.3e}'
+        f'[n_gl={n_gl}] max rel diff vs scipy.quad truth '
+        f'{rd.max():.3e} exceeds {rtol:.0e}; median '
+        f'{np.median(rd):.3e}'
     )
 
 

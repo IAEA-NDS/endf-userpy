@@ -10,22 +10,26 @@ where ``f_con`` is the LAW=1 continuum reconstruction (see
 :mod:`mf6_law1_kernel`) and ``mu_min = mu_min(E, E')`` comes from
 the LAB-frame kinematic cutoff (Fortran ``feep_law1con`` line 3020).
 
-Compared to the Fortran reference (``feep_points_law1con``, endf6.f90
-line 2901) this port replaces the per-subpanel Romberg-Richardson
-extrapolation with a fixed-order **Gauss-Legendre** rule per
-polar-angle subpanel. The polar-angle subdivision ``z = acos(mu)``
-is preserved (it concentrates points near the kinematic cutoff
-``mu_min`` where the CM<->LAB Jacobian sharpens). For smooth
-integrands GL is more efficient than Romberg (10-point GL matches
-Romberg's ``rtol=1e-3`` in a fraction of the integrand evaluations)
-and the fixed shape is JAX-friendly: no data-dependent iteration
-count, no ``lax.while_loop`` needed.
+**Kink-aware Gauss-Legendre.** The amplitude has a C0 kink at every
+LEP-piecewise ``E'`` knot of the two bracketing panels; under the
+CM<->LAB map ``E'(mu) = Ep + c0^2 E - 2 c0 sqrt(Ep E) mu`` each knot
+maps to a specific mu location. This module partitions the polar
+angle ``z = acos(mu)`` at exactly those kink locations, then applies
+fixed-order Gauss-Legendre per subpanel. Within a subpanel the
+amplitude is smooth (LEP interpolation is analytic per piece) and GL
+converges exponentially; between subpanels the sum stitches the
+pieces together without penalty.
 
-The default ``(n_gl=10, n_polar_subpanels=4)`` gives 40 integrand
-evaluations per ``(E, E')`` and matches the Fortran to a few 1e-4
-relative on Al-27 corpus files (see the equivalence test); more
-than sufficient for downstream use, and configurable if a caller
-wants tighter accuracy.
+Compared to the earlier equal-``dz`` polar subdivision, kink-aware
+subdivision gives orders-of-magnitude tighter accuracy at
+comparable node count on realistic ENDF tabulations (kinks come
+from physics, not a knob).
+
+Backend-agnostic and JAX-safe: kink count per panel-pair is a
+static Python-side ``nep1 + nep2``, so shapes are known at trace
+time. Kink locations that fall outside ``(mu_min, +1)`` are clamped
+to the endpoint and yield zero-width subpanels (no branching, no
+``lax.while_loop``).
 
 Design: input is an :class:`~mf6_law1_preproc.MF6Law1Data`
 dataclass (produced by
@@ -44,9 +48,9 @@ from . import mf6_law1_kernel as _kernel
 
 
 def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
-                              xp=None, n_gl=10, n_polar_subpanels=4):
+                              xp=None, n_gl=10):
     """MF6 LAW=1 continuum emission spectrum ``f(E, E')`` via
-    ``mu``-integration.
+    kink-aware polar-angle Gauss-Legendre.
 
     Parameters
     ----------
@@ -58,11 +62,10 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
         (no CM->LAB shift), True uses the section's LCT.
     xp : optional backend adapter (``array_ns.get_backend(name)``).
         Defaults to numpy.
-    n_gl : Gauss-Legendre order per polar subpanel (default 10).
-    n_polar_subpanels : number of equal-Delta-z polar subpanels
-        (default 4). The subpanel closest to the LAB cutoff carries
-        the sharpest integrand feature; more subpanels help if the
-        integrand varies rapidly there.
+    n_gl : Gauss-Legendre order per kink-aligned subpanel
+        (default 10). Each subpanel spans one LEP-piecewise region
+        of the amplitude, so this order controls exponential
+        convergence within each smooth piece.
 
     Returns
     -------
@@ -116,7 +119,7 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
         lei = int(ei_interp_full[panel_idx])
         f_sub = _law1_spectrum_panel_pair(
             data, int(panel_idx), lei, e_sub, ep_out_xp, eff_lct,
-            gl_x, gl_w, int(n_polar_subpanels), xp,
+            gl_x, gl_w, xp,
         )
         result = _kernel._scatter_rows(result, rows_np, f_sub, xp)
 
@@ -124,13 +127,15 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
 
 
 def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
-                                eff_lct, gl_x, gl_w, n_sub, xp):
-    """Per-panel-pair spectrum on ``(e_sub, ep_out)`` via polar-angle
-    Gauss-Legendre.
+                                eff_lct, gl_x, gl_w, xp):
+    """Per-panel-pair spectrum on ``(e_sub, ep_out)`` via kink-aware
+    polar-angle Gauss-Legendre. See module docstring for the kink
+    story.
 
-    Handles the panel-count regimes statically (Python-side):
-    if either panel has no continuum data, returns zeros (matches
-    the Fortran fall-through in ``f6law1con``).
+    ``nep1 + nep2`` sets the (fixed) kink-count per panel pair; the
+    total subpanel count is ``nep1 + nep2 + 1``. Kinks that map
+    outside ``(mu_min, +1)`` clamp to the endpoint and give
+    zero-width subpanels.
     """
     p1 = panel_idx
     p2 = panel_idx + 1
@@ -146,12 +151,6 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
 
     if nep1 <= nd1 or nep2 <= nd2:
         # No continuum data on at least one panel; spectrum is 0.
-        # (The between-panel unit-base transform requires both
-        # panels to have continuum data; if either doesn't, the
-        # Fortran f6law1con still returns something via the "only
-        # one panel has continuum" fallback, but that path is
-        # atypical for continuum-only spectra queries. Preserving
-        # the physics is easier to see with a clean zero here.)
         return xp.zeros((n_e_sub, n_ep), dtype=data.b_panels.dtype)
 
     # Panel-pair Ep upper bound at each incident e (unit-base
@@ -162,31 +161,63 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
     yslope = (e_bc - e1) / (e2 - e1)                             # (nE, 1)
     epmax_eff = ep1max + yslope * (ep2max - ep1max)              # (nE, 1)
 
-    # mu_min per (E, Ep) via the LAB-frame kinematic cutoff.
     ep_bc = ep_out_xp[None, :]                                   # (1, nEp)
     umin = _mu_min_bc(data, eff_lct, e_bc, ep_bc, epmax_eff, xp)  # (nE, nEp)
+    z_max = xp.arccos(xp.clip(umin, -1.0, 1.0))                  # (nE, nEp)
 
-    # Polar-angle subdivision: z = acos(mu), z in [0, z_min]
-    # where z_min = acos(mu_min). Subdivide [0, z_min] into
-    # n_sub equal-Delta-z subpanels; per subpanel apply GL.
-    z_min = xp.arccos(xp.clip(umin, -1.0, 1.0))                  # (nE, nEp)
-    dz = z_min / n_sub                                            # (nE, nEp)
+    # Kink locations. In CM-frame mode, each LEP knot Ep'_k of a
+    # panel maps under unit-base to Ep'_k * (epmax_eff / epmax_p),
+    # and that image is a kink of the amplitude in Ep' space. Under
+    # the CM<->LAB map (fixed E, Ep) this Ep' image is at
+    # mu_kink = (Ep + c0^2 E - Ep'_image) / (2 c0 sqrt(Ep E)). In
+    # LAB frame we short-circuit to "no kinks": every kink clamps to
+    # umin, so the whole [0, z_max] is one wide subpanel and GL of
+    # the smooth (Legendre / Kalbach) amplitude covers it.
+    is_cm = (eff_lct == 2) or (eff_lct == 3 and data.awp < 4.0)
+    c0 = float(np.sqrt(data.awi * data.awp) / (data.awi + data.awr))
+    if is_cm and c0 > 0.0:
+        ep1_arr = xp.asarray(data.ep_panels[p1, :nep1])
+        ep2_arr = xp.asarray(data.ep_panels[p2, :nep2])
+        knots1_img = ep1_arr[None, None, :] * (epmax_eff[..., None] / ep1max)
+        knots2_img = ep2_arr[None, None, :] * (epmax_eff[..., None] / ep2max)
+        # (nE, 1, K) then broadcast to (nE, nEp, K).
+        all_knots = xp.concatenate([knots1_img, knots2_img], axis=-1)
+        all_knots = xp.broadcast_to(
+            all_knots, (n_e_sub, n_ep, nep1 + nep2),
+        )
+        ep_safe = xp.where(ep_bc > 0.0, ep_bc, 1.0)
+        denom = 2.0 * c0 * xp.sqrt(ep_safe * e_bc)                # (nE, nEp)
+        c0_sq_e = (c0 * c0) * e_bc                                # (nE, 1)
+        numer = ep_bc[..., None] + c0_sq_e[..., None] - all_knots  # (nE, nEp, K)
+        mu_kinks = numer / denom[..., None]
+    else:
+        # LAB frame or massless ejectile: no CM<->LAB-map kinks.
+        mu_kinks = xp.broadcast_to(
+            umin[..., None], (n_e_sub, n_ep, nep1 + nep2),
+        )
 
-    # Build z at every (subpanel, GL node): shape
-    # (nE, nEp, n_sub, n_gl).
-    s_idx = xp.arange(n_sub, dtype=z_min.dtype)                   # (n_sub,)
-    z_a = dz[..., None] * s_idx                                   # (nE, nEp, n_sub)
-    z_all = (z_a[..., None]
-             + (dz[..., None, None] / 2.0) * (1.0 + gl_x))        # (..., n_sub, n_gl)
+    # Clamp to [umin, +1] so out-of-range kinks land at endpoints
+    # (yielding zero-width subpanels). Then sort ascending in z.
+    umin_bc = umin[..., None]                                    # (nE, nEp, 1)
+    mu_kinks_c = xp.minimum(xp.maximum(mu_kinks, umin_bc), 1.0)
+    z_kinks = xp.arccos(xp.clip(mu_kinks_c, -1.0, 1.0))          # (nE, nEp, K)
+    z_kinks = xp.sort(z_kinks, axis=-1)
 
+    # Boundaries: [0, sorted z_kinks..., z_max]. Shape (nE, nEp, K+2).
+    zeros_lead = xp.zeros((n_e_sub, n_ep, 1), dtype=z_max.dtype)
+    zmax_trail = z_max[..., None]
+    z_bounds = xp.concatenate([zeros_lead, z_kinks, zmax_trail], axis=-1)
+    z_left = z_bounds[..., :-1]                                  # (nE, nEp, K+1)
+    z_right = z_bounds[..., 1:]                                  # (nE, nEp, K+1)
+    dz = z_right - z_left                                        # (nE, nEp, n_sub)
+
+    # GL nodes at (nE, nEp, n_sub, n_gl):
+    z_all = z_left[..., None] + (dz[..., None] / 2.0) * (1.0 + gl_x)
     mu_all = xp.cos(z_all)
     sin_z_all = xp.sin(z_all)
 
-    # Broadcast (e, ep) against the polar-node axes for the amplitude
-    # eval. Shape (nE, nEp, n_sub, n_gl).
     e_full = xp.broadcast_to(e_bc[..., None, None], mu_all.shape)
     ep_full = xp.broadcast_to(ep_bc[..., None, None], mu_all.shape)
-
     tp_full, w_full, dinv_full = _kernel._mf6lab2cm_bc(
         data.awr, data.awi, data.awp, eff_lct,
         e_full, ep_full, mu_all, xp,
@@ -195,9 +226,7 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
         data, panel_idx, lei, e_full, tp_full, w_full, xp,
     )
     integrand = f_amp * dinv_full * sin_z_all
-    # GL weighting on the polar node axis (last axis)
-    # and interval-halving factor dz/2 on the subpanel axis.
-    weighted = integrand * gl_w * (dz[..., None, None] / 2.0)
+    weighted = integrand * gl_w * (dz[..., None] / 2.0)
     return xp.sum(weighted, axis=(-2, -1))
 
 
