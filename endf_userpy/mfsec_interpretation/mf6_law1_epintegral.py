@@ -48,7 +48,7 @@ from . import mf6_law1_kernel as _kernel
 
 
 def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
-                              xp=None, n_gl=10):
+                              xp=None, n_gl=10, panel_idx=None):
     """MF6 LAW=1 continuum emission spectrum ``f(E, E')`` via
     kink-aware polar-angle Gauss-Legendre.
 
@@ -66,6 +66,18 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
         (default 10). Each subpanel spans one LEP-piecewise region
         of the amplitude, so this order controls exponential
         convergence within each smooth piece.
+    panel_idx : optional Python int. If given, skip the
+        section-wide find_interval / panel loop and evaluate the
+        single-panel-pair kernel ``(panel_idx, panel_idx + 1)``
+        directly on ``energies_in`` and ``energies_out`` (kept
+        xp-native, no numpy conversion). This is the entry point
+        for ``jax.grad`` wrt ``energies_in`` / ``energies_out``:
+        with a static panel choice, both arrays flow through the
+        integrator as tracers. The caller is responsible for
+        keeping ``energies_in`` inside ``[ei_mesh[panel_idx],
+        ei_mesh[panel_idx + 1]]`` -- the amplitude has physical
+        C0 kinks at each panel knot, so grad across a knot is
+        undefined.
 
     Returns
     -------
@@ -82,16 +94,32 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
     else:
         raise NotImplementedError(f'LCT={lct} not implemented')
 
+    # Gauss-Legendre nodes / weights (static, precomputed once)
+    gl_x_np, gl_w_np = np.polynomial.legendre.leggauss(int(n_gl))
+    gl_x = xp.asarray(gl_x_np)
+    gl_w = xp.asarray(gl_w_np)
+
+    if panel_idx is not None:
+        # Single-panel autodiff path: no numpy conversion, no
+        # find_interval, no panel loop. Tracers flow through
+        # energies_in / energies_out end-to-end.
+        p = int(panel_idx)
+        ei_interp_full = convert_interp_repr(
+            np.asarray(data.int_arr), np.asarray(data.nbt_arr),
+        )
+        lei = int(ei_interp_full[p])
+        e_sub = xp.asarray(energies_in)
+        ep_out_xp = xp.asarray(energies_out)
+        return _law1_spectrum_panel_pair(
+            data, p, lei, e_sub, ep_out_xp, eff_lct,
+            gl_x, gl_w, xp,
+        )
+
     e_in_np = np.asarray(energies_in, dtype=float)
     ep_out_np = np.asarray(energies_out, dtype=float)
     n_e = e_in_np.shape[0]
     n_ep = ep_out_np.shape[0]
     ei_mesh_np = np.asarray(data.ei_mesh)
-
-    # Gauss-Legendre nodes / weights (static, precomputed once)
-    gl_x_np, gl_w_np = np.polynomial.legendre.leggauss(int(n_gl))
-    gl_x = xp.asarray(gl_x_np)
-    gl_w = xp.asarray(gl_w_np)
 
     ei_interp_full = convert_interp_repr(
         np.asarray(data.int_arr), np.asarray(data.nbt_arr),
@@ -111,14 +139,14 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
     idcs = find_interval(ei_mesh_np, e_inside_np)
     inside_positions = np.where(inside_mask_np)[0]
 
-    for panel_idx in np.unique(idcs):
-        row_mask = (idcs == panel_idx)
+    for panel_idx_iter in np.unique(idcs):
+        row_mask = (idcs == panel_idx_iter)
         rows_np = inside_positions[row_mask]
         e_sub_np = e_inside_np[row_mask]
         e_sub = xp.asarray(e_sub_np)
-        lei = int(ei_interp_full[panel_idx])
+        lei = int(ei_interp_full[panel_idx_iter])
         f_sub = _law1_spectrum_panel_pair(
-            data, int(panel_idx), lei, e_sub, ep_out_xp, eff_lct,
+            data, int(panel_idx_iter), lei, e_sub, ep_out_xp, eff_lct,
             gl_x, gl_w, xp,
         )
         result = _kernel._scatter_rows(result, rows_np, f_sub, xp)
@@ -163,7 +191,7 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
 
     ep_bc = ep_out_xp[None, :]                                   # (1, nEp)
     umin = _mu_min_bc(data, eff_lct, e_bc, ep_bc, epmax_eff, xp)  # (nE, nEp)
-    z_max = xp.arccos(xp.clip(umin, -1.0, 1.0))                  # (nE, nEp)
+    z_max = _safe_arccos(umin, xp)                                # (nE, nEp)
 
     # Kink locations. In CM-frame mode, each LEP knot Ep'_k of a
     # panel maps under unit-base to Ep'_k * (epmax_eff / epmax_p),
@@ -200,7 +228,7 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
     # (yielding zero-width subpanels). Then sort ascending in z.
     umin_bc = umin[..., None]                                    # (nE, nEp, 1)
     mu_kinks_c = xp.minimum(xp.maximum(mu_kinks, umin_bc), 1.0)
-    z_kinks = xp.arccos(xp.clip(mu_kinks_c, -1.0, 1.0))          # (nE, nEp, K)
+    z_kinks = _safe_arccos(mu_kinks_c, xp)                       # (nE, nEp, K)
     z_kinks = xp.sort(z_kinks, axis=-1)
 
     # Boundaries: [0, sorted z_kinks..., z_max]. Shape (nE, nEp, K+2).
@@ -228,6 +256,32 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
     integrand = f_amp * dinv_full * sin_z_all
     weighted = integrand * gl_w * (dz[..., None] / 2.0)
     return xp.sum(weighted, axis=(-2, -1))
+
+
+def _safe_arccos(x, xp):
+    """``arccos(x)`` that stays JAX-grad-safe at the ``|x| = 1``
+    boundaries. Naive ``arccos(clip(x, -1, 1))`` has an infinite
+    derivative when the input is clipped to +/-1 (arccos'(1) = -1 /
+    sqrt(1 - 1**2)); the double-``where`` pattern ensures the
+    traced computation only ever evaluates ``arccos`` at a strictly
+    interior point, and the final ``where`` selects the true value
+    without propagating the infinite derivative.
+
+    Values ``x >= 1 - eps`` map to ``0`` and ``x <= -1 + eps`` to
+    ``pi``. Both branches carry zero derivative (constants), so
+    outside the valid range the gradient is exactly zero -- which
+    is what we want for zero-width subpanels.
+    """
+    eps = 1e-15
+    x_safe = xp.where((x > -1.0 + eps) & (x < 1.0 - eps), x, 0.0)
+    z_from_arccos = xp.arccos(x_safe)
+    z_hi = xp.zeros_like(z_from_arccos)
+    z_lo = xp.asarray(np.pi, dtype=z_from_arccos.dtype)
+    z = xp.where(
+        x >= 1.0 - eps, z_hi,
+        xp.where(x <= -1.0 + eps, z_lo, z_from_arccos),
+    )
+    return z
 
 
 def _mu_min_bc(data, eff_lct, e_bc, ep_bc, epmax_eff, xp):

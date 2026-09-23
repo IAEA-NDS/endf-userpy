@@ -14,6 +14,10 @@ Pins:
 - Port bit-identical numpy vs JAX (rtol=1e-11).
 - jax.grad reaches back from a dict-stored ``b`` leaf and matches
   finite-diff.
+- ``panel_idx=`` single-panel entry: (a) numerically equal to the
+  default multi-panel dispatcher inside one panel-pair, (b) makes
+  ``jax.grad`` wrt ``E'`` and ``E`` work end-to-end (matching
+  central finite-difference).
 """
 from __future__ import annotations
 
@@ -267,3 +271,223 @@ def test_preproc_data_shape(al27_endf_dict):
         f'expected >=8 panels for Al-27 MT=91 LAW=1, got {n_panels}'
     )
     assert int(data.nep_arr[7]) > 5
+
+
+def test_panel_idx_matches_multi_panel_path_al27(al27_endf_dict):
+    """The ``panel_idx=`` single-panel path (autodiff entry) and
+    the default multi-panel dispatcher must agree exactly on a
+    query grid that lives inside one panel-pair. Zero absolute
+    diff, since both call the same kernel and pass the same
+    inputs; only the outer plumbing differs."""
+    mt, sn = 91, 1
+    subsec = al27_endf_dict[6][mt]['subsection'][sn]
+    e_in, e_out = _query_grid(subsec, panel_idx=7)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        multi = np.asarray(py_int.get_energydist_from_subsec_law1(
+            al27_endf_dict, mt, sn, e_in, e_out, True,
+        ))
+        single = np.asarray(py_int.get_energydist_from_subsec_law1(
+            al27_endf_dict, mt, sn, e_in, e_out, True, panel_idx=7,
+        ))
+    np.testing.assert_array_equal(multi, single)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_grad_wrt_outgoing_energy_al27(al27_endf_dict):
+    """``jax.grad`` wrt outgoing energy ``E'`` via the
+    ``panel_idx=`` autodiff entry point. Matches central finite
+    difference and enables direct spectrum-peak search via any
+    off-the-shelf JAX optimiser."""
+    import jax
+    import jax.numpy as jnp
+    mt, sn = 91, 1
+    subsec = al27_endf_dict[6][mt]['subsection'][sn]
+    panel_idx = 7
+    E = 0.5 * (float(subsec['E'][panel_idx + 1])
+               + float(subsec['E'][panel_idx + 2]))
+    xp_jx = array_ns.get_backend('jax')
+
+    def f_of_Ep(Ep):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return py_int.get_energydist_from_subsec_law1(
+                al27_endf_dict, mt, sn,
+                jnp.array([E]), jnp.array([Ep]), True,
+                xp=xp_jx, panel_idx=panel_idx,
+            )[0, 0]
+
+    Ep0 = 5e5
+    val = float(f_of_Ep(Ep0))
+    grad = float(jax.grad(f_of_Ep)(Ep0))
+    assert val > 0.0
+    assert np.isfinite(grad)
+    eps = 100.0  # 100 eV around Ep=5e5 stays well inside the panel
+    fd = (float(f_of_Ep(Ep0 + eps)) - float(f_of_Ep(Ep0 - eps))) / (2 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-30)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_grad_wrt_outgoing_energy_ddx_al27(al27_endf_dict):
+    """DDX ``get_dist2d_from_subsec_law1`` grad wrt E' works today
+    without ``panel_idx=`` (energies_out is xp-native throughout
+    the reconstruction). Peg it here so future refactors don't
+    regress it."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.mfsec_interpretation import (
+        mf6_interpretation_subsecs as mf6subsec,
+    )
+    mt, sn = 91, 1
+    subsec = al27_endf_dict[6][mt]['subsection'][sn]
+    panel_idx = 7
+    E = 0.5 * (float(subsec['E'][panel_idx + 1])
+               + float(subsec['E'][panel_idx + 2]))
+    xp_jx = array_ns.get_backend('jax')
+
+    def f_of_Ep(Ep):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return mf6subsec.get_dist2d_from_subsec_law1(
+                al27_endf_dict, mt, sn,
+                jnp.array([E]), jnp.array([Ep]), jnp.array([0.3]),
+                True, xp=xp_jx,
+            )[0, 0, 0]
+
+    Ep0 = 5e5
+    val = float(f_of_Ep(Ep0))
+    grad = float(jax.grad(f_of_Ep)(Ep0))
+    assert val > 0.0
+    assert np.isfinite(grad)
+    eps = 100.0
+    fd = (float(f_of_Ep(Ep0 + eps)) - float(f_of_Ep(Ep0 - eps))) / (2 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-30)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_grad_wrt_mu_ddx_al27(al27_endf_dict):
+    """DDX grad wrt mu works today (mu passes straight through the
+    amplitude eval, all-analytic path). Pin here for regression
+    safety."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.mfsec_interpretation import (
+        mf6_interpretation_subsecs as mf6subsec,
+    )
+    mt, sn = 91, 1
+    subsec = al27_endf_dict[6][mt]['subsection'][sn]
+    panel_idx = 7
+    E = 0.5 * (float(subsec['E'][panel_idx + 1])
+               + float(subsec['E'][panel_idx + 2]))
+    xp_jx = array_ns.get_backend('jax')
+
+    def f_of_mu(mu):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return mf6subsec.get_dist2d_from_subsec_law1(
+                al27_endf_dict, mt, sn,
+                jnp.array([E]), jnp.array([5e5]), jnp.array([mu]),
+                True, xp=xp_jx,
+            )[0, 0, 0]
+
+    mu0 = 0.3
+    val = float(f_of_mu(mu0))
+    grad = float(jax.grad(f_of_mu)(mu0))
+    assert val > 0.0
+    assert np.isfinite(grad)
+    eps = 1e-4
+    fd = (float(f_of_mu(mu0 + eps)) - float(f_of_mu(mu0 - eps))) / (2 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-30)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_grad_wrt_incident_energy_ddx_al27(al27_endf_dict):
+    """DDX grad wrt E via ``panel_idx=`` (single-panel autodiff
+    entry). Same semantics as the spectrum test, but on the 2D
+    distribution."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.mfsec_interpretation import (
+        mf6_interpretation_subsecs as mf6subsec,
+    )
+    mt, sn = 91, 1
+    subsec = al27_endf_dict[6][mt]['subsection'][sn]
+    panel_idx = 7
+    xp_jx = array_ns.get_backend('jax')
+
+    def f_of_E(E_var):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return mf6subsec.get_dist2d_from_subsec_law1(
+                al27_endf_dict, mt, sn,
+                jnp.array([E_var]), jnp.array([5e5]), jnp.array([0.3]),
+                True, xp=xp_jx, panel_idx=panel_idx,
+            )[0, 0, 0]
+
+    E0 = 0.5 * (float(subsec['E'][panel_idx + 1])
+                + float(subsec['E'][panel_idx + 2]))
+    val = float(f_of_E(E0))
+    grad = float(jax.grad(f_of_E)(E0))
+    assert val > 0.0
+    assert np.isfinite(grad)
+    eps = 1e3
+    fd = (float(f_of_E(E0 + eps)) - float(f_of_E(E0 - eps))) / (2 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-30)
+
+
+def test_ddx_panel_idx_matches_default_path_al27(al27_endf_dict):
+    """DDX ``panel_idx=`` autodiff entry produces the same numerical
+    value as the default multi-panel dispatcher for an interior
+    (E, E', mu) grid."""
+    from endf_userpy.mfsec_interpretation import (
+        mf6_interpretation_subsecs as mf6subsec,
+    )
+    mt, sn = 91, 1
+    subsec = al27_endf_dict[6][mt]['subsection'][sn]
+    panel_idx = 7
+    e_in, e_out = _query_grid(subsec, panel_idx=panel_idx)
+    mu = np.array([-0.3, 0.0, 0.5])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        default = np.asarray(mf6subsec.get_dist2d_from_subsec_law1(
+            al27_endf_dict, mt, sn, e_in, e_out, mu, True,
+        ))
+        single = np.asarray(mf6subsec.get_dist2d_from_subsec_law1(
+            al27_endf_dict, mt, sn, e_in, e_out, mu, True,
+            panel_idx=panel_idx,
+        ))
+    np.testing.assert_array_equal(default, single)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jax_grad_wrt_incident_energy_al27(al27_endf_dict):
+    """``jax.grad`` wrt incident energy ``E`` via ``panel_idx=``.
+    Restricted to the interior of one panel-pair; grad at
+    ``ei_mesh`` knots is undefined (real physical C0 kinks
+    there)."""
+    import jax
+    import jax.numpy as jnp
+    mt, sn = 91, 1
+    subsec = al27_endf_dict[6][mt]['subsection'][sn]
+    panel_idx = 7
+    xp_jx = array_ns.get_backend('jax')
+
+    def f_of_E(E_var):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return py_int.get_energydist_from_subsec_law1(
+                al27_endf_dict, mt, sn,
+                jnp.array([E_var]), jnp.array([5e5]), True,
+                xp=xp_jx, panel_idx=panel_idx,
+            )[0, 0]
+
+    # Mid-panel E stays well away from either knot.
+    E0 = 0.5 * (float(subsec['E'][panel_idx + 1])
+                + float(subsec['E'][panel_idx + 2]))
+    val = float(f_of_E(E0))
+    grad = float(jax.grad(f_of_E)(E0))
+    assert val > 0.0
+    assert np.isfinite(grad)
+    eps = 1e3
+    fd = (float(f_of_E(E0 + eps)) - float(f_of_E(E0 - eps))) / (2 * eps)
+    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-30)

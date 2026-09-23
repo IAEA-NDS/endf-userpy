@@ -41,7 +41,7 @@ module_logger = logging.getLogger(__name__)
 @pad_outside_dist2d_values
 def get_dist2d_from_subsec_law1(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out,
-    to_lab, xp=None,
+    to_lab, xp=None, panel_idx=None,
 ):
     """MF6 LAW=1 continuum-part angle-energy distribution.
 
@@ -59,6 +59,13 @@ def get_dist2d_from_subsec_law1(
     tracer via :func:`dataclasses.replace`, and call the kernel
     directly with ``xp=array_ns.get_backend('jax')``.
 
+    ``panel_idx`` (Python int) is the autodiff entry point for
+    ``jax.grad`` wrt ``energies_in``: with a static panel choice,
+    ``energies_in`` flows through the kernel as a tracer.
+    ``energies_out`` and ``angle_cosines_out`` are already
+    xp-native throughout the reconstruction and work with
+    ``jax.grad`` in both the default and the ``panel_idx=`` paths.
+
     Numpy path is bit-identical to the pre-refactor scalar Python
     implementation (which was already bit-identical to Fortran
     ``mf6_get_law1``).
@@ -67,7 +74,8 @@ def get_dist2d_from_subsec_law1(
         endf_dict, mt, subsec_num, xp=xp,
     )
     return mf6_law1_kernel.reconstruct(
-        data, energies_in, energies_out, angle_cosines_out, to_lab, xp=xp,
+        data, energies_in, energies_out, angle_cosines_out,
+        to_lab, xp=xp, panel_idx=panel_idx,
     )
 
 
