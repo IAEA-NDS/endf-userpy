@@ -503,7 +503,7 @@ def _f6law1con_panel_pair_bc(data, panel_idx, lei, e_bc, tp_bc, w_bc, xp):
 
 
 def reconstruct(data, energies_in, energies_out, angle_cosines_out,
-                 to_lab, xp=None):
+                 to_lab, xp=None, panel_idx=None):
     """Backend-agnostic MF6 LAW=1 continuum reconstruction.
 
     Consumes an :class:`MF6Law1Data` dataclass (built via
@@ -516,7 +516,16 @@ def reconstruct(data, energies_in, energies_out, angle_cosines_out,
     ``xp=None`` (default) resolves to numpy. Passing
     ``xp=array_ns.get_backend('jax')`` makes the arithmetic
     JAX-native; ``jax.grad`` propagates through the file-stored
-    angular parameters in ``data.b_panels``.
+    angular parameters in ``data.b_panels``, and also through
+    ``angle_cosines_out`` and ``energies_out`` (analytic paths).
+
+    ``panel_idx`` (Python int) is the autodiff entry point for
+    ``jax.grad`` wrt ``energies_in``: with a static panel choice
+    the section-wide ``find_interval`` / panel loop is skipped and
+    ``energies_in`` flows through the kernel as a tracer. The
+    caller must keep ``energies_in`` inside
+    ``[ei_mesh[panel_idx], ei_mesh[panel_idx + 1]]`` -- the
+    amplitude has physical C0 kinks at each panel knot.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -534,6 +543,38 @@ def reconstruct(data, energies_in, energies_out, angle_cosines_out,
     n_e = e_in.shape[0]
     n_ep = ep_out.shape[0]
     n_mu = mu.shape[0]
+
+    if panel_idx is not None:
+        # Single-panel autodiff path: skip find_interval and the
+        # inside-mask branch. Everything is xp-native, so tracers
+        # flow through energies_in, energies_out, angle_cosines_out
+        # end-to-end.
+        from ..primitives.helpers import convert_interp_repr as _cvt_p
+        ei_interp_full = _cvt_p(
+            np.asarray(data.int_arr), np.asarray(data.nbt_arr),
+        )
+        p = int(panel_idx)
+        lei = int(ei_interp_full[p])
+        e_bc = e_in[:, None, None]
+        ep_bc = ep_out[None, :, None]
+        mu_bc = mu[None, None, :]
+        if eff_lct == 1 or (eff_lct == 3 and data.awp >= 4.0):
+            tp_bc = xp.broadcast_to(ep_bc, (n_e, n_ep, n_mu))
+            w_bc = xp.broadcast_to(mu_bc, (n_e, n_ep, n_mu))
+            dinv_bc = xp.ones((n_e, n_ep, n_mu), dtype=tp_bc.dtype)
+        else:
+            e_full = xp.broadcast_to(e_bc, (n_e, n_ep, n_mu))
+            ep_full = xp.broadcast_to(ep_bc, (n_e, n_ep, n_mu))
+            mu_full = xp.broadcast_to(mu_bc, (n_e, n_ep, n_mu))
+            tp_bc, w_bc, dinv_bc = _mf6lab2cm_bc(
+                data.awr, data.awi, data.awp, eff_lct,
+                e_full, ep_full, mu_full, xp,
+            )
+        e_bc_full = xp.broadcast_to(e_bc, (n_e, n_ep, n_mu))
+        f = _f6law1con_panel_pair_bc(
+            data, p, lei, e_bc_full, tp_bc, w_bc, xp,
+        )
+        return f * dinv_bc
 
     # Broadcast to (n_e, n_ep, n_mu)
     e_bc = e_in[:, None, None]

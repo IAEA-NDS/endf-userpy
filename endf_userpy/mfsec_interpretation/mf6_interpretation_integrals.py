@@ -103,3 +103,5 @@ def _get_energydist_from_subsec_law1_single_panel(
         data, energies_in, energies_out, to_lab,
         xp=xp, n_gl=n_gl, panel_idx=panel_idx,
     )
+
+
