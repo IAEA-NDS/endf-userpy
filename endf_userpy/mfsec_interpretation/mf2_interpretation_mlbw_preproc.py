@@ -46,6 +46,8 @@ import math
 
 import numpy as np
 
+from ..primitives import array_ns
+from ..primitives.helpers import dict2array
 from ..primitives.physical_constants import (
     AMU_TO_EV, PARTICLE_MASSES_AMU,
 )
@@ -194,7 +196,7 @@ def _channel_radius(ap: float, awri: float, naps: int) -> float:
 
 
 def mlbw_data_from_endf_dict(
-    endf_dict, isotope_idx: int = 1, range_idx: int = 1,
+    endf_dict, isotope_idx: int = 1, range_idx: int = 1, xp=None,
 ) -> MLBWData:
     """Build an :class:`MLBWData` from a parsed ENDF-6 dict.
 
@@ -208,6 +210,21 @@ def mlbw_data_from_endf_dict(
         1-based isotope index (default 1; NIS>1 is uncommon).
     range_idx : int, optional
         1-based energy-range index within the isotope (default 1).
+    xp : optional backend adapter (``array_ns.get_backend(name)``).
+        ``xp=None`` (default) is numpy and preserves the pre-port
+        behaviour bit-for-bit. Passing a JAX adapter routes the
+        per-resonance-parameter marshaling through
+        :func:`~primitives.helpers.dict2array`'s xp-aware code path
+        so JAX tracers stored at ``d_l['ER'][row]``,
+        ``d_l['GN'][row]``, ``d_l['GG'][row]``, ``d_l['GF'][row]``,
+        ``d_l['GT'][row]``, and ``d_l['QX']`` propagate through the
+        dataclass into the reconstruction (issue #159, dict-first
+        parity with MF6 LAW=2). Values that steer channel
+        bookkeeping -- ``AJ`` (channel index), ``SPI`` (g_J
+        denominator), ``AWRI`` (channel radius / wavenumber),
+        ``AP`` -- stay concrete numpy on purpose; tracing them would
+        require rewriting the Python-side channel loop with static
+        shape masking, which is outside this issue's scope.
 
     Returns
     -------
@@ -226,6 +243,8 @@ def mlbw_data_from_endf_dict(
         derivation (handled in-line; only raised on a shape corner
         case that hasn't shown up in real files).
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     awi, spin_inc = _incident_particle_from_endf(endf_dict)
 
     d151 = endf_dict[2][151]
@@ -281,7 +300,9 @@ def mlbw_data_from_endf_dict(
         awri = np.asarray(d_l['AWRI'], dtype=np.float64)
         if awri_ref is None:
             awri_ref = awri
-        qx_l = np.asarray(d_l['QX'], dtype=np.float64)
+        # QX may carry a tracer; route through xp so the arithmetic
+        # that produces qx_values stays differentiable when xp=jax.
+        qx_l = xp.asarray(d_l['QX'], dtype=xp.float64)
         lrx = int(d_l['LRX'])
         nrs = int(d_l['NRS'])
 
@@ -292,26 +313,33 @@ def mlbw_data_from_endf_dict(
             qx_values.append(qx_l * (awri + awi) / awri)
 
         # Sort resonances in this L-group by |J|, so all resonances
-        # sharing a J stay adjacent in the channel indexing.
+        # sharing a J stay adjacent in the channel indexing. AJ steers
+        # the channel index, so it must be concrete (numpy) even when
+        # xp=jax.
         aj_arr = np.array(list(d_l['AJ'].values()), dtype=np.float64)
         j2 = np.rint(2 * aj_arr).astype(np.int32)          # 2 * |J|
         order = np.argsort(np.abs(j2))
         j2_ordered = j2[order]
 
-        er_arr = np.array(list(d_l['ER'].values()), dtype=np.float64)[order]
-        gn_arr = np.array(list(d_l['GN'].values()), dtype=np.float64)[order]
-        gg_arr = np.array(list(d_l['GG'].values()), dtype=np.float64)[order]
-        gf_arr = np.array(list(d_l['GF'].values()), dtype=np.float64)[order]
-        gt_arr = np.array(list(d_l['GT'].values()), dtype=np.float64)[order]
+        # Resonance parameters (ER / GN / GG / GF / GT) are the dict
+        # leaves users trace for autodiff. Route through dict2array's
+        # xp-aware path so JAX tracers stored at any row survive; the
+        # subsequent [order] fancy-index works for both numpy and
+        # jax arrays.
+        er_arr = dict2array(d_l['ER'], dtype=float, xp=xp)[order]
+        gn_arr = dict2array(d_l['GN'], dtype=float, xp=xp)[order]
+        gg_arr = dict2array(d_l['GG'], dtype=float, xp=xp)[order]
+        gf_arr = dict2array(d_l['GF'], dtype=float, xp=xp)[order]
+        gt_arr = dict2array(d_l['GT'], dtype=float, xp=xp)[order]
 
         # Competitive width GX from GT - GN - GG - GF, gated by LRX.
         if lrx > 0:
             gx_raw = gt_arr - gn_arr - gg_arr - gf_arr
-            gx_arr = np.where(
+            gx_arr = xp.where(
                 (gx_raw >= 0.0) & (gx_raw >= 1e-6 * gt_arr), gx_raw, 0.0,
             )
         else:
-            gx_arr = np.zeros_like(gt_arr)
+            gx_arr = xp.zeros_like(gt_arr)
 
         # Channels for this L: unique |J| values, in the order they
         # appear after sorting. Statistical weight g_J = (2|J|+1) /
@@ -386,6 +414,10 @@ def mlbw_data_from_endf_dict(
     a = _channel_radius(ap, awri_ref, naps)
     r_a = _radius_tab1_from_ap(a, emax)
 
+    # Integer-typed channel bookkeeping stays on numpy (it steers
+    # scatter/gather, not differentiable). Float-typed per-resonance
+    # arrays route through xp so any tracer scalars appended above
+    # survive into the returned dataclass.
     return MLBWData(
         abn=abn,
         spi=spi,
@@ -394,12 +426,12 @@ def mlbw_data_from_endf_dict(
         r_a=r_a,
         r_ap=r_ap,
         ch_l=np.asarray(ch_l_list, dtype=np.int32),
-        ch_g=np.asarray(ch_g_list, dtype=np.float64),
+        ch_g=xp.asarray(ch_g_list, dtype=xp.float64),
         res_channel=np.asarray(res_channel_list, dtype=np.int32),
         res_l=np.asarray(res_l_list, dtype=np.int32),
-        res_er=np.asarray(res_er_list, dtype=np.float64),
-        res_gn=np.asarray(res_gn_list, dtype=np.float64),
-        res_gg=np.asarray(res_gg_list, dtype=np.float64),
-        res_gf=np.asarray(res_gf_list, dtype=np.float64),
-        res_gx=np.asarray(res_gx_list, dtype=np.float64),
+        res_er=xp.asarray(res_er_list, dtype=xp.float64),
+        res_gn=xp.asarray(res_gn_list, dtype=xp.float64),
+        res_gg=xp.asarray(res_gg_list, dtype=xp.float64),
+        res_gf=xp.asarray(res_gf_list, dtype=xp.float64),
+        res_gx=xp.asarray(res_gx_list, dtype=xp.float64),
     )
