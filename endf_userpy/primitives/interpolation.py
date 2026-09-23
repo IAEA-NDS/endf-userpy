@@ -494,12 +494,11 @@ def interp_tab2(
     xp : optional
         Array-namespace adapter from
         :func:`endf_userpy.primitives.array_ns.get_backend`. Defaults
-        to numpy. The per-panel outer interpolation and the unit-base
-        Jacobian arithmetic run through this backend; the per-panel
-        inner :func:`interp_tab1` evaluation stays on numpy since it
-        loops over ENDF-interpolation regions of dynamically-many
-        zones (its result is converted at the boundary via
-        ``xp.asarray`` so the outer arithmetic is backend-native).
+        to numpy. The per-panel outer interpolation, the unit-base
+        Jacobian arithmetic, and the per-panel inner
+        :func:`interp_tab1` evaluation all run through this backend,
+        so tracers stored in the per-panel ``tab1_records[i][fp_name]``
+        list survive into the outer two-point interp.
 
     Returns
     -------
@@ -558,15 +557,18 @@ def interp_tab2(
                 f'Unsupported interpolation type INT={interp_type}.'
             )
 
-        # Inner interp stays on numpy (dict-of-records access +
-        # ENDF-region loop). Boundary-convert to xp for the outer
-        # two-point interp so the outer arithmetic is backend-native.
-        f1 = xp.asarray(interp_tab1(
-            cur_y1, curtab1, yp_name, fp_name, outside_value,
-        ))
-        f2 = xp.asarray(interp_tab1(
-            cur_y2, curtab2, yp_name, fp_name, outside_value,
-        ))
+        # Inner interp threads xp through so tracers stored in the
+        # per-panel ``curtab*[fp_name]`` list survive into the outer
+        # two-point interp (issue #169). The ENDF-region loop inside
+        # ``interp_tab1`` runs on numpy-side indexing (mesh, INT/NBT)
+        # and only the values arithmetic is xp-native, matching
+        # ``interp_tab1``'s own dispatch.
+        f1 = interp_tab1(
+            cur_y1, curtab1, yp_name, fp_name, outside_value, xp=xp,
+        )
+        f2 = interp_tab1(
+            cur_y2, curtab2, yp_name, fp_name, outside_value, xp=xp,
+        )
 
         if jac1 is not None:
             f1 = f1 * xp.asarray(jac1)
@@ -596,7 +598,5 @@ def interp_tab2(
             full = np.full(full_shape, outside_value, dtype=float)
             full[is_inside, :] = np.asarray(result_arr)
             result_arr = xp.asarray(full)
-
-    return result_arr
 
     return result_arr
