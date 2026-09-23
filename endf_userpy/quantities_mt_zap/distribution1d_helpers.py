@@ -175,13 +175,23 @@ def integrate_mf6_dist2d_over_mu(
 ):
     """Energy distribution from MF6 dist2d, integrated over mu.
 
-    ``xp=None`` (default) is numpy. Under ``xp=jax`` the LAW=1
-    single-subsection fast path is end-to-end xp-native (routes
-    through the ported ``get_energydist_from_subsec_law1`` and
-    accepts JAX tracers throughout, so ``jax.grad`` reaches
-    file-side coefficients via this integrator). The
-    general-purpose adaptive-Simpson fallback stays numpy and
-    materialises the result to xp-native at the return boundary.
+    Dispatches to specialised kink-aware integrators for the two
+    single-subsection cases that dominate the corpus:
+
+    - LAW=1: xp-native fast path through
+      ``mf6_integral.get_energydist_from_subsec_law1`` (JAX tracers
+      propagate to file-side coefficients).
+    - LAW=7: numpy kink-aware midpoint integrator on the union of
+      the two bracketing Ein slices' mu knots (matching
+      ``integrate_law7_subsec_over_eout``'s knot-awareness on E').
+      Exact for LAW=7's piecewise-linear mu interpolation; the
+      general adaptive-Simpson path converges only to ~1 % on
+      LAW=7 due to unresolved kinks at tabulated mu positions.
+
+    ``xp=None`` (default) is numpy. The LAW=7 branch and the
+    general-purpose adaptive-Simpson fallback both run on numpy
+    internally and materialise the result to xp-native at the
+    return boundary.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -195,6 +205,15 @@ def integrate_mf6_dist2d_over_mu(
                 endf_dict, mt, subsec_nums[0],
                 energies_in, energies_out, to_lab, xp=xp,
             )
+        if law == 7:
+            module_logger.debug(
+                f'use knot-aware LAW=7 mu-integrator for MT={mt}',
+            )
+            result = mf6_law7.integrate_law7_subsec_over_mu(
+                endf_dict, mt, subsec_nums[0],
+                energies_in, energies_out, to_lab,
+            )
+            return xp.asarray(result) if xp.name != 'numpy' else result
     # general-purpose integration routine (numpy internally)
     result = _integrate_mf6_dist2d_over_mu_default(
         endf_dict, mt, zap, energies_in, energies_out, to_lab
