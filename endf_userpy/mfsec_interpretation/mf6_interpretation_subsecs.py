@@ -683,25 +683,32 @@ def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
 
 def compute_dist2d_from_subsec(
     endf_dict, mt, subsec_num,
-    energies_in, energies_out, angle_cosines_out, to_lab=True
+    energies_in, energies_out, angle_cosines_out, to_lab=True, xp=None,
 ):
+    """LAW-dispatching DDX for one MF6 subsection.
+
+    ``xp=None`` (default) resolves to numpy. All three underlying
+    ``get_dist2d_from_subsec_law{1,6,7}`` accept ``xp``, so a JAX
+    adapter here threads tracers all the way through to the
+    corresponding reconstruction kernel.
+    """
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
     law = subsec['LAW']
     if law == 1:
         return get_dist2d_from_subsec_law1(
             endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out, to_lab
+            energies_in, energies_out, angle_cosines_out, to_lab, xp=xp,
         )
     elif law == 6:
         return get_dist2d_from_subsec_law6(
             endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out, to_lab
+            energies_in, energies_out, angle_cosines_out, to_lab, xp=xp,
         )
     elif law == 7:
         return get_dist2d_from_subsec_law7(
             endf_dict, mt, subsec_num,
-            energies_in, energies_out, angle_cosines_out, to_lab
+            energies_in, energies_out, angle_cosines_out, to_lab, xp=xp,
         )
     else:
         raise NotImplementedError(
@@ -711,7 +718,7 @@ def compute_dist2d_from_subsec(
 
 def compute_angdist_from_subsec(
     endf_dict, mt, subsec_num,
-    energies_in, angle_cosines_out, to_lab=True
+    energies_in, angle_cosines_out, to_lab=True, xp=None,
 ):
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
@@ -719,7 +726,7 @@ def compute_angdist_from_subsec(
     if law == 2:
         return get_angdist_from_subsec_law2(
             endf_dict, mt, subsec_num,
-            energies_in, angle_cosines_out, to_lab
+            energies_in, angle_cosines_out, to_lab, xp=xp,
         )
     else:
         raise NotImplementedError(
