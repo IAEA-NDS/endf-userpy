@@ -14,10 +14,15 @@ Two wrappers live here:
   MF6-LAW1 series) and not used at runtime today.
 """
 import numpy as np
-from ..fortran.endf6 import (
-    feep_full_law1con,
-    feep_points_law1con,
-)
+from ..fortran import HAS_FORTRAN, _stub
+if HAS_FORTRAN:
+    from ..fortran.endf6 import (
+        feep_full_law1con,
+        feep_points_law1con,
+    )
+else:
+    feep_full_law1con = _stub('feep_full_law1con')
+    feep_points_law1con = _stub('feep_points_law1con')
 from .mf6_interpretation_helpers import (
     pad_outside_energydist_values,
 )

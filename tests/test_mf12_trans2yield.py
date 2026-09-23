@@ -24,6 +24,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.importorskip('endf_userpy.fortran.endf6')
+
 from endf_parserpy import EndfParserCpp
 
 from endf_userpy.mfsec_interpretation import (

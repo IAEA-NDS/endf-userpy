@@ -1,7 +1,5 @@
 from setuptools import setup, Extension, find_packages
 from setuptools.command.build_ext import build_ext as build_ext_orig
-import numpy
-import numpy.f2py
 import subprocess
 import os
 import platform
@@ -11,13 +9,31 @@ import sysconfig
 import sys
 
 
+def _is_truthy(val: str) -> bool:
+    return val.strip().lower() in ('1', 'yes', 'true', 'on')
+
+
+# The Fortran extension is OPT-IN as of the runtime-optional refactor:
+# by default `pip install .` (from source) produces a pure-Python
+# install with no compiler dependency, and the Fortran extension is
+# built only when ENDF_USERPY_BUILD_FORTRAN=1 (or yes/true/on). This
+# matches how the runtime code paths use the extension -- only the
+# parity-oracle `_fort` sibling modules import from it, and those
+# modules degrade gracefully to a RuntimeError when the extension is
+# absent.
+#
+# Wheel builds (via cibuildwheel) set the env var so binary wheels
+# ship with the extension for free; end users on those platforms get
+# it without needing gfortran locally.
+BUILD_FORTRAN = _is_truthy(os.environ.get('ENDF_USERPY_BUILD_FORTRAN', ''))
+
+
 # Default Fortran compiler is gfortran on every platform. Set
 # ENDF_USERPY_USE_IFX=1 (or yes/true/on) on Windows to opt into the
 # legacy Intel Fortran (ifx) build path instead.
 USE_IFX = (
     sys.platform == 'win32'
-    and os.environ.get('ENDF_USERPY_USE_IFX', '').strip().lower()
-    in ('1', 'yes', 'true', 'on')
+    and _is_truthy(os.environ.get('ENDF_USERPY_USE_IFX', ''))
 )
 
 
@@ -116,10 +132,6 @@ class build_ext(build_ext_orig):
             print(f"Warning: Shared library {shared_lib_src} not found")
 
 
-f2py_include_path = numpy.f2py.get_include()
-fortranobject_c_path = os.path.join(f2py_include_path, 'fortranobject.c')
-
-
 def prepare_endf6module_c(source_file, dest_file, on_windows):
     with open(source_file, 'r', newline='') as f:
         cont = f.readlines()
@@ -139,67 +151,79 @@ def prepare_endf6module_c(source_file, dest_file, on_windows):
         f.writelines(cont)
 
 
-# Define the extension module
-c_module_template_file = Path('endf_userpy') / 'fortran' / 'endf6module.c'
-c_module_file = Path('endf_userpy') / 'fortran' / 'endf6module_active.c'
-if USE_IFX:
-    extra_link_args = []
-    add_libraries = []
-    prepare_endf6module_c(c_module_template_file, c_module_file, True)
-else:
-    extra_link_args = ['-lgfortran']
-    add_libraries = ['gfortran']
-    prepare_endf6module_c(c_module_template_file, c_module_file, False)
+ext_modules = []
+cmdclass = {}
+if BUILD_FORTRAN:
+    # numpy is only needed when the extension is being built. Import
+    # it here (inside the guard) so a pure-Python install has no build
+    # dependency on numpy either.
+    import numpy
+    import numpy.f2py
+    f2py_include_path = numpy.f2py.get_include()
+    fortranobject_c_path = os.path.join(f2py_include_path, 'fortranobject.c')
 
-
-# macOS-only: statically link gfortran's runtime into the extension by
-# passing libgfortran.a + libquadmath.a + libgcc.a + libgcc_eh.a as
-# extra_objects. With the runtime baked in there is no .dylib for
-# delocate to bundle into the wheel, so the wheel's macOS minimum is
-# no longer pulled up to whatever Homebrew built its gcc bottle
-# against. Linux/Windows keep dynamic linking.
-extra_objects_list = [
-    'endf_userpy/fortran/endf6.o',
-    'endf_userpy/fortran/endf6-f2pywrappers.o',
-]
-extra_library_dirs = []
-if sys.platform == 'darwin' and not USE_IFX:
-    macos_static_archives = []
-    for libname in ('gfortran', 'quadmath', 'gcc', 'gcc_eh'):
-        archive = _find_gfortran_archive(libname)
-        if archive is not None:
-            macos_static_archives.append(archive)
-    if macos_static_archives:
-        extra_objects_list.extend(macos_static_archives)
-        # No -lgfortran lookup needed when archives are baked in.
+    c_module_template_file = Path('endf_userpy') / 'fortran' / 'endf6module.c'
+    c_module_file = Path('endf_userpy') / 'fortran' / 'endf6module_active.c'
+    if USE_IFX:
         extra_link_args = []
         add_libraries = []
+        prepare_endf6module_c(c_module_template_file, c_module_file, True)
     else:
-        # Static archives unavailable; fall back to dynamic linking and
-        # hand the linker the Homebrew lib path so it can find -lgfortran.
-        gfortran_libdir = _find_gfortran_libdir()
-        if gfortran_libdir is not None:
-            extra_library_dirs.append(gfortran_libdir)
-elif not USE_IFX:
-    # Non-macOS, non-IFX: keep the existing dynamic-link path.
-    pass
+        extra_link_args = ['-lgfortran']
+        add_libraries = ['gfortran']
+        prepare_endf6module_c(c_module_template_file, c_module_file, False)
 
+    # macOS-only: statically link gfortran's runtime into the extension by
+    # passing libgfortran.a + libquadmath.a + libgcc.a + libgcc_eh.a as
+    # extra_objects. With the runtime baked in there is no .dylib for
+    # delocate to bundle into the wheel, so the wheel's macOS minimum is
+    # no longer pulled up to whatever Homebrew built its gcc bottle
+    # against. Linux/Windows keep dynamic linking.
+    extra_objects_list = [
+        'endf_userpy/fortran/endf6.o',
+        'endf_userpy/fortran/endf6-f2pywrappers.o',
+    ]
+    extra_library_dirs = []
+    if sys.platform == 'darwin' and not USE_IFX:
+        macos_static_archives = []
+        for libname in ('gfortran', 'quadmath', 'gcc', 'gcc_eh'):
+            archive = _find_gfortran_archive(libname)
+            if archive is not None:
+                macos_static_archives.append(archive)
+        if macos_static_archives:
+            extra_objects_list.extend(macos_static_archives)
+            # No -lgfortran lookup needed when archives are baked in.
+            extra_link_args = []
+            add_libraries = []
+        else:
+            # Static archives unavailable; fall back to dynamic linking and
+            # hand the linker the Homebrew lib path so it can find -lgfortran.
+            gfortran_libdir = _find_gfortran_libdir()
+            if gfortran_libdir is not None:
+                extra_library_dirs.append(gfortran_libdir)
+    elif not USE_IFX:
+        # Non-macOS, non-IFX: keep the existing dynamic-link path.
+        pass
 
-extension = Extension(
-    'endf6',
-    sources=[
-        fortranobject_c_path,
-        str(c_module_file),  # Use the correct file generated by numpy.f2py
-    ],
-    extra_objects=extra_objects_list,
-    include_dirs=[
-        numpy.get_include(),
-        numpy.f2py.get_include(),
-    ],
-    library_dirs=extra_library_dirs,
-    libraries=add_libraries,
-    extra_link_args=extra_link_args,
-)
+    ext_modules = [
+        Extension(
+            'endf6',
+            sources=[
+                fortranobject_c_path,
+                str(c_module_file),
+            ],
+            extra_objects=extra_objects_list,
+            include_dirs=[
+                numpy.get_include(),
+                numpy.f2py.get_include(),
+            ],
+            library_dirs=extra_library_dirs,
+            libraries=add_libraries,
+            extra_link_args=extra_link_args,
+        )
+    ]
+    cmdclass = {'build_ext': build_ext}
+
 
 setup(
     name='endf-userpy',
@@ -212,8 +236,8 @@ setup(
         'Issues': 'https://github.com/IAEA-NDS/endf-userpy/issues',
     },
     packages=find_packages(include=['endf_userpy', 'endf_userpy.*']),
-    ext_modules=[extension],
-    cmdclass={'build_ext': build_ext},
+    ext_modules=ext_modules,
+    cmdclass=cmdclass,
     python_requires='>=3.9',
     install_requires=[
         'numpy>=1.22',

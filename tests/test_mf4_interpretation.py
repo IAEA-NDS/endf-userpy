@@ -1,5 +1,8 @@
 from pathlib import Path
 import pytest
+
+pytest.importorskip('endf_userpy.fortran.endf6')
+
 import numpy as np
 from endf_parserpy import EndfParserCpp
 import endf_userpy.mfsec_interpretation.mf4_interpretation as mf4py

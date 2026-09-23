@@ -1,5 +1,10 @@
 import numpy as np
-from ..fortran.endf6 import mf4_get_leg, mf4_get_tab
+from ..fortran import HAS_FORTRAN, _stub
+if HAS_FORTRAN:
+    from ..fortran.endf6 import mf4_get_leg, mf4_get_tab
+else:
+    mf4_get_leg = _stub('mf4_get_leg')
+    mf4_get_tab = _stub('mf4_get_tab')
 from ..primitives.interpolation import find_interval
 from ..primitives.properties import (
     get_AWI, get_AWR, get_AWP,

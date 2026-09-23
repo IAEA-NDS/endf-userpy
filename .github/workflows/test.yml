@@ -6,7 +6,7 @@ on:
 
 jobs:
   pytest:
-    name: pytest (${{ matrix.python-version }})
+    name: pytest ${{ matrix.python-version }} (${{ matrix.fortran-mode }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -16,22 +16,31 @@ jobs:
         # (currently the latest stable). setup.py declares
         # python_requires='>=3.9'.
         python-version: ['3.10', '3.13']
+        # Two install modes:
+        # - with-fortran: opt into the extension via
+        #   ENDF_USERPY_BUILD_FORTRAN=1 and run the full suite,
+        #   including the parity oracle tests under _fort.
+        # - pure-python: skip the extension (default source install)
+        #   and confirm every runtime-path test still passes; the
+        #   parity oracle tests self-skip via
+        #   pytest.importorskip('endf_userpy.fortran.endf6').
+        fortran-mode: ['with-fortran', 'pure-python']
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      # The Fortran extension in endf_userpy.fortran.endf6 needs a
-      # Fortran compiler at build time. Ubuntu runners ship gfortran
-      # via apt; install it before pip does the editable build.
-      - name: Install gfortran
+      - name: Install gfortran (with-fortran only)
+        if: matrix.fortran-mode == 'with-fortran'
         run: sudo apt-get update && sudo apt-get install -y gfortran
-      - name: Install package (editable) with test extras
+      - name: Install package with Fortran extension
+        if: matrix.fortran-mode == 'with-fortran'
+        # ENDF_USERPY_BUILD_FORTRAN=1 opts in to the extension.
         # Editable install matches local development. pip install -e .
         # produces a PEP 660 editable stub that does NOT rebuild the
         # fortran extension in the source tree, so the source-tree
-        # `from endf_userpy.fortran.endf6 import ...` (which every
-        # test hits transitively) fails with ModuleNotFoundError.
+        # `from endf_userpy.fortran.endf6 import ...` (which parity
+        # tests hit transitively) fails with ModuleNotFoundError.
         #
         # Run setup.py build_ext explicitly, then copy the .so from
         # build/lib.*/endf_userpy/fortran/ into endf_userpy/fortran/.
@@ -42,16 +51,28 @@ jobs:
         # subsequent copy step here or the wheel build's own move.)
         #
         # pytest is not a runtime dep so pull it separately.
+        env:
+          ENDF_USERPY_BUILD_FORTRAN: '1'
         run: |
           pip install --upgrade pip build numpy setuptools
           pip install -e .
           python setup.py build_ext
           cp build/lib.*/endf_userpy/fortran/endf6*.so endf_userpy/fortran/
           pip install pytest
+      - name: Install package pure-Python (no Fortran extension)
+        if: matrix.fortran-mode == 'pure-python'
+        # No env var, no gfortran. setup.py's ENDF_USERPY_BUILD_FORTRAN
+        # gate is off, ext_modules is empty, install completes with
+        # pure-Python semantics. Confirms the runtime path has no
+        # compile-time dependency and _fort modules degrade cleanly.
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+          pip install pytest
       # tests/data_law1_adhoc/ is fetch-on-demand; individual tests
       # skip cleanly when a file is missing (per CLAUDE.md), so we
       # do NOT run fetch.sh here. tests_fortran/ reference binaries
       # are not in the repo (issue #95); the one test that used them
-      # now skips cleanly when the binary is missing (this PR).
+      # now skips cleanly when the binary is missing.
       - name: Run pytest
         run: pytest tests/ -q
