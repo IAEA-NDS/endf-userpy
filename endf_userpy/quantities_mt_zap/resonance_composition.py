@@ -157,8 +157,11 @@ def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp):
     if lrf != 2:
         return None, f'LRF={lrf} (only LRF=2 supported)'
     try:
+        # Thread xp so JAX tracers stored at per-J-group dict
+        # leaves (ES / D / GN0 / GG / GF / GX) survive into the URR
+        # kernel (issue #159).
         data = mf2_interpretation_urr_preproc.urr_data_from_endf_dict(
-            endf_dict, isotope_idx=iso_i, range_idx=rng_i,
+            endf_dict, isotope_idx=iso_i, range_idx=rng_i, xp=xp,
         )
     except Exception as exc:
         return None, f'preproc failed: {type(exc).__name__}: {exc}'

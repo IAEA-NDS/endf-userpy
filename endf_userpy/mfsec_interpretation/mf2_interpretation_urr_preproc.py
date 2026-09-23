@@ -30,6 +30,8 @@ import math
 
 import numpy as np
 
+from ..primitives import array_ns
+from ..primitives.helpers import dict2array
 from .mf2_interpretation_mlbw_preproc import (
     _KN,
     _channel_radius,
@@ -62,7 +64,7 @@ def _get_j_group(d_l: dict) -> dict:
 
 
 def urr_data_from_endf_dict(
-    endf_dict, isotope_idx: int = 1, range_idx: int = 2,
+    endf_dict, isotope_idx: int = 1, range_idx: int = 2, xp=None,
 ) -> URRData:
     """Build a :class:`URRData` from a parsed ENDF-6 dict.
 
@@ -95,7 +97,21 @@ def urr_data_from_endf_dict(
     NotImplementedError
         For incident particles the MLBW preproc's particle table
         does not cover.
+
+    Notes
+    -----
+    ``xp`` (optional backend adapter, default numpy): passing a JAX
+    adapter routes the per-J-group width-table marshaling through
+    :func:`~primitives.helpers.dict2array`'s xp-aware code path so
+    JAX tracers stored at ``d_j['ES']`` / ``d_j['D']`` /
+    ``d_j['GN0']`` / ``d_j['GG']`` / ``d_j['GF']`` / ``d_j['GX']``
+    survive into ``URRData`` and through the URR reconstruction
+    end-to-end (issue #159). Scalars that steer channel bookkeeping
+    (``AJ``, ``AMU*``, ``INT``, ``NAPS``, ``AWRI``, ``SPI``, ``AP``)
+    stay concrete numpy on purpose.
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     awi, _spin_inc = _incident_particle_from_endf(endf_dict)
 
     d151 = endf_dict[2][151]
@@ -182,8 +198,10 @@ def urr_data_from_endf_dict(
 
             def _as_row(key):
                 # endf_parserpy renders these as 1-indexed dicts;
-                # values() preserves insertion order in Python 3.7+.
-                return np.asarray(list(d_j[key].values()), dtype=np.float64)
+                # dict2array preserves insertion order AND, when
+                # xp=jax, keeps any tracer scalars alive so
+                # ``jax.grad`` reaches back to the width leaves.
+                return dict2array(d_j[key], dtype=float, xp=xp)
 
             table_es_rows.append(_as_row('ES'))
             table_d_rows.append(_as_row('D'))
@@ -217,6 +235,10 @@ def urr_data_from_endf_dict(
     g_denom = 2.0 * (2.0 * float(spi) + 1.0)
     group_g = (j2_arr.astype(np.float64) + 1.0) / g_denom
 
+    # Width tables may contain JAX tracer scalars from the dict
+    # leaves; stack via xp so they survive into the dataclass. All
+    # per-J-group scalar arrays (integer counts, degrees of freedom,
+    # statistical weight) stay on numpy: they steer bookkeeping.
     return URRData(
         abn=abn,
         spi=spi,
@@ -232,12 +254,12 @@ def urr_data_from_endf_dict(
         group_amuf=np.asarray(group_amuf, dtype=np.float64),
         group_amux=np.asarray(group_amux, dtype=np.float64),
         group_int=np.asarray(group_int, dtype=np.int32),
-        table_es=np.vstack(table_es_rows),
-        table_d=np.vstack(table_d_rows),
-        table_gn0=np.vstack(table_gn0_rows),
-        table_gg=np.vstack(table_gg_rows),
-        table_gf=np.vstack(table_gf_rows),
-        table_gx=np.vstack(table_gx_rows),
+        table_es=xp.stack(table_es_rows, axis=0),
+        table_d=xp.stack(table_d_rows, axis=0),
+        table_gn0=xp.stack(table_gn0_rows, axis=0),
+        table_gg=xp.stack(table_gg_rows, axis=0),
+        table_gf=xp.stack(table_gf_rows, axis=0),
+        table_gx=xp.stack(table_gx_rows, axis=0),
         r_a=r_a,
         r_ap=r_ap,
     )
