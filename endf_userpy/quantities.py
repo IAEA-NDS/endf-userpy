@@ -494,7 +494,7 @@ def _get_residual_production_xs_impl(
 def get_particle_production_xs(
     endf_dict, reaction, particle, energies_in,
     above_range='warn_nan', resonance_range='warn',
-    include_resonance=False, resonance_backend=None,
+    include_resonance=False, resonance_backend=None, xp=None,
 ):
     """Particle-production cross section on the incident energy grid.
 
@@ -502,6 +502,12 @@ def get_particle_production_xs(
     (default ``'warn'``), `include_resonance` (default ``False``)
     and `resonance_backend` (default ``None``: numpy) match
     :func:`get_reaction_xs`; see its docstring.
+
+    ``xp`` (issue #169 tier-2): default numpy; passing a JAX
+    adapter threads tracers through the sub-XS sum. MF3 XS and MF6
+    yields stay numpy internally and are materialised at the
+    boundary; the MF12/MF13/MF15 photon-path fast-paths likewise
+    stay numpy pending their own tier-2 ports.
     """
     ctx = (
         quant_mt_zap.resonance_reconstruction_ctx(
@@ -514,12 +520,12 @@ def get_particle_production_xs(
             resonance_range_ctx(resonance_range), \
             ctx:
         return _get_particle_production_xs_impl(
-            endf_dict, reaction, particle, energies_in,
+            endf_dict, reaction, particle, energies_in, xp=xp,
         )
 
 
 def _get_particle_production_xs_impl(
-    endf_dict, reaction, particle, energies_in,
+    endf_dict, reaction, particle, energies_in, xp=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
@@ -529,6 +535,7 @@ def _get_particle_production_xs_impl(
     # cumulative-sum iteration (issue #130). Non-gamma queries
     # over the wider list are still filtered correctly by contains_zap.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
+    extra = {'xp': xp} if xp is not None else {}
     return quant_mt_zap.compute_cumulative_quantity(
         quant_mt_zap.compute_prodxs,
         lambda endf_dict, mt, zap, energies_in: (
@@ -537,7 +544,7 @@ def _get_particle_production_xs_impl(
             )
             and selectors.contains_zap(endf_dict, mt, zap)
         ),
-        endf_dict, zap, energies_in, mts=mts,
+        endf_dict, zap, energies_in, mts=mts, **extra,
     )
 
 
@@ -690,20 +697,20 @@ def _get_particle_production_dxs_dE_impl(
 
 def get_particle_production_dxs_dmu(
     endf_dict, reaction, particle, energies_in, angle_cosines_out,
-    above_range='warn_nan', resonance_range='warn',
+    above_range='warn_nan', resonance_range='warn', xp=None,
 ):
     """Angle-differential cross section for particle production.
 
     `above_range` (default ``'warn_nan'``) and `resonance_range`
     (default ``'warn'``) match ``get_reaction_xs``; see its
     docstring for the policy sets.
+
+    ``xp`` (issue #169 tier-2): default numpy; passing a JAX adapter
+    threads tracers through the underlying angular reconstruction
+    (MF4 or MF6 LAW=2) so ``jax.grad`` reaches file-side leaves
+    end-to-end. MF3 XS and yields stay numpy internally
+    (materialised at the boundary).
     """
-    # `collect_law7_log_errors` aggregates the knot-aware LAW=7
-    # integrator's per-segment error estimate across every MT hit
-    # by this query, and emits one summary UserWarning on exit if
-    # any bracketing table uses log-based E' interpolation
-    # (INT>=3). Silent no-op for the INT=1/2 cases that cover the
-    # whole current corpus (issue #71).
     with (
         above_range_ctx(above_range),
         resonance_range_ctx(resonance_range),
@@ -711,16 +718,17 @@ def get_particle_production_dxs_dmu(
     ):
         return _get_particle_production_dxs_dmu_impl(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,
+            xp=xp,
         )
 
 
 def _get_particle_production_dxs_dmu_impl(
-    endf_dict, reaction, particle, energies_in, angle_cosines_out,
+    endf_dict, reaction, particle, energies_in, angle_cosines_out, xp=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    # Widened MT iteration (issue #130).
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
+    extra = {'xp': xp} if xp is not None else {}
     return quant_mt_zap.compute_cumulative_quantity(
         quant_mt_zap.compute_daxs,
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
@@ -728,13 +736,13 @@ def _get_particle_production_dxs_dmu_impl(
             selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         ),
         endf_dict, zap, energies_in, angle_cosines_out,
-        mts=mts,
+        mts=mts, **extra,
     )
 
 
 def get_particle_production_ddxs(
     endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out,
-    broadening=None, above_range='warn_nan', resonance_range='warn',
+    broadening=None, above_range='warn_nan', resonance_range='warn', xp=None,
 ):
     """Double-differential cross section for particle production.
 
@@ -770,17 +778,24 @@ def get_particle_production_ddxs(
     resonance_range : str, default ``'warn'``
         Policy for incident energies inside the file's
         resolved-resonance region. Matches ``get_reaction_xs``.
+    xp : optional backend adapter (issue #169). ``xp=None`` (default)
+        resolves to numpy and is bit-identical to the pre-port
+        behaviour. Passing ``xp=array_ns.get_backend('jax')`` threads
+        the unbroadened continuous DDX reconstruction through JAX so
+        ``jax.grad`` reaches file-side leaves. Broadened kernels are
+        FFT-based numpy-only in this PR and are materialised to
+        xp-native at the return boundary.
     """
     with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_particle_production_ddxs_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
-            angle_cosines_out, broadening,
+            angle_cosines_out, broadening, xp=xp,
         )
 
 
 def _get_particle_production_ddxs_impl(
     endf_dict, reaction, particle, energies_in, energies_out,
-    angle_cosines_out, broadening,
+    angle_cosines_out, broadening, xp=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
@@ -800,6 +815,9 @@ def _get_particle_production_ddxs_impl(
         # return zero from that branch. Sum in a separate MF15+MF14
         # contribution the same way the broadened dispatcher does
         # for compute_ddx_mf15_continuum_broadened.
+        # compute_ddxs is xp-aware (issue #169); compute_ddxs_from_mf15_mf14
+        # is numpy-only, so its result is lifted to xp at the boundary.
+        cont_extra = {'xp': xp} if xp is not None else {}
         cont_unbroad = quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_ddxs,
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
@@ -808,7 +826,7 @@ def _get_particle_production_ddxs_impl(
                 selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
-            mts=mts,
+            mts=mts, **cont_extra,
         )
         mf15_unbroad = quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_ddxs_from_mf15_mf14,
@@ -823,6 +841,8 @@ def _get_particle_production_ddxs_impl(
         parts = [p for p in (cont_unbroad, mf15_unbroad) if p is not None]
         if not parts:
             return None
+        if xp is not None:
+            parts = [xp.asarray(p) for p in parts]
         total = parts[0]
         for p in parts[1:]:
             total = total + p
@@ -960,6 +980,10 @@ def _get_particle_production_ddxs_impl(
     ]
     if not parts:
         return None
+    # Broadened kernels are FFT-based numpy-only; lift to xp at the
+    # boundary when a caller asked for a non-numpy backend.
+    if xp is not None:
+        parts = [xp.asarray(p) for p in parts]
     total = parts[0]
     for p in parts[1:]:
         total = total + p

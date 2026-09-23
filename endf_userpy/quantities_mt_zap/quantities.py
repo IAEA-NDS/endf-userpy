@@ -245,28 +245,33 @@ def compute_xs(endf_dict, mt, energies_in, xp=None):
     return xs
 
 
-def compute_prodxs(endf_dict, mt, zap, energies_in):
-    # Fast path for gamma production on MTs with MF13 XS but no MF3.
-    # Typical JENDL-5 pattern: MT 3 (nonelastic sum) carries MF13
-    # (total nonelastic photon-production XS) but the file does not
-    # tabulate MT 3 in MF3 (MT 3 = MT 1 - MT 2 is computed on the
-    # fly). The default xs * yields composition below would crash
-    # on `mf3.compute_cross_section(mt=3)` KeyError. MF13 already
-    # IS the photon-production XS for that MT, so return it
-    # directly (issue #130).
+def compute_prodxs(endf_dict, mt, zap, energies_in, xp=None):
+    """Particle-production cross section for one (MT, ZAP).
+
+    ``xp=None`` (default) preserves the pre-port numpy behaviour.
+    Passing a JAX adapter promotes the numpy sub-components (MF13
+    fast-path XS or MF3 x yields) to xp-native at the boundary so
+    downstream callers on JAX see xp arrays. MF3 / MF6 yields stay
+    numpy internally (their own port is tier-2).
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if (
         zap == get_zap_for_particle('g')
         and mt not in endf_dict.get(3, {})
         and mt in endf_dict.get(13, {})
     ):
-        return mf13_interp.compute_total_photon_production_xs(
+        result = mf13_interp.compute_total_photon_production_xs(
             endf_dict, mt, energies_in,
         )
+        return xp.asarray(result) if xp.name != 'numpy' else result
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     )
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
-    return xs * yields
+    result = xs * yields
+    return xp.asarray(result) if xp.name != 'numpy' else result
 
 
 def _is_mf13_only_gamma(endf_dict, mt, zap):
@@ -284,26 +289,38 @@ def _is_mf13_only_gamma(endf_dict, mt, zap):
     )
 
 
-def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True):
-    # MF13-only gamma fast path (issue #130): no MF3, so use MF13's
-    # total gamma production XS directly and skip the xs * yields
-    # composition.
+def compute_daxs(
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True, xp=None,
+):
+    """Angular-differential cross section ``d sigma / d mu`` for one
+    (MT, ZAP).
+
+    ``xp=None`` (default) is numpy. Passing a JAX adapter threads
+    tracers through the angular-distribution reconstruction (MF4 or
+    MF6 LAW=2 kernels) so ``jax.grad`` reaches file-side leaves.
+    MF3 XS and yields stay numpy internally (their own xp port is
+    tier-2); they are materialised at the boundary via
+    ``xp.asarray`` before multiplication.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if _is_mf13_only_gamma(endf_dict, mt, zap):
         prodxs = mf13_interp.compute_total_photon_production_xs(
             endf_dict, mt, energies_in,
         ).reshape(-1, 1)
         angdist = compute_angdist_values(
-            endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
+            endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
         )
-        return angdist * prodxs / (2 * np.pi)
+        return angdist * xp.asarray(prodxs) / (2 * np.pi)
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
     angdist = compute_angdist_values(
-        endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab
+        endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
     )
-    return angdist * yields * xs / (2*np.pi)
+    return angdist * xp.asarray(yields) * xp.asarray(xs) / (2 * np.pi)
 
 
 def compute_dexs(
@@ -344,27 +361,35 @@ def compute_dexs(
     return energydist * xp.asarray(yields) * xp.asarray(xs)
 
 
-def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True):
-    # MF13-only gamma fast path (issue #130). For DDX the "f" here
-    # is the double-distribution values from MF4+MF5 / MF6 which
-    # don't apply to a MF13-only gamma MT (no MF6 gamma subsection,
-    # no MF4+MF5 for gamma); the actual DDX for such MTs is composed
-    # from MF15 + MF14 by compute_ddxs_from_mf15_mf14 (which the
-    # unbroadened dispatcher already sums separately). Return zeros
-    # so this branch does not contribute a duplicate.
+def compute_ddxs(
+    endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
+    to_lab=True, xp=None,
+):
+    """Double-differential cross section for one (MT, ZAP).
+
+    ``xp=None`` (default) is numpy. Passing a JAX adapter threads
+    tracers through the double-differential reconstruction (MF6
+    LAW=1/2/6/7 or the MF4 x MF5 product) so ``jax.grad`` reaches
+    file-side leaves. MF3 XS and yields stay numpy internally
+    (materialised at the boundary via ``xp.asarray``).
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if _is_mf13_only_gamma(endf_dict, mt, zap):
         n_einc = np.asarray(energies_in).size
         n_eout = np.asarray(energies_out).size
         n_mu = np.asarray(angle_cosines_out).size
-        return np.zeros((n_einc, n_eout, n_mu), dtype=float)
+        return xp.zeros((n_einc, n_eout, n_mu), dtype=xp.float64)
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False
     ).reshape(-1, 1, 1)
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1, 1)
     f = compute_dist2d_values(
-        endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab
+        endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
+        to_lab, xp=xp,
     )
-    return f * yields * xs / (2*np.pi)
+    return f * xp.asarray(yields) * xp.asarray(xs) / (2 * np.pi)
 
 
 def compute_ddxs_from_mf15_mf14(
