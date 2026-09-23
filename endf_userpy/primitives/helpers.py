@@ -171,24 +171,33 @@ def get_enclosing_points(x, xp_mesh, fp):
 
 # Taken from https://stackoverflow.com/a/457805
 # with small adjustments for array compatibility
-def erf(x):
-    # save the sign of x
-    sign = np.ones_like(x, dtype=float)
-    sign[x < 0] = -1.0
-    x = np.abs(x)
+def erf(x, xp=None):
+    """Backend-dispatched error function.
 
-    # constants
-    a1 =  0.254829592
-    a2 = -0.284496736
-    a3 =  1.421413741
-    a4 = -1.453152027
-    a5 =  1.061405429
-    p  =  0.3275911
-
-    # A&S formula 7.1.26
-    t = 1.0/(1.0 + p*x)
-    y = 1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*np.exp(-x*x)
-    return sign*y # erf(-x) = -erf(x)
+    Uses ``scipy.special.erf`` on the numpy path (full double
+    precision, vectorised, ``scipy`` is already a hard runtime
+    dependency) and ``jax.scipy.special.erf`` on the JAX path
+    (autodiff-safe, full precision). Replaces an earlier hand-
+    coded A&S 7.1.26 rational approximation whose max error was
+    ~1.5e-7 -- well below the tolerances the MF5 fission-spectrum
+    tests operate at, but not worth the maintenance burden or the
+    precision loss on the modern JAX autodiff use case.
+    """
+    if xp is None or getattr(xp, 'name', None) == 'numpy':
+        # Import lazily so importing this module still works if
+        # scipy is somehow unavailable at build time (it is not,
+        # per setup.py's install_requires, but the lazy import
+        # keeps the failure mode local to callers of erf).
+        from scipy.special import erf as _scipy_erf
+        return _scipy_erf(x)
+    if getattr(xp, 'name', None) == 'jax':
+        import jax.scipy.special as _jsp
+        return _jsp.erf(x)
+    # Unknown adapter: try xp.erf, else fall back to scipy.
+    if hasattr(xp, 'erf'):
+        return xp.erf(x)
+    from scipy.special import erf as _scipy_erf
+    return _scipy_erf(x)
 
 
 def pad_outside_values(argnames: List[str], selectors: Union[List[Callable], Callable]):
