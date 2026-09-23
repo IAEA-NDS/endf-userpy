@@ -275,7 +275,23 @@ def compute_daxs(endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True
     return angdist * yields * xs / (2*np.pi)
 
 
-def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
+def compute_dexs(
+    endf_dict, mt, zap, energies_in, energies_out, to_lab=True, xp=None,
+):
+    """Energy-differential cross section ``d sigma / d E'`` for one
+    (MT, ZAP).
+
+    ``xp=None`` (default) is numpy. Passing a JAX adapter threads
+    tracers through the energy-distribution reconstruction
+    (composition layer -> MF6 LAW=1 integrator) so ``jax.grad``
+    reaches file-side leaves. MF3 cross-section and MF6 yields
+    stay numpy internally (their own xp port is tier-2 in issue
+    #169's sequencing); they are converted at the boundary via
+    ``xp.asarray`` before multiplication.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     module_logger.debug(f'compute dexs for MT={mt} and ZAP={zap}')
     # MF13-only gamma fast path (issue #130).
     if _is_mf13_only_gamma(endf_dict, mt, zap):
@@ -283,18 +299,18 @@ def compute_dexs(endf_dict, mt, zap, energies_in, energies_out, to_lab=True):
             endf_dict, mt, energies_in,
         ).reshape(-1, 1)
         energydist = compute_energydist_values(
-            endf_dict, mt, zap, energies_in, energies_out, to_lab,
+            endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
         )
-        return energydist * prodxs
+        return energydist * xp.asarray(prodxs)
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True
     ).reshape(-1, 1)
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
     energydist = compute_energydist_values(
-        endf_dict, mt, zap, energies_in, energies_out, to_lab
+        endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
     )
     module_logger.debug(f'average yield is {np.mean(yields)} for MT={mt} and ZAP={zap}')
-    return energydist * yields * xs
+    return energydist * xp.asarray(yields) * xp.asarray(xs)
 
 
 def compute_ddxs(endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out, to_lab=True):
@@ -421,24 +437,36 @@ def compute_ddxs_from_mf15_mf14(
 
 
 def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwargs):
-    """Iterate over MTs (default: MF3 keys), apply `select`, sum `func`.
+    """Iterate over MTs (default: MF3 keys), apply ``select``, sum
+    ``func``.
 
-    Pass `mts=` explicitly to widen the iteration source; the
+    Pass ``mts=`` explicitly to widen the iteration source; the
     particle-production dispatchers pass the MF3+MF12+MF13+MF15
     union so that gamma production from MTs with MF13-only content
     (e.g. JENDL-5 N-14 MT 3) is not silently skipped (issue #130).
+
+    Backend-agnostic (issue #169): ``xp`` in ``kwargs`` is
+    forwarded to ``func`` but stripped from the ``select`` call
+    (select predicates operate on file state, not numeric backends).
+    The initial-accumulator ``cum_res`` starts as the first ``func``
+    output (preserving its backend); subsequent additions use
+    ``cum_res = cum_res + ...`` so JAX tracers survive across the
+    sum.
     """
     if mts is None:
         mt_list = get_reaction_mt_numbers(endf_dict)
     else:
         mt_list = mts
+    # ``select`` predicates take (endf_dict, mt, zap, ...) and do
+    # not accept ``xp``. Strip it before passing.
+    select_kwargs = {k: v for k, v in kwargs.items() if k != 'xp'}
     is_first = True
     cum_res = None
     for mt in mt_list:
 
         module_logger.debug(f'consider MT={mt} for inclusion in cumulative quantity')
         if select is not None:
-            if not select(endf_dict, mt, *args, **kwargs):
+            if not select(endf_dict, mt, *args, **select_kwargs):
                 continue
         module_logger.debug(f'select MT={mt} for inclusion in cumulative quantity')
         cur_res = func(endf_dict, mt, *args, **kwargs)
@@ -446,7 +474,7 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwar
             cum_res = cur_res
             is_first = False
         else:
-            cum_res += cur_res
+            cum_res = cum_res + cur_res
 
     return cum_res
 
