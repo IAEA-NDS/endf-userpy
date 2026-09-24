@@ -177,11 +177,11 @@ def test_get_particle_production_xs_grad_wrt_E(be9_endf_dict):
 
 
 def _tracer_exc():
-    try:
-        import jax.errors
-        return jax.errors.TracerArrayConversionError
-    except AttributeError:
-        return Exception
+    # After the #220 first-pass fix, the affected code paths raise
+    # NotImplementedError early with a clear message instead of
+    # letting the confusing TracerArrayConversionError surface
+    # deep in the numpy integrator.
+    return NotImplementedError
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
