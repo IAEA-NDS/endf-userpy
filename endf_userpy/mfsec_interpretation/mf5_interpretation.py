@@ -52,6 +52,24 @@ def _compute_theta(contrib_sec, energies_in, xp=None):
     ).reshape(-1, 1)
 
 
+def _compute_a(contrib_sec, energies_in, xp=None):
+    """LF=11 Watt temperature-like parameter ``a(E)``."""
+    ein = energies_in.reshape(-1)
+    return interp_tab1(
+        ein, contrib_sec['a_table'], 'E', 'a',
+        outside_value=0.0, xp=xp,
+    ).reshape(-1, 1)
+
+
+def _compute_b(contrib_sec, energies_in, xp=None):
+    """LF=11 Watt shape parameter ``b(E)``."""
+    ein = energies_in.reshape(-1)
+    return interp_tab1(
+        ein, contrib_sec['b_table'], 'E', 'b',
+        outside_value=0.0, xp=xp,
+    ).reshape(-1, 1)
+
+
 def get_incident_energies_of_contribution(contrib_sec):
     en_mesh = np.array(contrib_sec['p_table']['E'], dtype=float)
     return en_mesh
@@ -320,6 +338,72 @@ def compute_evaporation_spectrum(
     return xp.where(valid_I & allowed, raw / I, 0.0)
 
 
+def compute_energy_dependent_watt_spectrum(
+    contrib_sec, energies_in, energies_out, xp=None,
+):
+    """MF5 LF=11 energy-dependent Watt fission spectrum.
+
+    Per ENDF-6 manual sec. 5.1.2.7, supported on
+    ``0 <= E' <= E - U`` with
+
+        f(E, E') = exp(-E'/a) * sinh(sqrt(b*E')) / I(E)
+
+    where ``a = a(E)`` and ``b = b(E)`` are TAB1 records of the
+    incident energy stored in ``contrib_sec['a_table']`` and
+    ``contrib_sec['b_table']``. Defining ``beta = a*b/4`` and
+    ``y = (E-U)/a >= 0``, the normalisation integral is
+
+        I(E) = (1/2) * sqrt(pi*a^3*b/4) * exp(beta)
+               * [erf(sqrt(y) - sqrt(beta)) + erf(sqrt(y) + sqrt(beta))]
+               - a * exp(-y) * sinh(sqrt(b*(E-U)))
+
+    Backend-agnostic: all arithmetic goes through ``xp``. Grad wrt
+    tracers in the ``a_table`` / ``b_table`` / ``U`` leaves flows
+    through end-to-end.
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    ein = xp.asarray(energies_in, dtype=xp.float64).reshape(-1, 1)
+    eout = xp.asarray(energies_out, dtype=xp.float64).reshape(1, -1)
+    a = _compute_a(contrib_sec, ein, xp=xp)                       # (n_ein, 1)
+    b = _compute_b(contrib_sec, ein, xp=xp)                       # (n_ein, 1)
+    U = contrib_sec['U']
+
+    E_minus_U = ein - U                                           # (n_ein, 1)
+    valid = (E_minus_U > 0.0) & (a > 0.0) & (b > 0.0)             # (n_ein, 1)
+    allowed = (eout >= 0.0) & (eout <= E_minus_U)                 # (n_ein, n_eout)
+
+    a_safe = xp.where(valid, a, 1.0)
+    b_safe = xp.where(valid, b, 1.0)
+
+    beta = a_safe * b_safe / 4.0                                  # (n_ein, 1)
+    y = xp.where(valid, E_minus_U / a_safe, 0.0)                  # (n_ein, 1)
+    sqrt_y = xp.sqrt(xp.where(y >= 0.0, y, 0.0))
+    sqrt_beta = xp.sqrt(beta)
+
+    # Normalisation integrand.
+    I = (
+        0.5 * xp.sqrt(xp.pi * a_safe ** 3 * b_safe / 4.0)
+        * xp.exp(beta)
+        * (
+            erf(sqrt_y - sqrt_beta, xp=xp)
+            + erf(sqrt_y + sqrt_beta, xp=xp)
+        )
+        - a_safe * xp.exp(-y) * xp.sinh(xp.sqrt(b_safe * xp.where(
+            E_minus_U > 0.0, E_minus_U, 0.0,
+        )))
+    )
+    valid_I = valid & (I > 0.0)
+
+    eout_safe = xp.where(eout >= 0.0, eout, 0.0)
+    raw = xp.where(
+        allowed,
+        xp.exp(-eout / a_safe) * xp.sinh(xp.sqrt(b_safe * eout_safe)),
+        0.0,
+    )
+    return xp.where(valid_I & allowed, raw / I, 0.0)
+
+
 def compute_spectrum_contribution(
     contrib_sec, energies_in, energies_out, xp=None,
 ):
@@ -338,6 +422,10 @@ def compute_spectrum_contribution(
         )
     if lf == 9:
         return compute_evaporation_spectrum(contrib_sec, ein, eout, xp=xp)
+    if lf == 11:
+        return compute_energy_dependent_watt_spectrum(
+            contrib_sec, ein, eout, xp=xp,
+        )
     raise ValueError(f'Spectrum computation for LF={lf} not implemented.')
 
 
