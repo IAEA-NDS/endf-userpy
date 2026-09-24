@@ -135,6 +135,16 @@ def mf6_law1_data_from_endf_dict(endf_dict, mt: int, subsec_num: int,
     # max_nep, max_na+1). Use numpy for the panel-outer index
     # (Python-side data), and let the leaf `b` values route through
     # `dict2array` with xp so tracers propagate.
+    #
+    # Padding invariant (issue #166): slots beyond nep_arr[p] in
+    # ep_panels replicate the last valid value (ep_panels[p, nep-1])
+    # rather than zero. Zero padding would create spurious kinks at
+    # 0 that the tracer-panel-index kernel would try to sort into the
+    # kink set and produce non-monotonic results. Replicating the
+    # last value keeps the panel's Ep row monotonic and gives
+    # zero-width subpanels for the padded slots when they collapse
+    # in the sort. Safe for the existing single-panel numpy kernel
+    # because every slice into ep_panels is bounded by nep_arr[p].
     ep_panels = np.zeros((n_panels, max_nep), dtype=float)
     b_rows = []
     for p in range(n_panels):
@@ -142,8 +152,11 @@ def mf6_law1_data_from_endf_dict(endf_dict, mt: int, subsec_num: int,
         b_panel_full = dict2array(
             subsec['b'][p + 1], dtype=float, fill_value=0.0, xp=xp,
         )
-        # Numpy for the mesh (used for scalar bracket-finding).
-        ep_panels[p, :ep_panel.shape[0]] = ep_panel
+        nep_p = ep_panel.shape[0]
+        ep_panels[p, :nep_p] = ep_panel
+        if nep_p < max_nep:
+            # Replicate the last valid Ep value into the padded slots.
+            ep_panels[p, nep_p:] = ep_panel[-1] if nep_p > 0 else 0.0
         # xp-native for the b values: pad to (max_nep, max_na+1).
         rows_this_panel = int(b_panel_full.shape[0])
         cols_this_panel = int(b_panel_full.shape[1])
@@ -162,6 +175,18 @@ def mf6_law1_data_from_endf_dict(endf_dict, mt: int, subsec_num: int,
         )
         b_rows.append(b_padded)
     b_panels = xp.stack(b_rows, axis=0)
+
+    # Under xp=jax, also route the scalar-per-panel arrays and
+    # ep_panels through the backend so the tracer-panel-index kernel
+    # (issue #166) can gather them without materialising numpy. Numpy
+    # backend keeps the arrays as numpy for zero overhead on the
+    # single-panel path.
+    if xp.name != 'numpy':
+        ei_mesh = xp.asarray(ei_mesh)
+        nd_arr = xp.asarray(nd_arr)
+        na_arr = xp.asarray(na_arr)
+        nep_arr = xp.asarray(nep_arr)
+        ep_panels = xp.asarray(ep_panels)
 
     return MF6Law1Data(
         awi=awi, awr=awr, awp=awp, q=q,
