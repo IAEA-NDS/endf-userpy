@@ -716,6 +716,96 @@ def compute_dist2d_from_subsec(
         )
 
 
+def get_angdist_from_subsec_law3(
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab,
+    xp=None,
+):
+    """Backend-agnostic MF6 LAW=3 (isotropic discrete emission)
+    angular distribution.
+
+    Per ENDF-6 manual sec. 6.2.5, LAW=3 is the two-body kinematics
+    case with an isotropic-in-CM angular distribution and no
+    LAW-dependent structure stored. The section's LCT / AWR / AWP /
+    QI plus the file-wide AWI determine everything.
+
+    No ``pad_outside_angdist_values`` decorator: LAW=3 stores no
+    ``E`` mesh (no LAW-dependent structure), so the standard
+    filter's ``subsec['E']`` lookup would KeyError. Below-threshold
+    Es come back NaN from the kinematic conversion and are clipped
+    to zero (issue #45 rationale, same as the LAW=2 and MF4 paths).
+
+    Angular distribution in the frame indicated by ``LCT``:
+
+        f_CM(mu_CM) = 1/2  (uniform)
+
+    LAB conversion: for ``LCT=2`` (or ``LCT=3`` with ``AWP <= 4``)
+    the LAB result is obtained via
+    :func:`convert_angdist_to_labsys` from
+    ``f_CM(mu_CM(mu_LAB, r2))``. The CM->LAB Jacobian is not
+    uniform in mu_LAB, so f_LAB is not 0.5 across mu_LAB even
+    though f_CM is. Forbidden LAB angles (below-threshold /
+    back-scatter cutoffs) come back NaN / negative from the
+    Jacobian and are clipped to zero (issue #45 rationale, matches
+    the LAW=2 and MF4 paths).
+
+    Backend-agnostic: passing ``xp = array_ns.get_backend('jax')``
+    runs on JAX. The section's ``AWP`` may be a tracer; if so, grad
+    wrt it propagates through the kinematic ``r2`` factor and the
+    LAB Jacobian.
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    # Gamma ZAP (issue #78 territory): CM<->LAB conversion assumes
+    # a massive ejectile. Photons need massless-ejectile
+    # kinematics which we do not implement. Zero-out with a
+    # warning, mirroring LAW=2.
+    if subsec.get('ZAP') == 0.0:
+        warnings.warn(
+            f'MF6/MT{mt} subsection {subsec_num} stores gamma '
+            f'(ZAP=0) with LAW=3. The 2-body kinematic conversion '
+            f'currently assumes a massive ejectile and returns '
+            f'NaN for photons; skipping this contribution '
+            f'(returning zeros).',
+            UserWarning, stacklevel=3,
+        )
+        return xp.zeros(
+            (len(energies_in), len(angle_cosines_out)),
+            dtype=xp.float64,
+        )
+
+    lct = int(sec['LCT']) if to_lab else 1
+    awp = subsec['AWP']
+    if lct in (1, 2):
+        eff_lct = lct
+    elif lct == 3:
+        eff_lct = 1 if float(awp) > 4 else 2
+    else:
+        raise NotImplementedError(f'LCT={lct} not implemented')
+
+    e_in = xp.asarray(energies_in, dtype=xp.float64)
+    mu_lab = xp.asarray(angle_cosines_out, dtype=xp.float64)
+    n_e = e_in.shape[0]
+    n_mu = mu_lab.shape[0]
+
+    if eff_lct == 1:
+        # No CM->LAB step; f_CM = 1/2 broadcasts directly.
+        return xp.full((n_e, n_mu), 0.5, dtype=xp.float64)
+
+    # eff_lct == 2: CM<->LAB conversion.
+    awi = get_AWI(endf_dict)
+    awr = get_AWR(endf_dict)
+    q = get_QI(endf_dict, mt)
+    r2 = compute_r2(e_in, awi, awr, awp, q, xp=xp)
+    mu_cm = convert_angcos_to_cmsys(mu_lab, r2, xp=xp)
+    f_cm = xp.full_like(mu_cm, 0.5)
+    f_lab = convert_angdist_to_labsys(mu_cm, f_cm, r2, xp=xp)
+    f_lab = xp.where(xp.isnan(f_lab), 0.0, f_lab)
+    f_lab = xp.where(f_lab < 0.0, 0.0, f_lab)
+    return f_lab
+
+
 def compute_angdist_from_subsec(
     endf_dict, mt, subsec_num,
     energies_in, angle_cosines_out, to_lab=True, xp=None,
@@ -728,8 +818,12 @@ def compute_angdist_from_subsec(
             endf_dict, mt, subsec_num,
             energies_in, angle_cosines_out, to_lab, xp=xp,
         )
-    else:
-        raise NotImplementedError(
-            f'Angular distribution interpretation for LAW={law} '
-            'not implemented.'
+    if law == 3:
+        return get_angdist_from_subsec_law3(
+            endf_dict, mt, subsec_num,
+            energies_in, angle_cosines_out, to_lab, xp=xp,
         )
+    raise NotImplementedError(
+        f'Angular distribution interpretation for LAW={law} '
+        'not implemented.'
+    )
