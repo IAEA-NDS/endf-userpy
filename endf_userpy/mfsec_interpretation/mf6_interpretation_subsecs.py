@@ -8,6 +8,7 @@ from ..primitives import array_ns
 from ..primitives.conversion import (
     compute_r2,
     convert_angcos_to_cmsys,
+    convert_angcos_to_cmsys_second_branch,
     convert_angdist_to_labsys,
 )
 from ..primitives.interpolation import (
@@ -933,62 +934,49 @@ def get_angdist_from_subsec_law4(
     awr = get_AWR(endf_dict)
     q = get_QI(endf_dict, mt)
     r2 = compute_r2(e_in, awi, awr, awp, q, xp=xp)
-    mu_cm_recoil = convert_angcos_to_cmsys(mu_lab, r2, xp=xp)
+    # Heavy recoils have r^2 < 1: two CM branches map to the same
+    # LAB angle in the forward cone, and the LAB density is the
+    # sum over both. For r^2 >= 1 the second branch is unphysical
+    # and returns NaN, contributing zero after the clip below.
+    # (Issue #210.)
+    mu_cm_1 = convert_angcos_to_cmsys(mu_lab, r2, xp=xp)
+    mu_cm_2 = convert_angcos_to_cmsys_second_branch(mu_lab, r2, xp=xp)
 
-    # f_recoil_CM(mu) = f_ejectile_CM(-mu). Call the sibling with
-    # to_lab=False at negated mu; the sibling returns its stored
-    # (CM) values evaluated at that argument.
-    neg_mu = -mu_cm_recoil
-    # The sibling reconstruction expects a 1-D angle_cosines_out
-    # broadcast internally; here neg_mu is 2-D (n_ein, n_mu). We
-    # evaluate on a flattened 1-D array of unique-ish rows... but
-    # simpler: call per-row. For LAW=3 sibling the return is a
-    # constant 0.5 broadcast, so we don't need per-row evaluation.
     sibling = sec['subsection'][sibling_sn]
     sibling_law = int(sibling.get('LAW'))
-    if sibling_law == 3:
-        # Sibling is isotropic-in-CM, so the reflection is also
-        # isotropic. f_ejectile_CM(-mu) = 1/2.
-        f_cm = xp.full_like(mu_cm_recoil, 0.5)
-    elif sibling_law == 2:
-        # Sibling has an angular distribution stored. To get
-        # f_ejectile_CM at negated mus, we call the sibling's
-        # reconstruction with to_lab=False (bypasses CM<->LAB
-        # in the sibling). The sibling expects a 1-D mu input.
-        # Evaluate on the flattened negated mus and reshape.
-        flat_neg_mu = xp.reshape(neg_mu, (-1,))
-        # Broadcast e_in appropriately: sibling returns (n_ein,
-        # n_mu_query). We want a distinct sibling evaluation for
-        # each (e, mu) pair. Simplest: build a per-e query axis
-        # of size n_ein * n_mu, and rely on the sibling to
-        # broadcast e over the mu axis.
-        n_e = int(e_in.shape[0])
-        n_mu = int(mu_cm_recoil.shape[1])
-        # Sibling evaluation at each e_i on the full flat mu axis
-        # returns shape (n_e, n_e * n_mu). We only need the
-        # diagonal slice [i, i*n_mu:(i+1)*n_mu].
-        f_full = get_angdist_from_subsec_law2(
-            endf_dict, mt, sibling_sn,
-            energies_in, flat_neg_mu,
-            to_lab=False, xp=xp,
-        )
-        # Extract the per-e block on axis 1.
-        # f_full: (n_e, n_e * n_mu)  -> pick columns for row i.
-        # Vectorised extraction via arange indices.
-        row_idx = xp.arange(n_e).reshape(-1, 1)
-        col_idx = (
-            row_idx * n_mu + xp.arange(n_mu).reshape(1, -1)
-        )
-        f_cm = f_full[row_idx, col_idx]
-    else:
+
+    def _sibling_f_cm(mu_cm_recoil):
+        """Evaluate ``f_ejectile_CM(-mu_recoil)`` on a (n_ein, n_mu)
+        recoil CM grid, per the two-body reflection identity."""
+        if sibling_law == 3:
+            # Isotropic in CM: 0.5 everywhere.
+            return xp.full_like(mu_cm_recoil, 0.5)
+        if sibling_law == 2:
+            # Evaluate sibling at negated mu, per-(e, mu) pair via
+            # flat batch + row-wise slice.
+            neg_mu = -mu_cm_recoil
+            flat_neg_mu = xp.reshape(neg_mu, (-1,))
+            n_e = int(e_in.shape[0])
+            n_mu = int(mu_cm_recoil.shape[1])
+            f_full = get_angdist_from_subsec_law2(
+                endf_dict, mt, sibling_sn,
+                energies_in, flat_neg_mu,
+                to_lab=False, xp=xp,
+            )
+            row_idx = xp.arange(n_e).reshape(-1, 1)
+            col_idx = row_idx * n_mu + xp.arange(n_mu).reshape(1, -1)
+            return f_full[row_idx, col_idx]
         raise NotImplementedError(
             f'MF6/MT{mt} LAW=4 sibling has LAW={sibling_law}; '
             f'only LAW=2 and LAW=3 are supported for the sibling.'
         )
 
-    # Apply the recoil's CM->LAB Jacobian.
-    f_lab = convert_angdist_to_labsys(mu_cm_recoil, f_cm, r2, xp=xp)
-    f_lab = xp.where(xp.isnan(f_lab), 0.0, f_lab)
+    def _lab_branch(mu_cm):
+        f_cm = _sibling_f_cm(mu_cm)
+        f_lab_b = convert_angdist_to_labsys(mu_cm, f_cm, r2, xp=xp)
+        return xp.where(xp.isnan(f_lab_b), 0.0, f_lab_b)
+
+    f_lab = _lab_branch(mu_cm_1) + _lab_branch(mu_cm_2)
     f_lab = xp.where(f_lab < 0.0, 0.0, f_lab)
     return f_lab
 
