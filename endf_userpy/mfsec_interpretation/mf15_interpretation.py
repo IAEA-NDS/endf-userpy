@@ -10,7 +10,10 @@ from ..primitives.interpolation import (
 def _compute_prob(contrib_sec, energies_in, xp=None):
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    ein = np.asarray(energies_in).reshape(-1)
+    # Preserve JAX tracers on the query axis (roadmap #198 Phase 3):
+    # ``interp_tab1`` routes through ``endf_interp1d``'s traced-x
+    # path when xp=jax.
+    ein = xp.asarray(energies_in).reshape(-1)
     return interp_tab1(
         ein, contrib_sec['rtfm_tab1'], 'Eint', 'p',
         outside_value=0.0, xp=xp,
@@ -76,7 +79,11 @@ def compute_spectrum(endf_dict, mt, energies_in, energies_out, xp=None):
         cur = prob * compute_spectrum_contribution(contrib, ein, eout, xp=xp)
         res = cur if res is None else res + cur
     if res is None:
-        n_ein = np.asarray(ein).size
-        n_eout = np.asarray(eout).size
+        # No contributions: return a matching-shape zero. Use
+        # ``xp.asarray`` so a tracer ``ein`` / ``eout`` doesn't get
+        # materialised (though this path is rare; a well-formed
+        # MF15 section always has at least one subsection).
+        n_ein = int(xp.asarray(ein).shape[0])
+        n_eout = int(xp.asarray(eout).shape[0])
         return xp.zeros((n_ein, n_eout), dtype=xp.float64)
     return res
