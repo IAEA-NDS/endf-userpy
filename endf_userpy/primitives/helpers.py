@@ -200,6 +200,45 @@ def erf(x, xp=None):
     return _scipy_erf(x)
 
 
+def exp1(x, xp=None):
+    """Backend-dispatched exponential integral E_1(x) for x > 0.
+
+    Uses ``scipy.special.exp1`` on the numpy path and
+    ``jax.scipy.special.exp1`` on the JAX path (autodiff-safe on
+    1-D+ arrays; a JAX bug in ``_expn2`` fails on 0-D scalar
+    inputs, so callers must pass at least 1-D arrays). Used by the
+    MF5 LF=12 (Madland-Nix) fission-spectrum kernel.
+    """
+    if xp is None or getattr(xp, 'name', None) == 'numpy':
+        from scipy.special import exp1 as _scipy_exp1
+        return _scipy_exp1(x)
+    if getattr(xp, 'name', None) == 'jax':
+        import jax.scipy.special as _jsp
+        return _jsp.exp1(x)
+    if hasattr(xp, 'exp1'):
+        return xp.exp1(x)
+    from scipy.special import exp1 as _scipy_exp1
+    return _scipy_exp1(x)
+
+
+def gammainc(a, x, xp=None):
+    """Backend-dispatched regularised lower incomplete gamma
+    P(a, x) = gamma(a, x) / Gamma(a). ``scipy.special.gammainc``
+    on numpy; ``jax.scipy.special.gammainc`` on JAX. Both are
+    autodiff-safe wrt x on 1-D+ arrays.
+    """
+    if xp is None or getattr(xp, 'name', None) == 'numpy':
+        from scipy.special import gammainc as _scipy_gi
+        return _scipy_gi(a, x)
+    if getattr(xp, 'name', None) == 'jax':
+        import jax.scipy.special as _jsp
+        return _jsp.gammainc(a, x)
+    if hasattr(xp, 'gammainc'):
+        return xp.gammainc(a, x)
+    from scipy.special import gammainc as _scipy_gi
+    return _scipy_gi(a, x)
+
+
 def pad_outside_values(argnames: List[str], selectors: Union[List[Callable], Callable]):
     """Decorator factory to zero-pad results for invalid inputs."""
     def decorator(func):
