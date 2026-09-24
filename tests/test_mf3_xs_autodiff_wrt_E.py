@@ -23,20 +23,15 @@ has a 1256-point 1/v-like grid at low energy plus higher-order
 structure above. Both are pure MF3 lookups with no resonance
 region on this file.
 
-Known gap (Phase 1 finding, tracked as issue #196): the MT5
-fallback path in ``get_reaction_xs`` (``quantities.py`` around
-line 405) is documented as "numpy-internal for now (tier-2
-remainder)" and calls ``np.asarray(cur_xs, dtype=float)`` on the
-compute_xs result. Under xp=jax this crashes with
-``TracerArrayConversionError`` whenever
-``reac.is_unique_path_to_residual(proj, mt)`` returns True.
-Reactions where the fallback fires (e.g. ``(n,g)`` MT=102) must
-be called with ``mt5_contrib=False`` to skip the fallback and
-get an xp-native return. Elastic ``(n,n)`` is not classified as
-a unique-path-to-residual so the fallback does not fire and
-autodiff works out of the box. See
-``test_grad_wrt_E_ngamma_mt5_default_raises`` below for the
-regression pin.
+Historical Phase 1 finding (issue #196, fixed): the MT5 fallback
+path in ``get_reaction_xs`` used to unconditionally
+``np.asarray`` the compute_xs result even when the file had no
+MF6/MT=5 to redistribute, crashing under xp=jax on any
+unique-path-to-residual reaction. Now short-circuits when
+``prop.has_mf6_mt(endf_dict, 5)`` is False (typical for files
+like Be-9). Files that DO carry MF6/MT=5 still need
+``mt5_contrib=False`` under xp=jax; the underlying MT5
+redistribution compute path is still numpy-native.
 """
 from __future__ import annotations
 
@@ -156,12 +151,11 @@ def test_grad_wrt_E_matches_fd(
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_grad_wrt_E_ngamma_mt5_default_raises(be9_endf_dict):
-    """Regression pin for the known MT5-fallback gap: (n,g) with
-    the default ``mt5_contrib=True`` raises
-    ``TracerArrayConversionError`` under xp=jax because the
-    fallback path materialises via ``np.asarray``. Delete this
-    test once the fallback is ported."""
+def test_grad_wrt_E_ngamma_mt5_default_works_on_file_without_mt5(be9_endf_dict):
+    """The MT5 fallback path now short-circuits when the file has
+    no MF6/MT=5 (issue #196 fix). Be-9 has no MT=5, so
+    ``mt5_contrib=True`` no longer crashes on ``(n,g)`` under
+    xp=jax; grad flows through the direct MF3 path."""
     import jax
     import jax.numpy as jnp
 
@@ -172,13 +166,11 @@ def test_grad_wrt_E_ngamma_mt5_default_raises(be9_endf_dict):
             be9_endf_dict, '(n,g)', E, xp=xp_jx,
         ).sum()
 
-    try:
-        import jax.errors
-        expected_exc = jax.errors.TracerArrayConversionError
-    except AttributeError:
-        expected_exc = Exception
-    with pytest.raises(expected_exc):
-        jax.grad(lambda e: loss(e))(jnp.array([1e2]))
+    grad = float(jax.grad(lambda e: loss(e))(jnp.array([1e2]))[0])
+    assert np.isfinite(grad)
+    # Sanity: the (n,g) capture XS at 100 eV is decreasing with E
+    # (1/v regime), so grad should be negative.
+    assert grad < 0.0
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
