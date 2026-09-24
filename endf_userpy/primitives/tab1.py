@@ -219,21 +219,27 @@ def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0):
 
     const_law = y1
     # For lin-lin the denominator `x2 - x1` is 0 only when the panel
-    # is degenerate, which we route to law=1 anyway; guard for both
-    # forward NaN and backward Inf with a safe denominator.
-    x2m1_safe = x2_safe - x1_safe                                  # > 0
+    # is degenerate, which we route to law=1 or law=6 anyway; guard
+    # for both forward NaN and backward Inf with a safe denominator.
+    # Note: the `x2_safe = x1_safe * (1 + EPS)` nudge above collapses
+    # to `x1_safe` in float64 when EPS is below machine epsilon, so
+    # we clamp the derived denominators explicitly here rather than
+    # relying on the input-side nudge.
+    x2m1_safe = xp.maximum(x2_safe - x1_safe, EPS)                 # > 0
     lin_lin = y1 + (x - x1) * (y2 - y1) / x2m1_safe
 
     log_x_over_x1 = xp.log(x_safe / x1_safe)
-    log_x2_over_x1 = xp.log(x2_safe / x1_safe)                     # > 0
+    log_x2_over_x1_safe = xp.maximum(
+        xp.log(x2_safe / x1_safe), EPS,
+    )                                                              # > 0
     log_y2_over_y1 = xp.log(y2_safe / y1_safe)
 
-    lin_log = y1 + log_x_over_x1 * (y2 - y1) / log_x2_over_x1
+    lin_log = y1 + log_x_over_x1 * (y2 - y1) / log_x2_over_x1_safe
     log_lin = y1_safe * xp.exp(
         (x - x1) * log_y2_over_y1 / x2m1_safe,
     )
     log_log = y1_safe * xp.exp(
-        log_x_over_x1 * log_y2_over_y1 / log_x2_over_x1,
+        log_x_over_x1 * log_y2_over_y1 / log_x2_over_x1_safe,
     )
 
     outside = xp.full_like(x, float(outside_value))
