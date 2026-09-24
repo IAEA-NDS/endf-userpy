@@ -669,13 +669,13 @@ def get_emission_energies_from_subsec(endf_dict, mt, subsec_num, nofail=False):
     return np.unique(energies)
 
 
-def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in):
+def compute_yields_from_subsec(endf_dict, mt, subsec_num, energies_in, xp=None):
     module_logger.debug(f'compute yield from subsec with number {subsec_num}')
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
     yield_tab = subsec['yields']
     interp_yields = interp_tab1(
-        energies_in, yield_tab, 'Eint', 'yi', outside_value=0.0
+        energies_in, yield_tab, 'Eint', 'yi', outside_value=0.0, xp=xp,
     )
     module_logger.debug(interp_yields)
     return interp_yields

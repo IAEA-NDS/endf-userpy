@@ -179,7 +179,20 @@ def compute_law1_discrete_lines(
     return np.concatenate(ep_slabs, axis=-1), np.concatenate(amp_slabs, axis=-1)
 
 
-def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level=None):
+def compute_yields(
+    endf_dict, mt, zap, energies_in, include_discrete=True, level=None,
+    xp=None,
+):
+    """MF6 yield for ``(mt, zap)``.
+
+    ``xp=None`` (default) is numpy and bit-identical. Passing an xp
+    adapter threads tracers through the per-subsection
+    ``interp_tab1`` on the ``yields`` TAB1 record so ``jax.grad``
+    reaches file-side MF6 yield leaves.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     check_mf6_exists(endf_dict)
     check_mt_exists_in_mf6(endf_dict, mt)
     module_logger.debug(f'compute yields for MT={mt}, ZAP={zap} and level={level}')
@@ -200,7 +213,7 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
                 f'no MF8/MT={mt} entry, treating level={level} as positional index'
             )
     found_yields = False
-    yields = 0.0
+    yields = None
     for curlev, subsec_num in enumerate(subsec_nums):
         if target_position is not None and curlev != target_position:
             module_logger.debug(
@@ -211,9 +224,12 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
                 and not include_discrete):
             continue
         found_yields = True
-        yields += compute_yields_from_subsec(
-            endf_dict, mt, subsec_num, energies_in
+        cur = compute_yields_from_subsec(
+            endf_dict, mt, subsec_num, energies_in, xp=xp,
         )
+        # Use ``yields = yields + cur`` (not ``+=``) so a JAX tracer
+        # survives through the accumulation without in-place mutation.
+        yields = cur if yields is None else yields + cur
     if not found_yields:
         raise IndexError(
             f'yields not found for ZAP={zap} not found in MT={mt}'

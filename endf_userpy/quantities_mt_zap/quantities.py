@@ -34,7 +34,22 @@ from ..mfsec_interpretation.mf3_interpretation import (
 )
 
 
-def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level=None):
+def compute_yields(
+    endf_dict, mt, zap, energies_in, include_discrete=True, level=None,
+    xp=None,
+):
+    """Ejectile yield ``y(E_in)`` for one ``(mt, zap)``.
+
+    ``xp=None`` (default) is numpy and bit-identical to the pre-port
+    behaviour. Passing an xp adapter threads tracers through each
+    dispatch branch (MF1 nubar for fission neutrons, MF6 per-
+    subsection yields, MF12/MF13 gamma yields, and the reaction-
+    string multiplicity fallback), so ``jax.grad`` reaches file-side
+    yield leaves end-to-end.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     module_logger.debug(f'compute yields for MT={mt} and ZAP={zap} and level={level}')
     neutron_zap = get_zap_for_particle('n')
     gamma_zap = get_zap_for_particle('g')
@@ -46,7 +61,7 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
                 'For fission, `level` argument must be `None`'
             )
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF1/MT456')
-        yields = mf1_interp.compute_yields(endf_dict, 456, energies_in)
+        yields = mf1_interp.compute_yields(endf_dict, 456, energies_in, xp=xp)
     elif mt == 18 and zap == gamma_zap and (
         properties.has_mf12_mt(endf_dict, mt)
         or properties.has_mf13_mt(endf_dict, mt)
@@ -65,7 +80,7 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
             f'--> getting fission-gamma yields for MT={mt} from MF12/MF13'
         )
         yields = discrete_quant.compute_total_gamma_yields(
-            endf_dict, mt, energies_in
+            endf_dict, mt, energies_in, xp=xp,
         )
     elif mt == 18:
         # Fission with a ZAP that's neither neutron nor a
@@ -81,7 +96,7 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
           and mf6_help.contains_zap(endf_dict, mt, zap)):
         module_logger.debug(f'--> getting yields for MT={mt} and ZAP={zap} from MF6/MT{mt}')
         yields = mf6_interp.compute_yields(
-            endf_dict, mt, zap, energies_in, include_discrete, level
+            endf_dict, mt, zap, energies_in, include_discrete, level, xp=xp,
         )
     elif (zap == get_zap_for_particle('g')
           and (properties.has_mf12_mt(endf_dict, mt)
@@ -105,7 +120,7 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
         # energy continuum spectrum in MF15 do not silently produce a
         # zero yield for the continuum-dominant region.
         yields = discrete_quant.compute_total_gamma_yields(
-            endf_dict, mt, energies_in
+            endf_dict, mt, energies_in, xp=xp,
         )
     else:
         if level is not None:
@@ -138,7 +153,7 @@ def compute_yields(endf_dict, mt, zap, energies_in, include_discrete=True, level
                 f'reaction table or file an issue with the offending '
                 f'MT and file.'
             )
-        yields = np.full(len(energies_in), mult, dtype=float)
+        yields = xp.full(len(energies_in), mult, dtype=xp.float64)
     return yields
 
 
@@ -266,11 +281,10 @@ def compute_prodxs(endf_dict, mt, zap, energies_in, xp=None):
             endf_dict, mt, energies_in, xp=xp,
         )
     yields = compute_yields(
-        endf_dict, mt, zap, energies_in, include_discrete=True
+        endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     )
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
-    result = xs * yields
-    return xp.asarray(result) if xp.name != 'numpy' else result
+    return yields * xp.asarray(xs)
 
 
 def _is_mf13_only_gamma(endf_dict, mt, zap):
@@ -313,13 +327,13 @@ def compute_daxs(
         )
         return angdist * prodxs / (2 * np.pi)
     yields = compute_yields(
-        endf_dict, mt, zap, energies_in, include_discrete=True
+        endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
     angdist = compute_angdist_values(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
     )
-    return angdist * xp.asarray(yields) * xp.asarray(xs) / (2 * np.pi)
+    return angdist * yields * xp.asarray(xs) / (2 * np.pi)
 
 
 def compute_dexs(
@@ -350,14 +364,14 @@ def compute_dexs(
         )
         return energydist * prodxs
     yields = compute_yields(
-        endf_dict, mt, zap, energies_in, include_discrete=True
+        endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
     )
-    module_logger.debug(f'average yield is {np.mean(yields)} for MT={mt} and ZAP={zap}')
-    return energydist * xp.asarray(yields) * xp.asarray(xs)
+    module_logger.debug(f'average yield for MT={mt} and ZAP={zap}')
+    return energydist * yields * xp.asarray(xs)
 
 
 def compute_ddxs(
@@ -381,14 +395,14 @@ def compute_ddxs(
         n_mu = np.asarray(angle_cosines_out).size
         return xp.zeros((n_einc, n_eout, n_mu), dtype=xp.float64)
     yields = compute_yields(
-        endf_dict, mt, zap, energies_in, include_discrete=False
+        endf_dict, mt, zap, energies_in, include_discrete=False, xp=xp,
     ).reshape(-1, 1, 1)
     xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
         to_lab, xp=xp,
     )
-    return f * xp.asarray(yields) * xp.asarray(xs) / (2 * np.pi)
+    return f * yields * xp.asarray(xs) / (2 * np.pi)
 
 
 def compute_ddxs_from_mf15_mf14(
