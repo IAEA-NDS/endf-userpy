@@ -60,28 +60,20 @@ def test_law4_previously_notimplemented_now_returns(be9_endf_dict):
     assert (f >= 0).all()
 
 
-def test_law4_lab_angular_single_branch_regression(be9_endf_dict):
-    """Regression pin for the single-branch CM<->LAB limitation
-    (issue #210): for heavy recoils (r^2 < 1) the LAB density is
-    a 2-branch sum but the primitive returns only one branch, so
-    the integral is less than 1. Pin the current value so a fix
-    to #210 flips this test and forces reconsideration.
-
-    The forward-cone shape and per-mu values from the single
-    branch are still correct; only the overall normalisation is
-    affected."""
+def test_law4_lab_angular_normalises_to_one(be9_endf_dict):
+    """LAW=4 recoil LAB angular distribution is a probability
+    density on ``mu_LAB``; integrates to 1 on a fine grid. Two-branch
+    CM<->LAB primitive fix (issue #210): for heavy recoils
+    (``r^2 < 1``) both CM branches contribute in the forward cone,
+    and the summed density is properly normalised."""
     ein = np.array([1.8e7])
     mu = np.linspace(-1.0, 1.0, 40001)
     f = np.asarray(mf6subsec.get_angdist_from_subsec_law4(
         be9_endf_dict, 600, 2, ein, mu, to_lab=True,
     ))
     integral = float(np.trapezoid(f[0], mu))
-    # Current single-branch integral is ~0.66; well below 1.0 and
-    # well above 0. When #210 is fixed to sum both branches the
-    # integral should be ~1.0 and this test should flip.
-    assert 0.5 < integral < 0.9, (
-        f'LAW=4 single-branch integral outside expected range: '
-        f'{integral:.6f}'
+    assert abs(integral - 1.0) < 1e-2, (
+        f'LAW=4 recoil LAB angdist not normalised: {integral:.6f}'
     )
 
 
