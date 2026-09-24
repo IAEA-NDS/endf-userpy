@@ -254,7 +254,7 @@ def compute_xs(endf_dict, mt, energies_in, xp=None):
         if xp_res.name == 'numpy':
             return np.asarray(result)
         return result
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp)
     if xp is not None and xp.name != 'numpy':
         return xp.asarray(xs)
     return xs
@@ -283,7 +283,7 @@ def compute_prodxs(endf_dict, mt, zap, energies_in, xp=None):
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     )
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp)
     return yields * xp.asarray(xs)
 
 
@@ -329,7 +329,7 @@ def compute_daxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1)
     angdist = compute_angdist_values(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
     )
@@ -366,7 +366,7 @@ def compute_dexs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1)
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1)
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
     )
@@ -397,7 +397,7 @@ def compute_ddxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False, xp=xp,
     ).reshape(-1, 1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in).reshape(-1, 1, 1)
+    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
         to_lab, xp=xp,

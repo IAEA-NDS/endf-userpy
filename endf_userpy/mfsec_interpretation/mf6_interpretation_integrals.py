@@ -96,6 +96,17 @@ def get_energydist_from_subsec_law1(
             endf_dict, mt, subsec_num, energies_in, energies_out,
             to_lab, xp=xp, n_gl=n_gl, panel_idx=panel_idx,
         )
+    if xp.name == 'jax':
+        # Under jax: skip the numpy-side pad_outside decorator (its
+        # boolean indexing kills tracers) and call the multipanel
+        # traced kernel directly. That kernel handles out-of-range
+        # Es internally via ``xp.where(in_range, row, zeros)``.
+        data = mf6_law1_preproc.mf6_law1_data_from_endf_dict(
+            endf_dict, mt, subsec_num, xp=xp,
+        )
+        return mf6_law1_epintegral.integrate_law1_spectrum(
+            data, energies_in, energies_out, to_lab, xp=xp, n_gl=n_gl,
+        )
     return _get_energydist_from_subsec_law1_multi_panel(
         endf_dict, mt, subsec_num, energies_in, energies_out,
         to_lab, xp=xp, n_gl=n_gl,
