@@ -4,17 +4,15 @@ Covers all three LTT variants (Legendre, tabulated, mixed) with
 concrete-input parity plus regression pins for the query-side
 tracer gap they inherit from the shared interp primitives.
 
-Current state (Phase 1 sweep):
+Current state (as of the #201 Legendre-path fix):
 
 - numpy vs jax parity on concrete inputs works for LTT=1, 2, 3.
-- ``jax.grad`` wrt query-side E or mu does NOT work today. Same
-  root cause as MF6 LAW=2 and MF14 LTT=1 (issue #201):
-  ``evaluate_interp_legendre_polynomials`` and ``interp_tab2``
-  both call ``np.asarray`` on the query axes on entry.
-
-Fixing #201 (adding the query-side x-tracer path to both
-primitives) unblocks all three MF4 LTT variants at once, on
-both E and mu axes.
+- ``jax.grad`` wrt query-side E or mu on LTT=1 (Legendre): works
+  (unblocked by the #201 Legendre-path fix). Positive assertions
+  below.
+- ``jax.grad`` wrt query-side E or mu on LTT=2 (tabulated) /
+  LTT=3 (mixed): still blocked on the ``interp_tab2`` traced-x
+  fast path (#201 PR-B). Regression pins below still raise.
 
 Files used:
 
@@ -104,10 +102,16 @@ def test_mf4_ltt1_numpy_jax_parity(be9_endf_dict):
     np.testing.assert_allclose(f_np, f_jx, rtol=1e-10, atol=1e-30)
 
 
+def _fd5(f, x, h):
+    return (-float(f(x + 2 * h)) + 8 * float(f(x + h))
+            - 8 * float(f(x - h)) + float(f(x - 2 * h))) / (12 * h)
+
+
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_mf4_ltt1_grad_wrt_E_currently_raises(be9_endf_dict):
-    """Regression pin for the query-side E-tracer gap on MF4 LTT=1.
-    Same root cause as issue #201."""
+@pytest.mark.parametrize('E_val', [1e6, 5e6, 1.5e7])
+def test_mf4_ltt1_grad_wrt_E_matches_fd(be9_endf_dict, E_val):
+    """``jax.grad`` wrt E on MF4 LTT=1 (Legendre) matches central
+    FD (unblocked by the #201 Legendre-path fix)."""
     import jax
     import jax.numpy as jnp
 
@@ -119,13 +123,19 @@ def test_mf4_ltt1_grad_wrt_E_currently_raises(be9_endf_dict):
             be9_endf_dict, 2, jnp.array([E_scalar]), mu, xp=xp_jx,
         ))
 
-    with pytest.raises(_tracer_exc()):
-        jax.grad(loss)(jnp.array(5.0e6))
+    grad = float(jax.grad(loss)(jnp.array(E_val)))
+    fd = _fd5(lambda v: loss(jnp.array(v)), E_val, E_val * 1e-4)
+    assert np.isfinite(grad)
+    # atol=1e-6 covers near-stationary Es where 5-point FD noise
+    # dominates the true grad.
+    np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_mf4_ltt1_grad_wrt_mu_currently_raises(be9_endf_dict):
-    """Regression pin for the query-side mu-tracer gap on MF4 LTT=1."""
+@pytest.mark.parametrize('mu_val', [-0.5, 0.0, 0.3, 0.7])
+def test_mf4_ltt1_grad_wrt_mu_matches_fd(be9_endf_dict, mu_val):
+    """``jax.grad`` wrt mu on MF4 LTT=1 (Legendre) matches central
+    FD (unblocked by the #201 Legendre-path fix)."""
     import jax
     import jax.numpy as jnp
 
@@ -137,8 +147,10 @@ def test_mf4_ltt1_grad_wrt_mu_currently_raises(be9_endf_dict):
             be9_endf_dict, 2, ein, jnp.array([mu_scalar]), xp=xp_jx,
         ))
 
-    with pytest.raises(_tracer_exc()):
-        jax.grad(loss)(jnp.array(0.3))
+    grad = float(jax.grad(loss)(jnp.array(mu_val)))
+    fd = _fd5(lambda v: loss(jnp.array(v)), mu_val, 1e-4)
+    assert np.isfinite(grad)
+    np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
 
 
 # -------------------------------------------------------------------

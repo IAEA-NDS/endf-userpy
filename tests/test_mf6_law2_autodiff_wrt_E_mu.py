@@ -1,23 +1,16 @@
 """Phase-1 autodiff-coverage pins for MF6 LAW=2 (discrete two-body).
 
-Current state (as of Phase 1 sweep):
+Current state (as of the #201 Legendre-path fix):
 
-- numpy vs jax parity on concrete inputs: works. The LAW=2
-  reconstruction (issue #158) is backend-agnostic when both
-  ``energies_in`` and ``angle_cosines_out`` are concrete arrays.
+- numpy vs jax parity on concrete inputs: works.
 - ``jax.grad`` wrt file-side Legendre coefficients: works
   (pinned in ``test_mf6_law2_autodiff_from_coeffs.py``, issue #154).
-- ``jax.grad`` wrt query-side E or mu: does NOT work today.
-  ``_law2_reconstruct_from_data`` calls
-  ``evaluate_interp_legendre_polynomials(np.asarray(energies_in,
-  dtype=float), np.asarray(mu_eff), ...)``, and the primitive
-  itself does ``x = np.asarray(x)`` on entry. Both materialise
-  jax tracers with ``TracerArrayConversionError``.
-
-The fix is the same "query-side x-tracer path" pattern PR #192
-added for ``endf_interp1d``: replace the panel-lookup on
-concrete Ein with a nested ``xp.where`` per-panel evaluation.
-Tracked as issue #201.
+- ``jax.grad`` wrt query-side E or mu on LANG=0 (Legendre): works
+  after the #201 Legendre-path fix (this PR).
+- ``jax.grad`` wrt query-side E or mu on LANG=12/14 (tabulated):
+  still blocked on the ``interp_tab2`` traced-x fast path
+  (#201 PR-B). Al-27 MT=51 sub=1 is LANG=0 so the tests below
+  exercise the working path.
 """
 from __future__ import annotations
 
@@ -69,14 +62,17 @@ def test_law2_numpy_jax_parity(al27_endf_dict):
     np.testing.assert_allclose(f_np, f_jx, rtol=1e-10, atol=1e-30)
 
 
+def _fd5(f, x, h):
+    return (-float(f(x + 2 * h)) + 8 * float(f(x + h))
+            - 8 * float(f(x - h)) + float(f(x - 2 * h))) / (12 * h)
+
+
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_law2_grad_wrt_E_currently_raises(al27_endf_dict):
-    """Regression pin for the query-side E-tracer gap (Phase 1
-    finding). ``_law2_reconstruct_from_data`` materialises the
-    tracer via ``np.asarray(energies_in, dtype=float)`` before
-    handing off to ``evaluate_interp_legendre_polynomials``, which
-    itself calls ``x = np.asarray(x)`` on entry. Delete this test
-    once the primitive gets its x-tracer path."""
+@pytest.mark.parametrize('E_val', [1.5e6, 3.0e6, 8.0e6, 1.5e7, 5.0e7])
+def test_law2_grad_wrt_E_matches_fd(al27_endf_dict, E_val):
+    """``jax.grad(sum(f(E, mu)))(E)`` matches central FD on the
+    LANG=0 Legendre path (unblocked by the #201 Legendre-path
+    fix)."""
     import jax
     import jax.numpy as jnp
 
@@ -89,21 +85,19 @@ def test_law2_grad_wrt_E_currently_raises(al27_endf_dict):
             to_lab=True, xp=xp_jx,
         ))
 
-    try:
-        import jax.errors
-        expected_exc = jax.errors.TracerArrayConversionError
-    except AttributeError:
-        expected_exc = Exception
-    with pytest.raises(expected_exc):
-        jax.grad(loss)(jnp.array(3.0e6))
+    grad = float(jax.grad(loss)(jnp.array(E_val)))
+    fd = _fd5(lambda v: loss(jnp.array(v)), E_val, E_val * 1e-4)
+    assert np.isfinite(grad)
+    # atol=1e-6 covers near-stationary Es where the true grad is
+    # small and 5-point FD noise (~1e-7 on this problem) dominates.
+    np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_law2_grad_wrt_mu_currently_raises(al27_endf_dict):
-    """Same regression pin on the mu axis: convert_angcos_to_cmsys
-    output flows into np.asarray inside the LAW=2 kernel, which
-    also fails on tracers. Delete when the primitive supports
-    tracer x and mu."""
+@pytest.mark.parametrize('mu_val', [-0.7, -0.3, 0.0, 0.4, 0.8])
+def test_law2_grad_wrt_mu_matches_fd(al27_endf_dict, mu_val):
+    """``jax.grad(sum(f(E, mu)))(mu)`` matches central FD (unblocked
+    by the #201 Legendre-path fix)."""
     import jax
     import jax.numpy as jnp
 
@@ -116,10 +110,7 @@ def test_law2_grad_wrt_mu_currently_raises(al27_endf_dict):
             to_lab=True, xp=xp_jx,
         ))
 
-    try:
-        import jax.errors
-        expected_exc = jax.errors.TracerArrayConversionError
-    except AttributeError:
-        expected_exc = Exception
-    with pytest.raises(expected_exc):
-        jax.grad(loss)(jnp.array(0.3))
+    grad = float(jax.grad(loss)(jnp.array(mu_val)))
+    fd = _fd5(lambda v: loss(jnp.array(v)), mu_val, 1e-4)
+    assert np.isfinite(grad)
+    np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
