@@ -407,6 +407,7 @@ def get_reactions(endf_dict):
 
 def compute_cross_section(
     endf_dict, mt, energies_in, above_range=None, resonance_range=None,
+    xp=None,
 ):
     """Cross section for MT evaluated on `energies_in`.
 
@@ -449,6 +450,9 @@ def compute_cross_section(
     tabulated Ein" is almost always "physically zero" (the mesh
     starts at or below the reaction threshold).
     """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if above_range is None:
         above_range = _above_range_var.get()
     if resonance_range is None:
@@ -457,12 +461,43 @@ def compute_cross_section(
     xstab = sec['xstable']
     e_mesh = np.asarray(xstab['E'], dtype=float)
     e_max = float(e_mesh.max())
+    xs = interp_tab1(
+        energies_in, xstab, 'E', 'xs', outside_value=0.0, xp=xp,
+    )
+    if xp.name == 'jax':
+        # Under jax: skip the numpy-side above-range warning machinery
+        # (can't safely check ``.any()`` on a tracer). Apply the
+        # policy's fill via ``xp.where`` on the tracer mask. RRR
+        # policy defaults to a warning fired ONCE per top-level call
+        # from a context var; skip that under trace too.
+        einc_xp = xp.asarray(energies_in)
+        above_mask = einc_xp > e_max
+        # For the warn variants under trace, we cannot inspect the
+        # mask; treat as the corresponding non-warn variant.
+        policy = above_range
+        if policy in ('warn_nan', 'nan'):
+            fill = float('nan')
+            xs = xp.where(above_mask, fill, xs)
+        elif policy in ('warn_zero', 'zero'):
+            xs = xp.where(above_mask, 0.0, xs)
+        elif policy == 'raise':
+            # Under trace we can't conditionally raise; leave xs
+            # untouched. Callers who want the raise semantics should
+            # extract concrete E outside the trace.
+            pass
+        rrr_ranges = get_resolved_resonance_ranges(endf_dict)
+        if rrr_ranges and resonance_range in ('warn_nan', 'nan'):
+            in_rrr = xp.zeros_like(einc_xp, dtype=bool)
+            for lo, hi in rrr_ranges:
+                in_rrr = in_rrr | ((einc_xp >= lo) & (einc_xp <= hi))
+            overwrite_mask = in_rrr & (~above_mask)
+            xs = xp.where(overwrite_mask, float('nan'), xs)
+        return xs
     einc_arr = np.asarray(energies_in, dtype=float)
     above_mask = einc_arr > e_max
     fill_value = _handle_above_range(
         above_range, mt, e_max, above_mask, einc_arr,
     )
-    xs = interp_tab1(energies_in, xstab, 'E', 'xs', outside_value=0.0)
     if above_mask.any() and fill_value != 0.0:
         xs = np.where(above_mask, fill_value, xs)
     # Resonance-range policy (issue #84): applied after the
