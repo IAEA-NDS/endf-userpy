@@ -563,6 +563,98 @@ def _law7_eval_mu_panel(subsec, e_panel_key, mu_out, ep_out, xp):
     )
 
 
+def _law7_outer_e_interp_row(e_col, e1, e2, f1, f2, lei_law, xp):
+    """Outer 2-point Ein interpolation for a single LAW=7 panel,
+    broadcast over the full tracer ``e_col`` (shape ``(n_e, 1, 1)``)
+    against the per-panel ``f1`` / ``f2`` (shape ``(n_mu, n_ep)``).
+
+    Returns shape ``(n_e, n_mu, n_ep)``. Supports INT=1..5 for the
+    outer Ein axis; unit-base (21..25) is unsupported here because
+    it doesn't naturally broadcast on the query axis (the y-range
+    of the per-panel amplitude depends on the panel). LAW=7 files
+    in practice use INT=2 on the outer Ein axis (verified against
+    the corpus).
+    """
+    _small = 1.0e-38
+    f1_bc = f1.reshape(1, *f1.shape)                           # (1, n_mu, n_ep)
+    f2_bc = f2.reshape(1, *f2.shape)                           # (1, n_mu, n_ep)
+    if lei_law == 1:
+        return xp.broadcast_to(
+            f1_bc, (int(e_col.shape[0]), f1.shape[0], f1.shape[1]),
+        )
+    if lei_law == 2:
+        return f1_bc + (e_col - e1) * (f2_bc - f1_bc) / (e2 - e1)
+    if lei_law == 3:
+        e1s = e1 if e1 != 0.0 else _small
+        e2s = e2 if e2 != 0.0 else _small
+        e_safe = xp.where(e_col > 0.0, e_col, _small)
+        return f1_bc + xp.log(e_safe / e1s) * (
+            f2_bc - f1_bc
+        ) / xp.log(e2s / e1s)
+    if lei_law == 4:
+        f1_safe = xp.where(f1_bc == 0.0, _small, f1_bc)
+        return f1_safe * xp.exp(
+            (e_col - e1) * xp.log(f2_bc / f1_safe) / (e2 - e1)
+        )
+    if lei_law == 5:
+        e1s = e1 if e1 != 0.0 else _small
+        e2s = e2 if e2 != 0.0 else _small
+        e_safe = xp.where(e_col > 0.0, e_col, _small)
+        f1_safe = xp.where(f1_bc == 0.0, _small, f1_bc)
+        return f1_safe * xp.exp(
+            xp.log(e_safe / e1s) * xp.log(f2_bc / f1_safe)
+            / xp.log(e2s / e1s)
+        )
+    raise NotImplementedError(
+        f'MF6 LAW=7 traced-x outer Ein interp supports INT=1..5 '
+        f'only; got INT={lei_law}.'
+    )
+
+
+def _get_dist2d_from_subsec_law7_traced_x(
+    subsec, ei_mesh, ei_interp, e_in, ep_out, mu_out, xp,
+):
+    """JAX-friendly LAW=7 outer-E-panel loop supporting tracer
+    ``e_in`` (issue #201 / roadmap #198 Phase 3). Evaluates each
+    (concrete) Ein panel's ``(n_mu, n_ep)`` amplitude via
+    :func:`_law7_eval_mu_panel` (numpy inner, unaffected by the
+    outer tracer), then broadcasts the outer 2-point Ein interp
+    over the full ``e_in`` array with ``xp.where`` panel masking.
+    """
+    n_e = int(e_in.shape[0])
+    n_ep = int(ep_out.shape[0])
+    n_mu = int(mu_out.shape[0])
+    n_panels = int(ei_mesh.shape[0]) - 1
+    e_col = e_in.reshape(-1, 1, 1)
+
+    result = xp.zeros((n_e, n_mu, n_ep), dtype=xp.float64)
+    for p in range(n_panels):
+        e1 = float(ei_mesh[p])
+        e2 = float(ei_mesh[p + 1])
+        lei_law = int(ei_interp[p]) % 10
+        f1 = _law7_eval_mu_panel(
+            subsec, p + 1, np.asarray(mu_out, dtype=float),
+            np.asarray(ep_out, dtype=float), xp,
+        )
+        f2 = _law7_eval_mu_panel(
+            subsec, p + 2, np.asarray(mu_out, dtype=float),
+            np.asarray(ep_out, dtype=float), xp,
+        )
+        f1_xp = xp.asarray(f1)
+        f2_xp = xp.asarray(f2)
+        f_e = _law7_outer_e_interp_row(
+            e_col, e1, e2, f1_xp, f2_xp, lei_law, xp,
+        )
+        if p < n_panels - 1:
+            in_p = (e_in >= e1) & (e_in < e2)
+        else:
+            in_p = (e_in >= e1) & (e_in <= e2)
+        result = xp.where(in_p.reshape(-1, 1, 1), f_e, result)
+    # Result axis order the caller wants: (n_e, n_ep, n_mu). Kernel
+    # accumulates (n_e, n_mu, n_ep); transpose the last two axes.
+    return xp.transpose(result, (0, 2, 1))
+
+
 @pad_outside_dist2d_values
 def get_dist2d_from_subsec_law7(
     endf_dict, mt, subsec_num, energies_in, energies_out, angle_cosines_out,
@@ -599,6 +691,19 @@ def get_dist2d_from_subsec_law7(
     int_arr = np.array(subsec['E_interpol']['INT'], dtype=int)
     nbt_arr = np.array(subsec['E_interpol']['NBT'], dtype=int)
     ei_interp = convert_interp_repr(int_arr, nbt_arr)
+
+    # Under xp=jax, route through the traced-x fast path so grad
+    # wrt query Ein propagates end-to-end (roadmap #198 Phase 3).
+    # The per-panel inner (mu, Ep) evaluation stays numpy-only (its
+    # unit-base ``interp_tab2`` is not tracer-x aware; it doesn't
+    # need to be, since mu_out and ep_out are query grids not
+    # tracer inputs).
+    if xp.name == 'jax':
+        e_in_xp = xp.asarray(energies_in, dtype=xp.float64)
+        return _get_dist2d_from_subsec_law7_traced_x(
+            subsec, ei_mesh, ei_interp,
+            e_in_xp, energies_out, angle_cosines_out, xp,
+        )
 
     ep_out = np.asarray(energies_out, dtype=float)
     mu_out = np.asarray(angle_cosines_out, dtype=float)
