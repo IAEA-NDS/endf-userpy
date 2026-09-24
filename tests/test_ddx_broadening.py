@@ -54,7 +54,7 @@ def patched_environment(monkeypatch):
     def fake_dist2d(endf_dict, mt, zap, einc, eouts, mus, to_lab=True, **_):
         return state['dist2d'](einc, eouts, mus)
 
-    def fake_yields(endf_dict, mt, zap, einc, include_discrete=True, level=None):
+    def fake_yields(endf_dict, mt, zap, einc, include_discrete=True, level=None, **_):
         if include_discrete:
             return state['yields_all'](einc)
         return state['yields_cont'](einc)

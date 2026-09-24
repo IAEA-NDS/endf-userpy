@@ -1,4 +1,4 @@
-import numpy as np
+from ..primitives import array_ns
 from ..primitives.physical_constants import get_zap_for_particle
 from ..mfsec_interpretation import mf3_interpretation as mf3_interp
 from ..mfsec_interpretation import mf12_interpretation as mf12_interp
@@ -9,7 +9,9 @@ from ..primitives.properties import (
 )
 
 
-def compute_yields(endf_dict, mt, zap, energies_in):
+def compute_yields(endf_dict, mt, zap, energies_in, xp=None):
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     gamma_zap = get_zap_for_particle('g')
     if zap != gamma_zap:
         raise NotImplementedError(
@@ -21,7 +23,7 @@ def compute_yields(endf_dict, mt, zap, energies_in):
         # exclude continuum
         photon_energies = photon_energies[photon_energies != 0]
         yields = mf12_interp.compute_photon_yields(
-            endf_dict, mt, energies_in, photon_energies
+            endf_dict, mt, energies_in, photon_energies, xp=xp,
         )
 
     elif has_mf13_mt(endf_dict, mt):
@@ -29,12 +31,12 @@ def compute_yields(endf_dict, mt, zap, energies_in):
         # exclude continuum
         photon_energies = photon_energies[photon_energies != 0]
         prodxs = mf13_interp.compute_photon_production_xs(
-            endf_dict, mt, energies_in, photon_energies
+            endf_dict, mt, energies_in, photon_energies, xp=xp,
         )
         xs = mf3_interp.compute_cross_section(
             endf_dict, mt, energies_in
         )
-        yields = prodxs / xs.reshape(-1, 1)
+        yields = prodxs / xp.asarray(xs.reshape(-1, 1))
 
     else:
         raise IndexError(
@@ -42,11 +44,11 @@ def compute_yields(endf_dict, mt, zap, energies_in):
             f'At least one of MF12 or MF13 must exist for MT={mt}.'
         )
 
-    yields_sum = np.sum(yields, axis=1)
+    yields_sum = xp.sum(yields, axis=1)
     return yields_sum
 
 
-def compute_total_gamma_yields(endf_dict, mt, energies_in):
+def compute_total_gamma_yields(endf_dict, mt, energies_in, xp=None):
     """Sum of photon yields for all lines declared for (MT, gamma).
 
     Unlike ``compute_yields`` above, this sum INCLUDES any continuum
@@ -61,26 +63,34 @@ def compute_total_gamma_yields(endf_dict, mt, energies_in):
 
     For MF12 LO=2 (transition-probability representation) there is no
     continuum placeholder and this equals ``compute_yields`` above.
+
+    ``xp=None`` (default) is numpy. Passing an xp adapter threads
+    tracers through the MF12 / MF13 photon-yield reconstructions so
+    ``jax.grad`` reaches file-side gamma yield leaves.
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     if has_mf12_mt(endf_dict, mt):
         photon_energies = mf12_interp.get_photon_energies(endf_dict, mt)
         yields = mf12_interp.compute_photon_yields(
-            endf_dict, mt, energies_in, photon_energies
+            endf_dict, mt, energies_in, photon_energies, xp=xp,
         )
-        return np.sum(yields, axis=1)
+        return xp.sum(yields, axis=1)
 
     if has_mf13_mt(endf_dict, mt):
         prodxs = mf13_interp.compute_total_photon_production_xs(
-            endf_dict, mt, energies_in
+            endf_dict, mt, energies_in, xp=xp,
         )
         xs = mf3_interp.compute_cross_section(
             endf_dict, mt, energies_in
-        )
+        )   # numpy
         # Where MF3 xs is zero the yield is undefined; return 0 so
         # the caller multiplication (yield * MF3 xs) stays 0 rather
-        # than nan.
-        with np.errstate(divide='ignore', invalid='ignore'):
-            yields = np.where(xs > 0, prodxs / xs, 0.0)
+        # than nan. Use xp.where with a safe denominator for JAX so
+        # the trace does not divide-by-zero.
+        xs_xp = xp.asarray(xs)
+        safe_xs = xp.where(xs_xp > 0, xs_xp, 1.0)
+        yields = xp.where(xs_xp > 0, prodxs / safe_xs, xp.asarray(0.0))
         return yields
 
     raise IndexError(

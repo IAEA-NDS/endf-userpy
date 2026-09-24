@@ -140,7 +140,7 @@ def compute_ddx_continuous_broadened(
     ddx = xp.moveaxis(broadened, -1, 1)
 
     yields = compute_yields(
-        endf_dict, mt, zap, energies_in, include_discrete=False,
+        endf_dict, mt, zap, energies_in, include_discrete=False, xp=xp,
     ).reshape(-1, 1, 1)
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
@@ -207,10 +207,10 @@ def compute_ddx_continuous_broadened_summed(
     scales = []
     for mt in mts:
         y = compute_yields(
-            endf_dict, mt, zap, einc, include_discrete=False,
+            endf_dict, mt, zap, einc, include_discrete=False, xp=xp,
         )
         xs = mf3_interp.compute_cross_section(endf_dict, mt, einc)
-        scales.append(xp.asarray((y * xs).reshape(-1, 1, 1)))
+        scales.append((y * xp.asarray(xs)).reshape(-1, 1, 1))
 
     def f_summed(eout_internal):
         total = None
@@ -471,12 +471,12 @@ def compute_ddx_law1_discrete_broadened(
         ddx = ddx + kernel(delta) * amp
 
     yields = compute_yields(
-        endf_dict, mt, zap, energies_in, include_discrete=True,
+        endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1, 1)
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
     ).reshape(-1, 1, 1)
-    return ddx * xp.asarray(yields) * xp.asarray(xs) / (2 * np.pi)
+    return ddx * yields * xp.asarray(xs) / (2 * np.pi)
 
 
 def compute_ddx_mf12_discrete_broadened(
