@@ -389,27 +389,46 @@ def _get_reaction_xs_impl(
             )
             xs = xs + cur_xs
 
-        # MT5 fallback component: numpy-internal for now (tier-2
-        # remainder). Kept on the numpy code path with the
-        # ``energies_in`` numpy input from the caller; result is
-        # scattered into the xp-native accumulator via a boolean
-        # mask + xp.at[..].set for jax, or xp-side assignment for
-        # numpy.
+        # MT5 fallback component: adds a redistributed MT5
+        # contribution at Es where the direct MT is zero. Only
+        # relevant when the file actually carries MF6/MT=5 data,
+        # so short-circuit otherwise (fixes issue #196: under
+        # xp=jax the ``np.asarray(cur_xs)`` below would materialise
+        # a tracer and crash, but for files without MT=5 the
+        # fallback contribution is zero and the whole block is a
+        # no-op).
         if (mt in user_mts
                 and mt5_contrib
                 and 5 not in user_mts
                 and not reac.any_ancestor_in_mts(5, user_mts)
-                and reac.is_unique_path_to_residual(proj, mt)):
+                and reac.is_unique_path_to_residual(proj, mt)
+                and prop.has_mf6_mt(endf_dict, 5)):
+            energies_in_np = np.asarray(energies_in)
             if not mt_available or not should_select:
-                cur_xs_np = np.zeros_like(np.asarray(energies_in), dtype=float)
+                cur_xs_np = np.zeros_like(energies_in_np, dtype=float)
             else:
+                # MT5 fallback still requires materialising the
+                # direct-MT result on numpy to compute
+                # ``eincs_sel`` (which Es are zero and thus need
+                # the MT5 backfill). Under xp=jax this loses the
+                # tracer, so the fallback is a numpy-boundary
+                # operation. Callers who need jax.grad through
+                # this reaction can pass ``mt5_contrib=False`` to
+                # skip the fallback entirely.
+                if xp.name == 'jax':
+                    raise NotImplementedError(
+                        f'MT5 fallback path for MT={mt} on an MF6/MT=5 '
+                        f'file is not yet xp-agnostic. Pass '
+                        f'mt5_contrib=False to skip it (loses the MT5 '
+                        f'redistribution contribution).'
+                    )
                 cur_xs_np = np.asarray(cur_xs, dtype=float)
             eincs_sel = (
                 (cur_xs_np == 0.0) if mt_available
-                else np.ones_like(np.asarray(energies_in), dtype=bool)
+                else np.ones_like(energies_in_np, dtype=bool)
             )
             mt5_xs = quant_mt_zap.compute_xs_mt5_contrib(
-                endf_dict, mt, np.asarray(energies_in)[eincs_sel]
+                endf_dict, mt, energies_in_np[eincs_sel]
             )
             if np.any(mt5_xs != 0.0):
                 module_logger.debug(f'include MF6/MT5 component for MT={mt}')
