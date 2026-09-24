@@ -1,30 +1,78 @@
+"""Relativistic 2-body LAB-frame kinematics for the emitted particle.
+
+The public API uses the standard scattering-angle convention:
+``mu = cos(theta_lab)`` where ``theta_lab`` is the angle between the
+ejectile momentum and the beam direction.
+
+Round-trip identities (up to floating-point error):
+- ``compute_mu_from_Ekin(compute_Ekin_from_mu(mu, ...), ...) == mu``
+- ``compute_dmu_dEkin`` and ``compute_dEkin_dmu`` are reciprocal at
+  compatible ``(mu, Ekin)`` pairs.
+
+Meaning of variable names
+-------------------------
+``Ekin_i``: kinetic energy of the incident particle (MeV).
+``m_i``:   mass of the incident particle (MeV).
+``m_t``:   mass of the target nucleus (MeV).
+``m_r``:   mass of the residual nucleus (MeV).
+``m_e``:   mass of the ejectile (MeV).
+``Ekin``:  kinetic energy of the ejectile (MeV).
+``mu``:    cosine of ``theta_lab`` for the ejectile.
+
+Internal ``cos_phi`` convention (private ``_*_cos_phi`` helpers)
+----------------------------------------------------------------
+The four ``_*_cos_phi`` helpers below carry the raw SymPy-generated
+expressions and use ``cos_phi = cos(pi - theta_lab) = -mu``, i.e.
+the cosine of the angle from the *opposite* of the beam direction.
+The public ``*_mu`` API wraps them with the ``mu <-> cos_phi``
+negation on both the angle argument and the derivative sign.
+
+That internal convention was inherited from the original SymPy
+derivation (issue #185). Callers previously had to remember to
+negate ``cos_phi`` at the call site (see the pre-refactor version of
+``distribution1d_helpers._prepare_angdist_to_energydist_conversion``
+and ``ddx_broadening._compute_eout_kin``); the public wrappers here
+remove that trap so new callers can use the standard mu convention.
+"""
 import numpy as np
 
 
-# Relativistic conversion between the kinetic energy of the emitted
-# particle and the cosine of the angle between the emitted particle's
-# momentum and the *opposite* of the beam direction (all in the
-# laboratory system). All four functions in this module use the same
-# convention, so cos_phi(Ekin) and Ekin(cos_phi) round-trip exactly.
-# Note that this is *not* the standard scattering-angle convention
-# (cos theta_lab); cos_phi = cos(pi - theta_lab) = -cos(theta_lab).
-# Callers that pass the result to angular-distribution evaluators
-# expecting standard mu = cos(theta_lab) must negate first; see
-# distribution1d_helpers._prepare_angdist_to_energydist_conversion.
-#
-# Meaning of variable names
-#
-# Ekin_i: kinetic energy of incident particle in MeV
-#
-# m_i: mass of incident particle in MeV
-# m_t: mass of target nucleus in MeV
-# m_r: mass of residual nucleus in MeV
-# m_e: mass of ejectile in MeV
-#
-# Ekin: kinetic energy of ejectile in MeV
-# cos_phi: cosine of (pi - theta_lab) for the ejectile
+# --- Public API (standard mu = cos(theta_lab) convention) ------------------
 
-def compute_Ekin_from_cos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r):
+def compute_Ekin_from_mu(mu, Ekin_i, m_i, m_t, m_e, m_r):
+    """Ejectile kinetic energy at the given LAB-frame ``mu``.
+
+    ``mu`` is the standard ``cos(theta_lab)``; positive means forward
+    of the beam, negative means backward.
+    """
+    return _compute_Ekin_from_cos_phi(-mu, Ekin_i, m_i, m_t, m_e, m_r)
+
+
+def compute_mu_from_Ekin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
+    """LAB-frame ``mu = cos(theta_lab)`` of the ejectile at the given
+    kinetic energy ``Ekin``.
+    """
+    return -_compute_cos_phi_from_Ekin(Ekin, Ekin_i, m_i, m_t, m_e, m_r)
+
+
+def compute_dEkin_dmu(mu, Ekin_i, m_i, m_t, m_e, m_r):
+    """``dEkin / dmu`` at the given ``mu``.
+
+    By the chain rule, ``dEkin/dmu = dEkin/d(cos_phi) * d(cos_phi)/dmu
+    = -dEkin/d(cos_phi)`` since ``cos_phi = -mu``.
+    """
+    return -_compute_dEkin_dcos_phi(-mu, Ekin_i, m_i, m_t, m_e, m_r)
+
+
+def compute_dmu_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
+    """``dmu / dEkin`` at the given ejectile kinetic energy."""
+    return -_compute_dcos_phi_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r)
+
+
+# --- Private helpers (raw SymPy expressions, cos_phi convention) -----------
+
+def _compute_Ekin_from_cos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r):
+    """``Ekin(cos_phi)`` with ``cos_phi = cos(pi - theta_lab) = -mu``."""
     x0 = m_e**2
     x1 = cos_phi**2
     x2 = Ekin_i**2 + 2*Ekin_i*m_i
@@ -75,7 +123,8 @@ def compute_Ekin_from_cos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r):
     return Ekin_result
 
 
-def compute_cos_phi_from_Ekin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
+def _compute_cos_phi_from_Ekin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
+    """``cos_phi(Ekin)`` with ``cos_phi = cos(pi - theta_lab) = -mu``."""
     x0 = Ekin**2 + 2*Ekin*m_e
     x1 = Ekin_i**2 + 2*Ekin_i*m_i
     cos_phi_result = (
@@ -86,7 +135,8 @@ def compute_cos_phi_from_Ekin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
     return cos_phi_result
 
 
-def compute_dEkin_dcos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r):
+def _compute_dEkin_dcos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r):
+    """``dEkin / d(cos_phi)``; see module docstring for convention."""
     x0 = m_e**2
     x1 = cos_phi**2
     x2 = Ekin_i**2 + 2*Ekin_i*m_i
@@ -149,7 +199,8 @@ def compute_dEkin_dcos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r):
     return dEkin_dcos_phi_result
 
 
-def compute_dcos_phi_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
+def _compute_dcos_phi_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
+    """``d(cos_phi) / dEkin``; see module docstring for convention."""
     x0 = 2*Ekin
     x1 = Ekin**2 + m_e*x0
     x2 = Ekin + m_e
@@ -163,3 +214,13 @@ def compute_dcos_phi_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
         x5**2)/x1**(3/2)
     )
     return dcos_phi_dEkin_result
+
+
+# --- Deprecated cos_phi aliases -------------------------------------------
+# Retained so external code (if any) that imported the pre-#185 names keeps
+# working. New code should use the standard-mu API above.
+
+compute_Ekin_from_cos_phi = _compute_Ekin_from_cos_phi
+compute_cos_phi_from_Ekin = _compute_cos_phi_from_Ekin
+compute_dEkin_dcos_phi = _compute_dEkin_dcos_phi
+compute_dcos_phi_dEkin = _compute_dcos_phi_dEkin

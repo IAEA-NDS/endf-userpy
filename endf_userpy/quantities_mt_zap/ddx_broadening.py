@@ -1075,9 +1075,8 @@ def _compute_eout_kin(
 ):
     """E_out_kin(E_in, mu) for a 2-body reaction.
 
-    The conversion_relativistic primitives use cos_phi = cos(pi -
-    theta_lab) = -mu (see header of conversion_relativistic.py); we
-    feed them -mu to bridge that convention.
+    Uses the standard-mu ``compute_Ekin_from_mu`` from
+    conversion_relativistic (issue #185); no sign bridge needed.
     """
     if to_lab is not True:
         raise ValueError("compute_ddx_discrete_broadened requires to_lab=True")
@@ -1093,8 +1092,8 @@ def _compute_eout_kin(
             f"(m_r <= 0); check Q-value in MF3/MT{mt}."
         )
 
-    eout = conv_relat.compute_Ekin_from_cos_phi(
-        cos_phi=-angle_cosines_out.reshape(1, -1),
+    eout = conv_relat.compute_Ekin_from_mu(
+        mu=angle_cosines_out.reshape(1, -1),
         Ekin_i=energies_in.reshape(-1, 1),
         m_i=m_i, m_t=m_t, m_e=m_e, m_r=m_r,
     )
