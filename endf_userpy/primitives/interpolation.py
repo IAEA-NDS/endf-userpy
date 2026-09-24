@@ -213,6 +213,104 @@ def _scatter_inside(fi, is_inside, full_shape, outside_value, xp):
     return xp.asarray(full)
 
 
+def _endf_interp1d_traced_x(
+    x, xp_mesh, fp, int_arr, nbt_arr, outside_value, xp,
+):
+    """JAX-friendly ``endf_interp1d`` variant that supports tracer
+    ``x`` (issue #190). Computes all 5 INT schemes element-wise on
+    the full ``x`` array and selects the per-point result based on
+    which INT region each point's bracket falls into. Slower than
+    the numpy per-region loop (5x scheme evaluations per point) but
+    JAX-native and single-graph.
+
+    ``xp_mesh``, ``int_arr``, ``nbt_arr`` are file-side data (small,
+    concrete) and stay numpy for the panel-index precomputation;
+    only the arithmetic on ``x`` and ``fp`` runs through ``xp``.
+    """
+    _small = 1.0e-38
+    x = xp.asarray(x)
+    fp = xp.asarray(fp)
+
+    xp_mesh_np = treat_duplicates(np.asarray(xp_mesh))
+    xp_mesh_xp = xp.asarray(xp_mesh_np, dtype=x.dtype)
+    n_mesh = int(xp_mesh_xp.shape[0])
+    if n_mesh < 2:
+        # Degenerate: too few mesh points for any bracket. Return
+        # outside_value everywhere (or zeros if outside_value is None).
+        fill = 0.0 if outside_value is None else float(outside_value)
+        return xp.full(x.shape, fill, dtype=x.dtype)
+
+    # Per-mesh-point INT law (length n_mesh). ``convert_interp_repr``
+    # assigns the shared boundary mesh point to the LOWER region;
+    # the ENDF-6 convention (see endf_interp1d numpy loop) is that
+    # the bracket starting at a shared boundary belongs to the
+    # UPPER region, so we look up bracket k's INT via the upper
+    # endpoint's mesh-point INT: ``int_per_mesh_point[k + 1]``.
+    int_per_mesh_point_np = convert_interp_repr(
+        np.asarray(int_arr), np.asarray(nbt_arr),
+    )
+    int_per_mesh_point_xp = xp.asarray(int_per_mesh_point_np)
+
+    # Bracket each x point in the mesh. side='right' means idx = i
+    # where xp_mesh[i-1] <= x < xp_mesh[i]; we shift to i-1 so idx is
+    # the lower bracket, then clip to [0, n_mesh - 2] for safe gather.
+    idx = xp.searchsorted(xp_mesh_xp, x, side='right') - 1
+    idx = xp.clip(idx, 0, n_mesh - 2)
+
+    x1 = xp.take(xp_mesh_xp, idx)
+    x2 = xp.take(xp_mesh_xp, idx + 1)
+    y1 = xp.take(fp, idx)
+    y2 = xp.take(fp, idx + 1)
+
+    # Safe denominators and log arguments so the branches we don't
+    # select don't propagate NaN.
+    dx = x2 - x1
+    dx_safe = xp.where(dx == 0.0, 1.0, dx)
+    x1_pos = xp.where(x1 > 0.0, x1, _small)
+    x2_pos = xp.where(x2 > 0.0, x2, _small)
+    y1_pos = xp.where(y1 > 0.0, y1, _small)
+    y2_pos = xp.where(y2 > 0.0, y2, _small)
+    x_pos = xp.where(x > 0.0, x, _small)
+
+    r1 = y1                                          # INT=1 histogram
+    r2 = y1 + (x - x1) * (y2 - y1) / dx_safe         # INT=2 lin-lin
+    # INT=3 lin-log (log in x)
+    log_x_ratio = xp.log(x_pos / x1_pos)
+    log_x2_ratio = xp.log(x2_pos / x1_pos)
+    log_x2_ratio_safe = xp.where(log_x2_ratio == 0.0, 1.0, log_x2_ratio)
+    r3 = y1 + log_x_ratio * (y2 - y1) / log_x2_ratio_safe
+    # INT=4 log-lin (log in y)
+    log_y_ratio = xp.log(y2_pos / y1_pos)
+    r4 = y1_pos * xp.exp((x - x1) * log_y_ratio / dx_safe)
+    # INT=5 log-log
+    r5 = y1_pos * xp.exp(log_x_ratio * log_y_ratio / log_x2_ratio_safe)
+
+    # Per-point INT law: read from the bracket's UPPER endpoint
+    # (matches endf_interp1d's "boundary belongs to upper region"
+    # convention). idx is the LOWER bracket, so lookup at idx + 1.
+    interp_type = xp.take(int_per_mesh_point_xp, idx + 1)
+    result = xp.where(
+        interp_type == 1, r1,
+        xp.where(
+            interp_type == 2, r2,
+            xp.where(
+                interp_type == 3, r3,
+                xp.where(interp_type == 4, r4, r5),
+            ),
+        ),
+    )
+
+    # Out-of-mesh handling. Under trace we cannot raise on missing
+    # outside_value with off-mesh x; the caller must pass one if
+    # traced x might leave the mesh. When outside_value=None we
+    # silently pass the clamped-bracket result (matches jax semantics
+    # of "no error inside a trace").
+    is_inside = (x >= xp_mesh_xp[0]) & (x <= xp_mesh_xp[-1])
+    if outside_value is not None:
+        result = xp.where(is_inside, result, outside_value)
+    return result
+
+
 def endf_interp1d(x, xp_mesh, fp, int_arr, nbt_arr, outside_value=None, xp=None):
     """Piecewise ENDF-6 TAB1 interpolation across INT regions.
 
@@ -225,6 +323,18 @@ def endf_interp1d(x, xp_mesh, fp, int_arr, nbt_arr, outside_value=None, xp=None)
     """
     xp = _resolve_xp(xp)
     check_int_nbt(int_arr, nbt_arr)
+    # Under xp=jax, route through the traced-x path so query-axis
+    # tracers propagate to jax.grad (issue #190). The traced path
+    # is 5x slower per point than the numpy per-region loop below
+    # (evaluates every INT scheme and selects) but is the only
+    # form that handles a tracer x. Concrete jax arrays go through
+    # the same path -- fine for autodiff, mildly wasteful for
+    # non-autodiff jax use; callers who need raw jax throughput
+    # without autodiff can pass xp=numpy.
+    if xp.name == 'jax':
+        return _endf_interp1d_traced_x(
+            x, xp_mesh, fp, int_arr, nbt_arr, outside_value, xp,
+        )
     x = np.asarray(x)
     # Normalise fp to an xp-native array so downstream advanced
     # indexing (`fp[idcs]` inside `get_enclosing_points`) works
