@@ -806,6 +806,186 @@ def get_angdist_from_subsec_law3(
     return f_lab
 
 
+def _find_law4_sibling(endf_dict, mt, subsec_num):
+    """LAW=4 recoil subsections store no data of their own; the
+    kinematics come from a LAW=2 or LAW=3 sibling subsection in
+    the same MT. Return the sibling's subsection index, or raise
+    if none is present.
+
+    ENDF-6 convention: exactly one sibling with LAW in {2, 3}
+    partners each LAW=4 recoil. We pick the first such match.
+    """
+    sec = endf_dict[6][mt]
+    for sn, sub in sec['subsection'].items():
+        if sn == subsec_num:
+            continue
+        if int(sub.get('LAW', -1)) in (2, 3):
+            return int(sn)
+    raise ValueError(
+        f'MF6/MT{mt} subsection {subsec_num} is LAW=4 but no '
+        f'sibling LAW=2 or LAW=3 subsection is present in the '
+        f'same MT.'
+    )
+
+
+def get_angdist_from_subsec_law4(
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab,
+    xp=None,
+):
+    """Backend-agnostic MF6 LAW=4 (recoil of a two-body reaction)
+    angular distribution.
+
+    Per ENDF-6 manual sec. 6.2.6, LAW=4 has no LAW-dependent
+    structure stored; the recoil's angular and energy distributions
+    are determined by the kinematics of a sibling LAW=2 or LAW=3
+    subsection in the same MT.
+
+    Reconstruction: the recoil goes in the opposite direction to
+    the ejectile in the CM frame (momentum conservation), so
+    ``f_recoil_CM(mu) = f_ejectile_CM(-mu)``. This is obtained by
+    calling the sibling with ``to_lab=False`` at the negated query
+    cosine. The recoil is then transformed to LAB with its own
+    ``AWP`` (the ``AWP`` of THIS subsection, not the sibling's).
+
+    Only ``LCT=2`` (CM) is supported for the sibling: in ``LCT=1``
+    (LAB) files the two-body reflection ``mu_recoil = -mu_ejectile``
+    only holds in CM; the reflection identity does not carry over
+    to LAB. ``LCT=1`` LAW=4 recoils are rare and raise
+    ``NotImplementedError`` for clarity.
+
+    Known limitation (issue #210): for heavy recoils
+    (``r^2 < 1``, e.g. light-ejectile / heavy-residual reactions
+    like (n,p) on Be-9), the CM<->LAB mapping is 2-to-1 in the
+    forward LAB cone and the full LAB density is the sum of both
+    branches. The current primitive returns only one branch, so
+    the LAW=4 LAB angular distribution integrates to less than 1
+    (~0.66 on Be-9 MT=600 sub 2 at E=16 MeV). The forward-cone
+    shape and per-mu values from the single branch are still
+    correct; only the overall normalisation is affected. Fix
+    tracked as #210.
+
+    Backend-agnostic: passes ``xp`` through to the sibling call
+    and to the CM<->LAB conversion. Grad wrt this subsection's
+    ``AWP`` propagates through the recoil Jacobian; grad wrt the
+    sibling's file-side leaves propagates through the sibling
+    reconstruction (subject to the sibling's own tracer support).
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    sec = endf_dict[6][mt]
+    subsec = sec['subsection'][subsec_num]
+    if subsec.get('ZAP') == 0.0:
+        warnings.warn(
+            f'MF6/MT{mt} subsection {subsec_num} stores gamma '
+            f'(ZAP=0) with LAW=4. The 2-body kinematic conversion '
+            f'currently assumes a massive ejectile and returns '
+            f'NaN for photons; skipping this contribution '
+            f'(returning zeros).',
+            UserWarning, stacklevel=3,
+        )
+        return xp.zeros(
+            (len(energies_in), len(angle_cosines_out)),
+            dtype=xp.float64,
+        )
+    lct = int(sec['LCT']) if to_lab else 1
+    awp = subsec['AWP']
+    if lct == 1:
+        # No conversion; sibling(-mu) reflection is a CM identity
+        # that we cannot apply without going through CM. For an
+        # LCT=1 file the recoil is not related to the ejectile by
+        # a simple reflection in the file's stored frame.
+        raise NotImplementedError(
+            f'MF6/MT{mt} LAW=4 with LCT=1 (sibling stored in LAB) '
+            f'is not implemented. LAW=4 reconstruction requires '
+            f'the LCT=2 (CM) reflection identity mu_recoil = '
+            f'-mu_ejectile.'
+        )
+    if lct == 2:
+        eff_lct = 2
+    elif lct == 3:
+        eff_lct = 1 if float(awp) > 4 else 2
+    else:
+        raise NotImplementedError(f'LCT={lct} not implemented')
+
+    sibling_sn = _find_law4_sibling(endf_dict, mt, subsec_num)
+
+    # Query mu is interpreted as mu_LAB for the recoil. Convert to
+    # mu_CM (recoil frame) with the recoil's AWP.
+    e_in = xp.asarray(energies_in, dtype=xp.float64)
+    mu_lab = xp.asarray(angle_cosines_out, dtype=xp.float64)
+    if eff_lct == 1:
+        # eff_lct=1 means the recoil's LAB is the same as its CM,
+        # which for a two-body system is only true if the recoil
+        # is stationary in LAB - non-physical. Handle by returning
+        # zeros (below-threshold-like behaviour).
+        return xp.zeros(
+            (e_in.shape[0], mu_lab.shape[0]), dtype=xp.float64,
+        )
+
+    awi = get_AWI(endf_dict)
+    awr = get_AWR(endf_dict)
+    q = get_QI(endf_dict, mt)
+    r2 = compute_r2(e_in, awi, awr, awp, q, xp=xp)
+    mu_cm_recoil = convert_angcos_to_cmsys(mu_lab, r2, xp=xp)
+
+    # f_recoil_CM(mu) = f_ejectile_CM(-mu). Call the sibling with
+    # to_lab=False at negated mu; the sibling returns its stored
+    # (CM) values evaluated at that argument.
+    neg_mu = -mu_cm_recoil
+    # The sibling reconstruction expects a 1-D angle_cosines_out
+    # broadcast internally; here neg_mu is 2-D (n_ein, n_mu). We
+    # evaluate on a flattened 1-D array of unique-ish rows... but
+    # simpler: call per-row. For LAW=3 sibling the return is a
+    # constant 0.5 broadcast, so we don't need per-row evaluation.
+    sibling = sec['subsection'][sibling_sn]
+    sibling_law = int(sibling.get('LAW'))
+    if sibling_law == 3:
+        # Sibling is isotropic-in-CM, so the reflection is also
+        # isotropic. f_ejectile_CM(-mu) = 1/2.
+        f_cm = xp.full_like(mu_cm_recoil, 0.5)
+    elif sibling_law == 2:
+        # Sibling has an angular distribution stored. To get
+        # f_ejectile_CM at negated mus, we call the sibling's
+        # reconstruction with to_lab=False (bypasses CM<->LAB
+        # in the sibling). The sibling expects a 1-D mu input.
+        # Evaluate on the flattened negated mus and reshape.
+        flat_neg_mu = xp.reshape(neg_mu, (-1,))
+        # Broadcast e_in appropriately: sibling returns (n_ein,
+        # n_mu_query). We want a distinct sibling evaluation for
+        # each (e, mu) pair. Simplest: build a per-e query axis
+        # of size n_ein * n_mu, and rely on the sibling to
+        # broadcast e over the mu axis.
+        n_e = int(e_in.shape[0])
+        n_mu = int(mu_cm_recoil.shape[1])
+        # Sibling evaluation at each e_i on the full flat mu axis
+        # returns shape (n_e, n_e * n_mu). We only need the
+        # diagonal slice [i, i*n_mu:(i+1)*n_mu].
+        f_full = get_angdist_from_subsec_law2(
+            endf_dict, mt, sibling_sn,
+            energies_in, flat_neg_mu,
+            to_lab=False, xp=xp,
+        )
+        # Extract the per-e block on axis 1.
+        # f_full: (n_e, n_e * n_mu)  -> pick columns for row i.
+        # Vectorised extraction via arange indices.
+        row_idx = xp.arange(n_e).reshape(-1, 1)
+        col_idx = (
+            row_idx * n_mu + xp.arange(n_mu).reshape(1, -1)
+        )
+        f_cm = f_full[row_idx, col_idx]
+    else:
+        raise NotImplementedError(
+            f'MF6/MT{mt} LAW=4 sibling has LAW={sibling_law}; '
+            f'only LAW=2 and LAW=3 are supported for the sibling.'
+        )
+
+    # Apply the recoil's CM->LAB Jacobian.
+    f_lab = convert_angdist_to_labsys(mu_cm_recoil, f_cm, r2, xp=xp)
+    f_lab = xp.where(xp.isnan(f_lab), 0.0, f_lab)
+    f_lab = xp.where(f_lab < 0.0, 0.0, f_lab)
+    return f_lab
+
+
 def compute_angdist_from_subsec(
     endf_dict, mt, subsec_num,
     energies_in, angle_cosines_out, to_lab=True, xp=None,
@@ -820,6 +1000,11 @@ def compute_angdist_from_subsec(
         )
     if law == 3:
         return get_angdist_from_subsec_law3(
+            endf_dict, mt, subsec_num,
+            energies_in, angle_cosines_out, to_lab, xp=xp,
+        )
+    if law == 4:
+        return get_angdist_from_subsec_law4(
             endf_dict, mt, subsec_num,
             energies_in, angle_cosines_out, to_lab, xp=xp,
         )
