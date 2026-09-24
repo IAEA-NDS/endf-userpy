@@ -29,6 +29,8 @@ from ..primitives import array_ns
 from ..primitives.helpers import (
     dict2array,
     erf,
+    exp1,
+    gammainc,
 )
 from ..primitives.interpolation import (
     interp_tab1,
@@ -66,6 +68,15 @@ def _compute_b(contrib_sec, energies_in, xp=None):
     ein = energies_in.reshape(-1)
     return interp_tab1(
         ein, contrib_sec['b_table'], 'E', 'b',
+        outside_value=0.0, xp=xp,
+    ).reshape(-1, 1)
+
+
+def _compute_tm(contrib_sec, energies_in, xp=None):
+    """LF=12 Madland-Nix maximum-temperature parameter ``T_M(E)``."""
+    ein = energies_in.reshape(-1)
+    return interp_tab1(
+        ein, contrib_sec['tm_table'], 'E', 'TM',
         outside_value=0.0, xp=xp,
     ).reshape(-1, 1)
 
@@ -404,6 +415,91 @@ def compute_energy_dependent_watt_spectrum(
     return xp.where(valid_I & allowed, raw / I, 0.0)
 
 
+def compute_madland_nix_spectrum(
+    contrib_sec, energies_in, energies_out, xp=None,
+):
+    """MF5 LF=12 Madland-Nix fission spectrum.
+
+    Per ENDF-6 formats manual sec. 5.1.1.6:
+
+        chi(E, E') = 0.5 * [g(E', E_FL) + g(E', E_FH)]
+
+    with
+
+        g(E', E_F) = (1 / (3 sqrt(E_F T_M)))
+                     * [u_2^{3/2} E_1(u_2) - u_1^{3/2} E_1(u_1)
+                        + gamma_lower(3/2, u_2)
+                        - gamma_lower(3/2, u_1)]
+
+    where ``u_1 = (sqrt(E') - sqrt(E_F))^2 / T`` and
+    ``u_2 = (sqrt(E') + sqrt(E_F))^2 / T``. E_1 is the exponential
+    integral, ``gamma_lower(a, x)`` the unregularised lower
+    incomplete gamma. ``Gamma(3/2) = 0.5 * sqrt(pi)`` is used to
+    convert ``scipy.special.gammainc`` (regularised) to the
+    unregularised form.
+
+    Support is E' >= 0 (the spectrum decays exponentially, no
+    sharp upper cutoff). Reads ``contrib_sec['EFL']``,
+    ``contrib_sec['EFH']`` constants and ``contrib_sec['tm_table']``
+    TAB1.
+
+    Backend-agnostic. Grad wrt ``EFL``, ``EFH``, and ``T_M`` tracers
+    flows end-to-end. Under xp=jax, ``exp1`` and ``gammainc`` work
+    on 1-D+ arrays.
+    """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    ein = xp.asarray(energies_in, dtype=xp.float64).reshape(-1, 1)
+    eout = xp.asarray(energies_out, dtype=xp.float64).reshape(1, -1)
+    tm = _compute_tm(contrib_sec, ein, xp=xp)                     # (n_ein, 1)
+    efl = contrib_sec['EFL']
+    efh = contrib_sec['EFH']
+
+    valid = (tm > 0.0)                                            # (n_ein, 1)
+    allowed = eout >= 0.0                                         # (1, n_eout)
+
+    # Safe values for masked branches.
+    tm_safe = xp.where(valid, tm, 1.0)
+    eout_safe = xp.where(allowed, eout, 0.0)
+
+    def _S(ef_val):
+        # sqrt(E_F): scalar (constant, or a jax tracer leaf if the
+        # caller replaced it).
+        sqrt_ef = xp.sqrt(xp.asarray(ef_val, dtype=xp.float64))
+        sqrt_ep = xp.sqrt(eout_safe)                              # (1, n_eout)
+        u_low_arg = (sqrt_ep - sqrt_ef) ** 2
+        u_high_arg = (sqrt_ep + sqrt_ef) ** 2
+        u1 = u_low_arg / tm_safe                                  # (n_ein, n_eout)
+        u2 = u_high_arg / tm_safe
+        # Guard exp1 against u1 == 0 (E' == E_F) with a tiny
+        # positive floor; E1(0) is infinite but its contribution
+        # u1^{3/2} * E1(u1) -> 0 as u1 -> 0, so the mask-safe
+        # value doesn't affect the final result.
+        eps = 1e-30
+        u1_safe = xp.where(u1 > 0.0, u1, eps)
+        u2_safe = xp.where(u2 > 0.0, u2, eps)
+        e1_u1 = exp1(u1_safe, xp=xp)
+        e1_u2 = exp1(u2_safe, xp=xp)
+        # Unregularised lower incomplete gamma(3/2, u):
+        # gamma_lower(3/2, u) = gammainc(3/2, u) * Gamma(3/2)
+        # Gamma(3/2) = 0.5 * sqrt(pi).
+        gamma_half_three = 0.5 * xp.sqrt(xp.pi)
+        gl_u1 = gammainc(1.5, u1_safe, xp=xp) * gamma_half_three
+        gl_u2 = gammainc(1.5, u2_safe, xp=xp) * gamma_half_three
+        # Prefactor 1/(3 sqrt(E_F T_M)) per manual sec. 5.1.1.6.
+        # Units 1/E, so the spectrum normalises to 1 over E' in
+        # [0, infty).
+        prefac = 1.0 / (3.0 * sqrt_ef * xp.sqrt(tm_safe))
+        bracket = (
+            u2 ** 1.5 * e1_u2 - u1 ** 1.5 * e1_u1
+            + gl_u2 - gl_u1
+        )
+        return prefac * bracket
+
+    raw = 0.5 * (_S(efl) + _S(efh))
+    return xp.where(valid & allowed, raw, 0.0)
+
+
 def compute_spectrum_contribution(
     contrib_sec, energies_in, energies_out, xp=None,
 ):
@@ -424,6 +520,10 @@ def compute_spectrum_contribution(
         return compute_evaporation_spectrum(contrib_sec, ein, eout, xp=xp)
     if lf == 11:
         return compute_energy_dependent_watt_spectrum(
+            contrib_sec, ein, eout, xp=xp,
+        )
+    if lf == 12:
+        return compute_madland_nix_spectrum(
             contrib_sec, ein, eout, xp=xp,
         )
     raise ValueError(f'Spectrum computation for LF={lf} not implemented.')
