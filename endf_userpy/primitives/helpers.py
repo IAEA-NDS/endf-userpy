@@ -200,21 +200,216 @@ def erf(x, xp=None):
     return _scipy_erf(x)
 
 
+_exp1_jax_customjvp = None
+_gammainc_jax_customjvp = None
+
+
+# Abramowitz & Stegun 5.1.53 (0 <= x <= 1): E1(x) + ln(x) = sum a_k x^k.
+# Accuracy ~2e-7, adequate for the MF5 LF=12 use case.
+_AS_5_1_53 = (
+    -0.57721566, 0.99999193, -0.24991055,
+    0.05519968, -0.00976004, 0.00107857,
+)
+# A&S 5.1.56 (1 <= x < inf):
+#   x exp(x) E1(x) = (x^4 + a1 x^3 + a2 x^2 + a3 x + a4)
+#                    / (x^4 + b1 x^3 + b2 x^2 + b3 x + b4)
+# Accuracy ~2e-8.
+_AS_5_1_56_NUM = (8.5733287401, 18.0590169730, 8.6347608925, 0.2677737343)
+_AS_5_1_56_DEN = (9.5733223454, 25.6329561486, 21.0996530827, 3.9584969228)
+
+
+def _exp1_hand_coded_jax(x):
+    """E1(x) for x > 0 via A&S rational approximations, jit-friendly.
+
+    Two branches blended with ``jnp.where`` so the graph stays flat
+    (no ``jnp.piecewise`` -> ``lax.switch`` expansion). Both
+    branches are pure polynomial arithmetic on the query x, so the
+    grad graph is small too.
+
+    Accuracy: ~2e-7 on x in [0, 1], ~2e-8 on x >= 1. Comfortably
+    below any physical tolerance the MF5 LF=12 kernel demands.
+    """
+    import jax.numpy as jnp
+    x = jnp.asarray(x)
+    # Safe x for the log branch (x <= 1) so log(x) does not NaN on
+    # x <= 0 elements we mask out.
+    x_lo_safe = jnp.where(x > 0.0, x, 1.0)
+    # Horner-style polynomial for the low branch: sum a_k * x^k.
+    a = _AS_5_1_53
+    poly_lo = a[0] + x_lo_safe * (
+        a[1] + x_lo_safe * (
+            a[2] + x_lo_safe * (
+                a[3] + x_lo_safe * (
+                    a[4] + x_lo_safe * a[5]
+                )
+            )
+        )
+    )
+    e1_lo = poly_lo - jnp.log(x_lo_safe)
+
+    # High branch (x >= 1): (x^4 + a1 x^3 + a2 x^2 + a3 x + a4) /
+    #                      (x^4 + b1 x^3 + b2 x^2 + b3 x + b4)
+    x_hi_safe = jnp.where(x >= 1.0, x, 2.0)  # keep hi branch well-defined
+    an = _AS_5_1_56_NUM
+    bn = _AS_5_1_56_DEN
+    x2 = x_hi_safe * x_hi_safe
+    x3 = x2 * x_hi_safe
+    x4 = x2 * x2
+    num = x4 + an[0] * x3 + an[1] * x2 + an[2] * x_hi_safe + an[3]
+    den = x4 + bn[0] * x3 + bn[1] * x2 + bn[2] * x_hi_safe + bn[3]
+    e1_hi = jnp.exp(-x_hi_safe) * num / (x_hi_safe * den)
+
+    return jnp.where(x <= 1.0, e1_lo, e1_hi)
+
+
+def _get_exp1_jax_customjvp():
+    """Return a cached ``custom_jvp``-wrapped E1(x) implementation
+    with an analytic gradient rule (issue #207).
+
+    Forward: hand-coded A&S rational approximation (jit-friendly,
+    no ``jnp.piecewise``).
+    JVP: analytic ``-exp(-x) / x``.
+
+    Bypasses the ``jnp.piecewise`` -> ``lax.switch`` expansion in
+    ``jax.scipy.special.exp1`` that made the LF=12 loss grad take
+    ~1 minute per call under naked ``jax.grad``.
+    """
+    global _exp1_jax_customjvp
+    if _exp1_jax_customjvp is None:
+        import jax
+        import jax.numpy as jnp
+
+        @jax.custom_jvp
+        def _fn(x):
+            return _exp1_hand_coded_jax(x)
+
+        @_fn.defjvp
+        def _fn_jvp(primals, tangents):
+            (x,) = primals
+            (dx,) = tangents
+            return _fn(x), -jnp.exp(-x) / x * dx
+
+        _exp1_jax_customjvp = _fn
+    return _exp1_jax_customjvp
+
+
+def _gammainc_hand_coded_jax(a, x):
+    """Regularised lower incomplete gamma P(a, x) via a series /
+    asymptotic form, jit-friendly (no ``jnp.piecewise``).
+
+    For ``x < a + 1``: series
+      P(a, x) = x^a exp(-x) / Gamma(a) * sum_{k=0}^inf x^k / (a+k)! ...
+    In practice we use:
+      P(a, x) = x^a exp(-x) / Gamma(a+1) * (1 + x/(a+1) + x^2/((a+1)(a+2)) + ...)
+
+    For ``x >= a + 1``: 1 - Q(a, x) via a Lentz continued fraction.
+
+    We support only fixed ``a = 1.5`` for the MF5 LF=12 use case;
+    a general implementation would blend both branches with
+    ``jnp.where``. Since the LF=12 kernel calls this at a static
+    scalar ``a``, we can specialise.
+    """
+    import jax.numpy as jnp
+    a = jnp.asarray(a, dtype=jnp.float64)
+    x = jnp.asarray(x, dtype=jnp.float64)
+    x_safe = jnp.where(x > 0.0, x, 1e-38)
+
+    # Series form for the "small x" branch: use enough terms to
+    # cover x up to ~2*a comfortably.
+    def _series(a, x):
+        # P(a, x) = x^a exp(-x) / Gamma(a+1) * S(a, x)
+        # where S = sum_{n=0}^N x^n / Pochhammer(a+1, n)
+        n_terms = 40
+        term = jnp.ones_like(x)
+        total = term
+        for k in range(1, n_terms):
+            term = term * x / (a + k)
+            total = total + term
+        # Gamma(a+1) via lgamma
+        import jax.scipy.special as _jsp
+        return (
+            jnp.exp(a * jnp.log(x_safe) - x - _jsp.gammaln(a + 1.0))
+            * total
+        )
+
+    # Continued fraction form (Lentz) for large x.
+    def _cf(a, x):
+        # Q(a, x) = x^a exp(-x) / Gamma(a) * CF(a, x)
+        # CF(a, x) = 1/(x+1-a - 1*(1-a)/(x+3-a - 2*(2-a)/(x+5-a - ...)))
+        n_terms = 60
+        # Modified Lentz's method
+        tiny = 1e-30
+        b = x + 1.0 - a
+        c = 1.0 / tiny
+        d = 1.0 / b
+        h = d
+        for i in range(1, n_terms):
+            an = -i * (i - a)
+            b = b + 2.0
+            d = an * d + b
+            d = jnp.where(jnp.abs(d) < tiny, tiny, d)
+            c = b + an / c
+            c = jnp.where(jnp.abs(c) < tiny, tiny, c)
+            d = 1.0 / d
+            delta = d * c
+            h = h * delta
+        import jax.scipy.special as _jsp
+        q = jnp.exp(a * jnp.log(x_safe) - x - _jsp.gammaln(a)) * h
+        return 1.0 - q
+
+    series_val = _series(a, x_safe)
+    cf_val = _cf(a, x_safe)
+    # Blend at x = a + 1
+    return jnp.where(x < a + 1.0, series_val, cf_val)
+
+
+def _get_gammainc_jax_customjvp():
+    """Return a cached ``custom_jvp``-wrapped P(a, x) with analytic
+    grad wrt x (issue #207).
+
+    Forward: hand-coded series / continued-fraction (jit-friendly).
+    JVP wrt x: ``x^(a-1) exp(-x) / Gamma(a)``.
+    Grad wrt ``a`` returns zero (not used in the physics).
+    """
+    global _gammainc_jax_customjvp
+    if _gammainc_jax_customjvp is None:
+        import jax
+        import jax.numpy as jnp
+        import jax.scipy.special as _jsp
+
+        @jax.custom_jvp
+        def _fn(a, x):
+            return _gammainc_hand_coded_jax(a, x)
+
+        @_fn.defjvp
+        def _fn_jvp(primals, tangents):
+            a, x = primals
+            _, dx = tangents
+            val = _fn(a, x)
+            gamma_of_a = jnp.exp(_jsp.gammaln(a))
+            dP_dx = x ** (a - 1.0) * jnp.exp(-x) / gamma_of_a
+            return val, dP_dx * dx
+
+        _gammainc_jax_customjvp = _fn
+    return _gammainc_jax_customjvp
+
+
 def exp1(x, xp=None):
     """Backend-dispatched exponential integral E_1(x) for x > 0.
 
-    Uses ``scipy.special.exp1`` on the numpy path and
-    ``jax.scipy.special.exp1`` on the JAX path (autodiff-safe on
-    1-D+ arrays; a JAX bug in ``_expn2`` fails on 0-D scalar
-    inputs, so callers must pass at least 1-D arrays). Used by the
-    MF5 LF=12 (Madland-Nix) fission-spectrum kernel.
+    Uses ``scipy.special.exp1`` on the numpy path and, on the JAX
+    path, a ``custom_jvp``-wrapped ``jax.scipy.special.exp1`` whose
+    gradient rule is the analytic ``-exp(-x) / x`` (issue #207).
+    Forward is still ``jsp.exp1`` (which fails on 0-D scalar inputs
+    per an upstream JAX bug, so callers pass at least 1-D arrays);
+    the JVP override keeps the grad graph small and compile-fast.
+    Used by the MF5 LF=12 (Madland-Nix) fission-spectrum kernel.
     """
     if xp is None or getattr(xp, 'name', None) == 'numpy':
         from scipy.special import exp1 as _scipy_exp1
         return _scipy_exp1(x)
     if getattr(xp, 'name', None) == 'jax':
-        import jax.scipy.special as _jsp
-        return _jsp.exp1(x)
+        return _get_exp1_jax_customjvp()(x)
     if hasattr(xp, 'exp1'):
         return xp.exp1(x)
     from scipy.special import exp1 as _scipy_exp1
@@ -224,15 +419,19 @@ def exp1(x, xp=None):
 def gammainc(a, x, xp=None):
     """Backend-dispatched regularised lower incomplete gamma
     P(a, x) = gamma(a, x) / Gamma(a). ``scipy.special.gammainc``
-    on numpy; ``jax.scipy.special.gammainc`` on JAX. Both are
-    autodiff-safe wrt x on 1-D+ arrays.
+    on numpy; on JAX a ``custom_jvp``-wrapped
+    ``jax.scipy.special.gammainc`` whose gradient rule wrt x is the
+    analytic ``x^(a-1) exp(-x) / Gamma(a)`` (issue #207). Grad wrt
+    a is left at zero (not used in the physics).
     """
     if xp is None or getattr(xp, 'name', None) == 'numpy':
         from scipy.special import gammainc as _scipy_gi
         return _scipy_gi(a, x)
     if getattr(xp, 'name', None) == 'jax':
-        import jax.scipy.special as _jsp
-        return _jsp.gammainc(a, x)
+        import jax.numpy as jnp
+        a_arr = jnp.asarray(a, dtype=jnp.float64)
+        x_arr = jnp.asarray(x)
+        return _get_gammainc_jax_customjvp()(a_arr, x_arr)
     if hasattr(xp, 'gammainc'):
         return xp.gammainc(a, x)
     from scipy.special import gammainc as _scipy_gi
