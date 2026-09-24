@@ -25,6 +25,47 @@ USE_FORTRAN_INTEGRATION = True
 module_logger = logging.getLogger(__name__)
 
 
+def _is_jax_tracer(x):
+    """True iff ``x`` is a JAX abstract tracer (not a concrete jax
+    array). Concrete jax arrays can be materialised via
+    ``np.asarray``; tracers cannot."""
+    try:
+        import jax.core
+    except ImportError:
+        return False
+    return isinstance(x, jax.core.Tracer)
+
+
+def _check_no_tracer_inputs(where, xp, *arrays):
+    """Raise a clear ``NotImplementedError`` if ``xp`` is JAX and
+    any of the passed arrays is an abstract tracer. Fires early
+    with a suggestive message instead of letting a downstream
+    ``np.asarray(tracer)`` crash with the confusing
+    ``TracerArrayConversionError`` (issue #220).
+
+    The affected integrator/kernel currently runs numpy internally
+    and cannot preserve grad through it; users who need jax.grad
+    through the ``dxs_dE`` / ``dxs_dmu`` API path should either
+    pass concrete numpy arrays as the differentiation axis (grad
+    wrt file-side leaves) or wait for the xp-native integrator
+    ports tracked in #220.
+    """
+    if getattr(xp, 'name', None) != 'jax':
+        return
+    for a in arrays:
+        if _is_jax_tracer(a):
+            raise NotImplementedError(
+                f'{where}: JAX tracer inputs are not supported '
+                f'because the underlying numeric integration runs '
+                f'on numpy internally. The autodiff-friendly '
+                f'port is tracked as issue #220. As a workaround, '
+                f'either pass concrete numpy arrays for the query '
+                f'axis and take jax.grad wrt file-side leaves, or '
+                f'call the direct-dist2d entry point (which is '
+                f'xp-native end-to-end).'
+            )
+
+
 # Adaptive-mesh Simpson defaults for the two MF6 integrators below.
 # INITIAL_MESH_N=81 already resolves Legendre expansions up to order
 # ~40 and typical LAW=1/6 tabulated E' spectra to well under _RTOL.
@@ -88,12 +129,16 @@ def integrate_mf6_dist2d_over_eout(
     path and the adaptive-Simpson fallback both currently run on
     numpy internally and materialise the result to xp-native at the
     return boundary (autodiff through this integrator is not
-    supported yet -- tracked as tier-2 remaining work in issue
-    #169). The complementary ``integrate_mf6_dist2d_over_mu`` path
-    IS end-to-end xp-native for LAW=1 (fast path).
+    supported yet -- tracked as issue #220). The complementary
+    ``integrate_mf6_dist2d_over_mu`` path IS end-to-end xp-native
+    for LAW=1 (fast path).
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    _check_no_tracer_inputs(
+        'integrate_mf6_dist2d_over_eout',
+        xp, energies_in, angle_cosines_out,
+    )
     mtsec = endf_dict[6][mt]
     subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
     if len(subsec_nums) == 1:
@@ -188,10 +233,11 @@ def integrate_mf6_dist2d_over_mu(
       general adaptive-Simpson path converges only to ~1 % on
       LAW=7 due to unresolved kinks at tabulated mu positions.
 
-    ``xp=None`` (default) is numpy. The LAW=7 branch and the
-    general-purpose adaptive-Simpson fallback both run on numpy
-    internally and materialise the result to xp-native at the
-    return boundary.
+    ``xp=None`` (default) is numpy. LAW=1 fast path is end-to-end
+    xp-native. LAW=7 and the general-purpose adaptive-Simpson
+    fallback run on numpy internally and would materialise a jax
+    tracer input; those paths raise ``NotImplementedError`` under
+    ``xp=jax`` with tracer inputs, per issue #220.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -206,6 +252,10 @@ def integrate_mf6_dist2d_over_mu(
                 energies_in, energies_out, to_lab, xp=xp,
             )
         if law == 7:
+            _check_no_tracer_inputs(
+                'integrate_mf6_dist2d_over_mu (LAW=7)',
+                xp, energies_in, energies_out,
+            )
             module_logger.debug(
                 f'use knot-aware LAW=7 mu-integrator for MT={mt}',
             )
@@ -215,6 +265,10 @@ def integrate_mf6_dist2d_over_mu(
             )
             return xp.asarray(result) if xp.name != 'numpy' else result
     # general-purpose integration routine (numpy internally)
+    _check_no_tracer_inputs(
+        'integrate_mf6_dist2d_over_mu (adaptive Simpson)',
+        xp, energies_in, energies_out,
+    )
     result = _integrate_mf6_dist2d_over_mu_default(
         endf_dict, mt, zap, energies_in, energies_out, to_lab
     )

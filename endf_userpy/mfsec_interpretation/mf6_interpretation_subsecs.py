@@ -620,7 +620,27 @@ def _get_dist2d_from_subsec_law7_traced_x(
     :func:`_law7_eval_mu_panel` (numpy inner, unaffected by the
     outer tracer), then broadcasts the outer 2-point Ein interp
     over the full ``e_in`` array with ``xp.where`` panel masking.
+
+    The (mu, Ep) inner axis is still numpy-only (unit-base
+    ``interp_tab2`` doesn't have a traced-x fast path yet); tracer
+    ``mu_out`` / ``ep_out`` here would crash on the internal
+    ``np.asarray``. Detect that upfront and raise a clear
+    ``NotImplementedError`` (issue #220).
     """
+    # Import locally to avoid a hard dep on jax at module load time.
+    try:
+        import jax.core as _jax_core
+        is_tracer = lambda v: isinstance(v, _jax_core.Tracer)
+    except ImportError:
+        is_tracer = lambda v: False
+    if is_tracer(mu_out) or is_tracer(ep_out):
+        raise NotImplementedError(
+            'LAW=7 traced-x kernel: mu_out / ep_out cannot be JAX '
+            'tracers because the inner (mu, Ep) unit-base '
+            'interp_tab2 runs on numpy. Pass concrete numpy or '
+            'concrete jax arrays for those axes; tracer support '
+            'is tracked as issue #220.'
+        )
     n_e = int(e_in.shape[0])
     n_ep = int(ep_out.shape[0])
     n_mu = int(mu_out.shape[0])
