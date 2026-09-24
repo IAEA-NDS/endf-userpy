@@ -21,7 +21,6 @@ Pins:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from endf_userpy.primitives import conversion_relativistic as cr
 
