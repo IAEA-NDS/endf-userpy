@@ -1,4 +1,3 @@
-import numpy as np
 from ..primitives import array_ns
 from ..primitives.physical_constants import get_zap_for_particle
 from ..mfsec_interpretation import mf3_interpretation as mf3_interp
