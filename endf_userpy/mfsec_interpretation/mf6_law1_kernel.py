@@ -288,9 +288,12 @@ def _f6law1_con_panel_bc(data, p, e_scalar, tp, w, xp):
     Returns an ``(...,)`` array; zero where ``tp`` lies outside
     the panel's continuum Ep range.
     """
-    nep = int(data.nep_arr[p])
-    nd = int(data.nd_arr[p])
-    na = int(data.na_arr[p])
+    # Materialise scalar file-side arrays via numpy first (they may
+    # be xp-native under xp=jax from the multipanel preproc, in which
+    # case ``int()`` inside ``jit`` fails on jax tracers).
+    nep = int(np.asarray(data.nep_arr)[p])
+    nd = int(np.asarray(data.nd_arr)[p])
+    na = int(np.asarray(data.na_arr)[p])
     lang = int(data.lang)
     lep = int(data.lep)
 
@@ -454,12 +457,19 @@ def _f6law1con_panel_pair_bc(data, panel_idx, lei, e_bc, tp_bc, w_bc, xp):
     """
     p1 = panel_idx
     p2 = panel_idx + 1
-    e1 = float(data.ei_mesh[p1])
-    e2 = float(data.ei_mesh[p2])
-    nep1 = int(data.nep_arr[p1])
-    nd1 = int(data.nd_arr[p1])
-    nep2 = int(data.nep_arr[p2])
-    nd2 = int(data.nd_arr[p2])
+    # Materialise scalar file-side arrays via numpy (they may be
+    # xp-native under xp=jax from PR #191's multipanel preproc, and
+    # ``float()`` / ``int()`` on jax scalars fails inside ``jit``).
+    ei_mesh_np = np.asarray(data.ei_mesh)
+    nep_np = np.asarray(data.nep_arr)
+    nd_np = np.asarray(data.nd_arr)
+    ep_panels_np = np.asarray(data.ep_panels)
+    e1 = float(ei_mesh_np[p1])
+    e2 = float(ei_mesh_np[p2])
+    nep1 = int(nep_np[p1])
+    nd1 = int(nd_np[p1])
+    nep2 = int(nep_np[p2])
+    nd2 = int(nd_np[p2])
     law = int(lei) % 10
 
     p1_has_cont = (nep1 > nd1)
@@ -475,11 +485,11 @@ def _f6law1con_panel_pair_bc(data, panel_idx, lei, e_bc, tp_bc, w_bc, xp):
         f2 = xp.zeros_like(tp_bc)
     else:
         # Both have continuum: unit-base transform on tp
-        x1low = float(data.ep_panels[p1, nd1])
-        x1high = float(data.ep_panels[p1, nep1 - 1])
+        x1low = float(ep_panels_np[p1, nd1])
+        x1high = float(ep_panels_np[p1, nep1 - 1])
         x1range = x1high - x1low
-        x2low = float(data.ep_panels[p2, nd2])
-        x2high = float(data.ep_panels[p2, nep2 - 1])
+        x2low = float(ep_panels_np[p2, nd2])
+        x2high = float(ep_panels_np[p2, nep2 - 1])
         x2range = x2high - x2low
         e2_minus_e1 = e2 - e1
         yslope = (e_bc - e1) / e2_minus_e1

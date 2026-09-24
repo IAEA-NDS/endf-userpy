@@ -178,12 +178,21 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
     """
     p1 = panel_idx
     p2 = panel_idx + 1
-    e1 = float(data.ei_mesh[p1])
-    e2 = float(data.ei_mesh[p2])
-    nep1 = int(data.nep_arr[p1])
-    nd1 = int(data.nd_arr[p1])
-    nep2 = int(data.nep_arr[p2])
-    nd2 = int(data.nd_arr[p2])
+    # Materialise per-panel scalar constants via numpy so ``float(...)``
+    # works regardless of whether ``data.ei_mesh`` / ``data.nep_arr``
+    # were built as numpy or as xp-native (the latter happens under
+    # ``xp=jax`` for the multipanel-traced kernel, PR #191). Inside
+    # ``jit`` this materialisation is illegal on jax tracers, so we
+    # explicitly go through numpy at this Python-side boundary.
+    ei_mesh_np = np.asarray(data.ei_mesh)
+    nep_np = np.asarray(data.nep_arr)
+    nd_np = np.asarray(data.nd_arr)
+    e1 = float(ei_mesh_np[p1])
+    e2 = float(ei_mesh_np[p2])
+    nep1 = int(nep_np[p1])
+    nd1 = int(nd_np[p1])
+    nep2 = int(nep_np[p2])
+    nd2 = int(nd_np[p2])
 
     n_e_sub = int(e_sub.shape[0])
     n_ep = int(ep_out_xp.shape[0])
@@ -194,8 +203,9 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
 
     # Panel-pair Ep upper bound at each incident e (unit-base
     # transformed from panel-1 and panel-2 continuum tail).
-    ep1max = float(data.ep_panels[p1, nep1 - 1])
-    ep2max = float(data.ep_panels[p2, nep2 - 1])
+    ep_panels_np = np.asarray(data.ep_panels)
+    ep1max = float(ep_panels_np[p1, nep1 - 1])
+    ep2max = float(ep_panels_np[p2, nep2 - 1])
     e_bc = e_sub[:, None]                                        # (nE, 1)
     yslope = (e_bc - e1) / (e2 - e1)                             # (nE, 1)
     epmax_eff = ep1max + yslope * (ep2max - ep1max)              # (nE, 1)
