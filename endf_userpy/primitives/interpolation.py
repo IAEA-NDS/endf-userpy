@@ -587,6 +587,168 @@ def determine_unit_base_coordinates(
     return cur_y1, cur_y2, jac1, jac2
 
 
+def _interp_tab2_traced_x(
+    x, y, xp_mesh, int_arr, nbt_arr, tab1_records, yp_name, fp_name,
+    outside_value, xp,
+):
+    """JAX-friendly ``interp_tab2`` variant that supports tracer
+    ``x`` (issue #201). Loops over the concrete panel index (small,
+    numpy-side), computes each panel's per-y inner-interp
+    contribution once, evaluates the outer 2-point interp on the
+    full tracer ``x`` array via broadcasting, and selects the
+    correct panel's contribution per query x with ``xp.where``.
+
+    Only the non-unit-base outer interpolation types (INT=1..5) are
+    supported. Unit-base (INT=21..25) is used mostly in
+    Ep-differential contexts (MF6 LAW=7) where the y range varies
+    per panel; those callers still hit the numpy per-x loop.
+
+    Handles both shared inner y (``y.shape[0] == 1``, e.g. a fixed
+    mu grid across all incident energies) and per-x inner y
+    (``y.shape == (n_x, n_y)``, e.g. LAW=2 LCT=2 where the CM mu
+    depends on Ein via ``convert_angcos_to_cmsys``).
+    """
+    x = xp.asarray(x)
+    y_xp = xp.asarray(y)
+    if y_xp.ndim == 1:
+        y_xp = y_xp.reshape(1, -1)
+
+    xp_mesh_np = np.asarray(xp_mesh)
+    n_panels = int(xp_mesh_np.shape[0]) - 1
+    if n_panels < 1:
+        raise ValueError('interp_tab2 requires >= 2 mesh points')
+    interp_arr_np = convert_interp_repr(int_arr, nbt_arr)
+    n_x = int(x.shape[0])
+    n_y = int(y_xp.shape[1])
+    per_x_y = int(y_xp.shape[0]) != 1                           # True if y varies per x
+    x_col = x.reshape(-1, 1)                                    # (n_x, 1)
+
+    _small = 1.0e-38
+
+    def _outer_2pt(interp_type, x_col, x1, x2, y1, y2):
+        """Return an (n_x, n_y) block for one panel, given the
+        panel's inner-interp values ``y1``, ``y2`` (both (n_y,))
+        and scalars ``x1``, ``x2``."""
+        y1_row = y1.reshape(1, -1)                              # (1, n_y)
+        y2_row = y2.reshape(1, -1)                              # (1, n_y)
+        if interp_type == 1:
+            return xp.broadcast_to(y1_row, (n_x, n_y))
+        if interp_type == 2:
+            return y1_row + (x_col - x1) * (y2_row - y1_row) / (x2 - x1)
+        if interp_type == 3:
+            x1s = x1 if x1 != 0.0 else _small
+            x2s = x2 if x2 != 0.0 else _small
+            # x may be zero or negative under trace; clamp for log
+            # safety on the branches we do not select. Selection is
+            # by is_in_panel; only the correct panel's values reach
+            # the output.
+            x_safe = xp.where(x_col > 0.0, x_col, _small)
+            return y1_row + xp.log(x_safe / x1s) * (
+                y2_row - y1_row
+            ) / xp.log(x2s / x1s)
+        if interp_type == 4:
+            y1_safe = xp.where(y1_row == 0.0, _small, y1_row)
+            return y1_safe * xp.exp(
+                (x_col - x1) * xp.log(y2_row / y1_safe) / (x2 - x1)
+            )
+        if interp_type == 5:
+            x1s = x1 if x1 != 0.0 else _small
+            x2s = x2 if x2 != 0.0 else _small
+            x_safe = xp.where(x_col > 0.0, x_col, _small)
+            y1_safe = xp.where(y1_row == 0.0, _small, y1_row)
+            return y1_safe * xp.exp(
+                xp.log(x_safe / x1s) * xp.log(y2_row / y1_safe)
+                / xp.log(x2s / x1s)
+            )
+        raise NotImplementedError(
+            f'interp_tab2 traced-x supports INT=1..5 only; got '
+            f'INT={interp_type}. Unit-base (21..25) or unknown '
+            f'schemes need the numpy path.'
+        )
+
+    def _outer_2pt_row(interp_type, x_col, x1, x2, y1_row, y2_row):
+        """Per-x-y outer 2-point interp when y1/y2 already have
+        shape (n_x, n_y) (per-x y case)."""
+        if interp_type == 1:
+            return y1_row
+        if interp_type == 2:
+            return y1_row + (x_col - x1) * (y2_row - y1_row) / (x2 - x1)
+        if interp_type == 3:
+            x1s = x1 if x1 != 0.0 else _small
+            x2s = x2 if x2 != 0.0 else _small
+            x_safe = xp.where(x_col > 0.0, x_col, _small)
+            return y1_row + xp.log(x_safe / x1s) * (
+                y2_row - y1_row
+            ) / xp.log(x2s / x1s)
+        if interp_type == 4:
+            y1_safe = xp.where(y1_row == 0.0, _small, y1_row)
+            return y1_safe * xp.exp(
+                (x_col - x1) * xp.log(y2_row / y1_safe) / (x2 - x1)
+            )
+        if interp_type == 5:
+            x1s = x1 if x1 != 0.0 else _small
+            x2s = x2 if x2 != 0.0 else _small
+            x_safe = xp.where(x_col > 0.0, x_col, _small)
+            y1_safe = xp.where(y1_row == 0.0, _small, y1_row)
+            return y1_safe * xp.exp(
+                xp.log(x_safe / x1s) * xp.log(y2_row / y1_safe)
+                / xp.log(x2s / x1s)
+            )
+        raise NotImplementedError(
+            f'interp_tab2 traced-x supports INT=1..5 only; got '
+            f'INT={interp_type}.'
+        )
+
+    # Assemble by masking each panel's block into the result.
+    result = xp.zeros((n_x, n_y), dtype=xp.float64)
+    mesh_lo = float(xp_mesh_np[0])
+    mesh_hi = float(xp_mesh_np[-1])
+    for p in range(n_panels):
+        x1 = float(xp_mesh_np[p])
+        x2 = float(xp_mesh_np[p + 1])
+        interp_type = int(interp_arr_np[p])
+        curtab1 = tab1_records[p]
+        curtab2 = tab1_records[p + 1]
+        if per_x_y:
+            # y varies per x (e.g. LAW=2 LCT=2 with per-Ein CM mu).
+            # Flatten to a single 1-D interp call, then reshape.
+            y_flat = y_xp.reshape(-1)                          # (n_x * n_y,)
+            f1_flat = interp_tab1(
+                y_flat, curtab1, yp_name, fp_name, outside_value,
+                xp=xp,
+            )
+            f2_flat = interp_tab1(
+                y_flat, curtab2, yp_name, fp_name, outside_value,
+                xp=xp,
+            )
+            f1_row = f1_flat.reshape(n_x, n_y)
+            f2_row = f2_flat.reshape(n_x, n_y)
+            block = _outer_2pt_row(interp_type, x_col, x1, x2, f1_row, f2_row)
+        else:
+            # Shared y row across all x.
+            y_row = y_xp[0]                                    # (n_y,)
+            f1 = interp_tab1(
+                y_row, curtab1, yp_name, fp_name, outside_value, xp=xp,
+            )
+            f2 = interp_tab1(
+                y_row, curtab2, yp_name, fp_name, outside_value, xp=xp,
+            )
+            block = _outer_2pt(interp_type, x_col, x1, x2, f1, f2)
+        # ENDF convention: the upper endpoint of a panel belongs to
+        # the upper region, except the final panel includes its top.
+        if p < n_panels - 1:
+            in_panel = (x >= x1) & (x < x2)
+        else:
+            in_panel = (x >= x1) & (x <= x2)
+        result = xp.where(in_panel.reshape(-1, 1), block, result)
+
+    if outside_value is not None:
+        is_inside = (x >= mesh_lo) & (x <= mesh_hi)
+        fill = xp.full((n_x, n_y), outside_value, dtype=xp.float64)
+        result = xp.where(is_inside.reshape(-1, 1), result, fill)
+    return result
+
+
 def interp_tab2(
     x, y, xp_mesh, int_arr, nbt_arr, tab1_records, yp_name, fp_name,
     outside_value=None, xp=None,
@@ -634,6 +796,21 @@ def interp_tab2(
         value for ``x[i]`` and ``y[j]``.
     """
     xp = _resolve_xp(xp)
+    # Under xp=jax, route tracer queries through the traced-x fast
+    # path (issue #201 PR-B) so ``jax.grad`` wrt ``x`` propagates.
+    # The traced variant supports the standard non-unit-base outer
+    # interp types (INT=1..5) with a shared y grid, which covers
+    # MF4 LTT=2/3 and MF6 LAW=2 LANG=12/14. Unit-base (21..25) and
+    # per-x y still take the numpy path.
+    if xp.name == 'jax':
+        try:
+            return _interp_tab2_traced_x(
+                x, y, xp_mesh, int_arr, nbt_arr, tab1_records,
+                yp_name, fp_name, outside_value, xp,
+            )
+        except NotImplementedError:
+            # Fall through to numpy path for unit-base / per-x y.
+            pass
     # Convert mesh + y to numpy for the file-side loop (dict-of-
     # records access and per-panel unit-base bounds computation stay
     # on numpy). The per-row row-vector of outer-interp results is

@@ -330,11 +330,11 @@ def _law2_reconstruct_from_data(
             xp=xp,
         )
     elif lang in (12, 14):
-        # ``interp_tab2`` still has a numpy-only traced-x fast path
-        # gap (issue #201 PR-B follow-up), so this LANG=12/14 branch
-        # continues to materialise via ``np.asarray`` for now.
+        # Pass xp-native ``e_in`` / ``mu_eff`` through: ``interp_tab2``
+        # dispatches to its traced-x fast path under xp=jax (issue
+        # #201 PR-B).
         f_eff = interp_tab2(
-            np.asarray(energies_in, dtype=float), np.asarray(mu_eff),
+            e_in, mu_eff,
             data.ei_mesh, data.int_arr, data.nbt_arr,
             data.records, 'mu', 'f',
             xp=xp,
