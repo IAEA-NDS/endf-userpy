@@ -409,10 +409,15 @@ def interp_legendre_coeffs(x, xp_mesh, coeffs, int_arr, nbt_arr,
 
     Backend-agnostic: ``xp=None`` (default) is numpy; JAX tracers
     in ``coeffs`` propagate through the column-wise
-    :func:`endf_interp1d` calls (see issue #154).
+    :func:`endf_interp1d` calls (see issue #154). ``x`` may also
+    be a tracer under ``xp=jax``: `endf_interp1d` routes tracer
+    queries through its ``_endf_interp1d_traced_x`` fast path
+    (PR #192). Issue #201.
     """
     xp = _resolve_xp(xp)
-    x = np.asarray(x)
+    # Do NOT materialise `x` via ``np.asarray`` here: under
+    # ``xp=jax`` this call is on a tracer that must survive into
+    # ``endf_interp1d``'s traced-x path (issue #201).
     ncols = int(coeffs.shape[1])
     cols = []
     for i in range(ncols):
@@ -500,16 +505,27 @@ def evaluate_interp_legendre_polynomials(
     pre-port) to avoid the collision with the backend adapter
     also conventionally named ``xp``. Positional callers are
     unaffected since the argument position is unchanged.
+
+    ``x`` and ``mu`` may be tracers under ``xp=jax`` (issue #201):
+    the per-column coefficient interpolation routes through
+    ``endf_interp1d``'s traced-x path (PR #192), and the Legendre
+    series evaluation is pure arithmetic on ``mu``.
     """
     xp = _resolve_xp(xp)
-    x = np.asarray(x)
-    mu = np.asarray(mu)
+    # Keep ``x`` and ``mu`` xp-native so JAX tracers survive into
+    # the downstream interp and Legendre evaluation (issue #201).
+    # Shape inspection (``.ndim``, ``.shape``) is safe on tracers
+    # because shapes are concrete under trace; only value reads
+    # would fail.
+    x = xp.asarray(x)
+    mu = xp.asarray(mu)
     if mu.ndim == 1:
         mu = mu.reshape(1, -1)
     if mu.shape[0] == 1:
-        mu = np.broadcast_to(mu, (x.size, mu.shape[1]))
+        mu = xp.broadcast_to(mu, (int(x.shape[0]), mu.shape[1]))
     # Backend-agnostic per-degree coefficient interpolation over the
-    # file's energy mesh. Tracers in `coeffs` propagate through.
+    # file's energy mesh. Tracers in `coeffs` and in `x` propagate
+    # through.
     interp_coeffs = interp_legendre_coeffs(
         x, xp_mesh, coeffs, int_arr, nbt_arr, outside_value, xp=xp,
     )
@@ -519,8 +535,7 @@ def evaluate_interp_legendre_polynomials(
     # :func:`mf4_interpretation._convert_legendre_to_numpy_array`),
     # so ``_eval_legendre_series`` evaluates
     # ``sum_L coeffs[..., L] * P_L(mu)`` directly.
-    mu_xp = xp.asarray(mu)
-    return _eval_legendre_series(interp_coeffs, mu_xp, xp)
+    return _eval_legendre_series(interp_coeffs, mu, xp)
 
 
 def interp_tab1(x, tab1, xp_name, fp_name, outside_value=None, xp=None):

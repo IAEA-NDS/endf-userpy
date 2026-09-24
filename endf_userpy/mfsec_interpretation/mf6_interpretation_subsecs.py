@@ -320,12 +320,19 @@ def _law2_reconstruct_from_data(
         )
 
     if lang == 0:
+        # Pass ``e_in`` (already xp.asarray-ed above) and ``mu_eff``
+        # directly. Do NOT re-materialise via ``np.asarray``: under
+        # xp=jax these are tracers that must flow through the
+        # primitive's traced-x path (issue #201).
         f_eff = evaluate_interp_legendre_polynomials(
-            np.asarray(energies_in, dtype=float), np.asarray(mu_eff),
+            e_in, mu_eff,
             data.ei_mesh, data.coeffs, data.int_arr, data.nbt_arr,
             xp=xp,
         )
     elif lang in (12, 14):
+        # ``interp_tab2`` still has a numpy-only traced-x fast path
+        # gap (issue #201 PR-B follow-up), so this LANG=12/14 branch
+        # continues to materialise via ``np.asarray`` for now.
         f_eff = interp_tab2(
             np.asarray(energies_in, dtype=float), np.asarray(mu_eff),
             data.ei_mesh, data.int_arr, data.nbt_arr,
