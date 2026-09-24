@@ -12,16 +12,8 @@ against:
   ``0.5 * [S(E', EFL, T) + S(E', EFH, T)]`` so swapping EFL and
   EFH must give the same spectrum.
 - Backend-agnostic (numpy vs jax) on concrete inputs.
-
-Not covered here (upstream JAX cost, not a physics gap): direct
-``jax.grad`` wrt LF=12 file-side leaves. ``jsp.exp1`` and
-``jsp.gammainc`` use ``jnp.piecewise`` internally, which produces
-a heavy trace under naked ``jax.grad`` on 2D arrays (single-call
-tracing takes ~1 minute on the test's 2x100 grid). Users doing
-autodiff through the fission spectrum should ``jax.jit`` the loss
-first; the trace amortises across calls. A dedicated fast-path
-(custom_jvp with the analytic ``d E1(x)/dx = -exp(-x)/x``) is
-tracked as issue #207.
+- ``jax.grad`` wrt file-side EFL and T_M tracers (fast, via the
+  custom_jvp exp1 / gammainc path landed for issue #207).
 """
 from __future__ import annotations
 
@@ -110,7 +102,11 @@ def test_lf12_madland_nix_symmetric_under_efl_efh_swap():
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
 def test_lf12_madland_nix_numpy_jax_parity():
-    """Backend-agnostic parity: numpy vs jax to machine precision."""
+    """numpy vs jax parity at physics-level precision. Not to machine
+    precision because the JAX exp1 path uses the A&S 5.1.53 / 5.1.56
+    rational approximation (accuracy ~2e-7 relative) for
+    jit-friendliness; scipy uses a full-precision implementation.
+    The gap is well below any physical measurement uncertainty."""
     d = _make_endf_dict(_make_mn_contrib(
         efl=1.03e6, efh=5.5e5, tm=1.2e6,
     ))
@@ -120,7 +116,65 @@ def test_lf12_madland_nix_numpy_jax_parity():
     xp_jx = array_ns.get_backend('jax')
     f_np = np.asarray(mf5.compute_spectrum(d, 18, ein, eout, xp=xp_np))
     f_jx = np.asarray(mf5.compute_spectrum(d, 18, ein, eout, xp=xp_jx))
-    np.testing.assert_allclose(f_np, f_jx, rtol=1e-9, atol=1e-30)
+    np.testing.assert_allclose(f_np, f_jx, rtol=1e-6, atol=1e-30)
+
+
+def _fd5(f, x, h):
+    return (-float(f(x + 2 * h)) + 8 * float(f(x + h))
+            - 8 * float(f(x - h)) + float(f(x - 2 * h))) / (12 * h)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_lf12_madland_nix_jax_grad_wrt_efl_matches_fd():
+    """``jax.grad`` wrt EFL matches 5-point central FD. Only fast
+    after the #207 custom_jvp path lands for exp1 / gammainc;
+    without it, a single grad call takes ~1 minute on this grid."""
+    import jax
+    import jax.numpy as jnp
+    xp_jx = array_ns.get_backend('jax')
+    efh = 5.5e5
+    tm = 1.0e6
+    ein = jnp.array([5.0e6, 1.0e7])
+    eout = jnp.linspace(1e4, 6e6, 100)
+
+    def loss(efl_val):
+        c = _make_mn_contrib(efl=0.0, efh=efh, tm=tm)
+        c['EFL'] = efl_val
+        return jnp.sum(mf5.compute_spectrum(
+            _make_endf_dict(c), 18, ein, eout, xp=xp_jx,
+        ))
+
+    efl0 = 1.03e6
+    grad = float(jax.grad(loss)(jnp.array(efl0)))
+    fd = _fd5(lambda v: loss(jnp.array(v)), efl0, efl0 * 1e-4)
+    assert np.isfinite(grad)
+    np.testing.assert_allclose(grad, fd, rtol=2e-3, atol=1e-20)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_lf12_madland_nix_jax_grad_wrt_tm_matches_fd():
+    """``jax.grad`` wrt the tabulated T_M parameter matches FD.
+    Fast after the #207 custom_jvp path."""
+    import jax
+    import jax.numpy as jnp
+    xp_jx = array_ns.get_backend('jax')
+    efl = 1.03e6
+    efh = 5.5e5
+    ein = jnp.array([5.0e6, 1.0e7])
+    eout = jnp.linspace(1e4, 6e6, 100)
+
+    def loss(tm_val):
+        c = _make_mn_contrib(efl=efl, efh=efh, tm=0.0)
+        c['tm_table']['TM'] = [tm_val, tm_val]
+        return jnp.sum(mf5.compute_spectrum(
+            _make_endf_dict(c), 18, ein, eout, xp=xp_jx,
+        ))
+
+    tm0 = 1.0e6
+    grad = float(jax.grad(loss)(jnp.array(tm0)))
+    fd = _fd5(lambda v: loss(jnp.array(v)), tm0, tm0 * 1e-4)
+    assert np.isfinite(grad)
+    np.testing.assert_allclose(grad, fd, rtol=2e-3, atol=1e-20)
 
 
 def test_lf12_madland_nix_previously_not_implemented_error_is_gone():
