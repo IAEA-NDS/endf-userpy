@@ -170,25 +170,12 @@ def _compute_mf14_gamma_angdist(
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    # MF14 gamma angdist mixes MF12 yield-tab1 reads with MF14
-    # Legendre / isotropic evaluations. Under xp=jax with tracer
-    # query axes, the numpy MF12 weight pieces would crash;
-    # tracker: issue #220. Raise early with a clear message.
-    try:
-        import jax.core as _jax_core
-        _is_tracer = lambda v: isinstance(v, _jax_core.Tracer)
-    except ImportError:
-        _is_tracer = lambda v: False
-    if _is_tracer(energies_in) or _is_tracer(angle_cosines_out):
-        raise NotImplementedError(
-            '_compute_mf14_gamma_angdist: JAX tracer query axes '
-            'are not supported (MF12 yield weighting runs on numpy '
-            'internally). Tracked as issue #220. Workaround: pass '
-            'concrete numpy arrays for E and mu; take jax.grad '
-            'wrt file-side leaves instead.'
-        )
-    energies_in = np.asarray(energies_in, dtype=float)
-    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    # ``energies_in`` and ``angle_cosines_out`` may be JAX tracers
+    # (issue #220 PR 3). Keep them as xp arrays throughout so
+    # ``jax.grad`` reaches file-side MF12 / MF14 leaves; only
+    # ``photon_energies`` (a static file-side attribute) stays
+    # numpy. ``len()`` on a shape-known jax array returns the static
+    # leading dim so ``n_einc`` / ``n_mus`` remain Python ints.
     n_einc = len(energies_in)
     n_mus = len(angle_cosines_out)
 
