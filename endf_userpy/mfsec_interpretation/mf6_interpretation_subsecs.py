@@ -614,12 +614,17 @@ def _law7_outer_e_interp_row(e_col, e1, e2, f1, f2, lei_law, xp):
 def _get_dist2d_from_subsec_law7_traced_x(
     subsec, ei_mesh, ei_interp, e_in, ep_out, mu_out, xp,
 ):
-    """JAX-friendly LAW=7 outer-E-panel loop supporting tracer
-    ``e_in`` (issue #201 / roadmap #198 Phase 3). Evaluates each
-    (concrete) Ein panel's ``(n_mu, n_ep)`` amplitude via
-    :func:`_law7_eval_mu_panel` (numpy inner, unaffected by the
-    outer tracer), then broadcasts the outer 2-point Ein interp
-    over the full ``e_in`` array with ``xp.where`` panel masking.
+    """JAX-friendly LAW=7 reconstruction supporting tracer ``e_in``
+    (issue #201 / roadmap #198 Phase 3, refactored for issue #220).
+
+    Uses a gather-based dispatch instead of a Python loop with
+    ``xp.where`` per panel. The precomputation cost is
+    ``n_mesh * n_mu * n_ep`` floats (all panels' amplitudes stacked
+    once), but the traced graph seen by ``jax.grad`` has O(1)
+    depth in the number of Ein panels rather than O(n_panels). This
+    makes the kernel usable INSIDE another vectorised computation
+    (like Simpson integration over Eout / mu), which the previous
+    xp.where-chain design blew up under.
 
     The (mu, Ep) inner axis is still numpy-only (unit-base
     ``interp_tab2`` doesn't have a traced-x fast path yet); tracer
@@ -641,38 +646,96 @@ def _get_dist2d_from_subsec_law7_traced_x(
             'concrete jax arrays for those axes; tracer support '
             'is tracked as issue #220.'
         )
-    n_e = int(e_in.shape[0])
-    n_ep = int(ep_out.shape[0])
-    n_mu = int(mu_out.shape[0])
-    n_panels = int(ei_mesh.shape[0]) - 1
-    e_col = e_in.reshape(-1, 1, 1)
+    ei_mesh_np = np.asarray(ei_mesh, dtype=float)
+    n_mesh = int(ei_mesh_np.shape[0])
+    n_panels = n_mesh - 1
 
-    result = xp.zeros((n_e, n_mu, n_ep), dtype=xp.float64)
-    for p in range(n_panels):
-        e1 = float(ei_mesh[p])
-        e2 = float(ei_mesh[p + 1])
-        lei_law = int(ei_interp[p]) % 10
-        f1 = _law7_eval_mu_panel(
-            subsec, p + 1, np.asarray(mu_out, dtype=float),
-            np.asarray(ep_out, dtype=float), xp,
+    # Uniform outer INT law across all panels is the common case
+    # (LAW=7 corpus files typically declare a single INT region on
+    # the Ein axis). If we ever see multi-region INT here, fall back
+    # to the per-panel Python-loop kernel (numpy path only under
+    # xp=jax would need a lax.switch we do not implement).
+    laws = set(int(ei_interp[p]) % 10 for p in range(n_panels))
+    if len(laws) != 1:
+        raise NotImplementedError(
+            f'LAW=7 traced-x gather path assumes a single outer '
+            f'INT law across all Ein panels; got mixed {laws}.'
         )
-        f2 = _law7_eval_mu_panel(
-            subsec, p + 2, np.asarray(mu_out, dtype=float),
-            np.asarray(ep_out, dtype=float), xp,
+    lei_law = int(laws.pop())
+
+    # Precompute every mesh point's inner (mu, Ep) amplitude ONCE
+    # (concrete numpy inner). Stack to (n_mesh, n_mu, n_ep) so we
+    # can gather per-query-panel with two ``xp.take`` calls.
+    mu_np = np.asarray(mu_out, dtype=float)
+    ep_np = np.asarray(ep_out, dtype=float)
+    f_per_mesh = []
+    for m_idx in range(n_mesh):
+        f_per_mesh.append(_law7_eval_mu_panel(
+            subsec, m_idx + 1, mu_np, ep_np, xp,
+        ))
+    f_all = xp.stack([xp.asarray(f) for f in f_per_mesh], axis=0)
+    # (n_mesh, n_mu, n_ep)
+
+    # Per-query panel bracket via searchsorted on the concrete mesh
+    # (searchsorted accepts a tracer needle and returns a tracer
+    # index cleanly under jax).
+    ei_mesh_xp = xp.asarray(ei_mesh_np)
+    p_idx = xp.searchsorted(ei_mesh_xp, e_in, side='right') - 1
+    p_idx = xp.clip(p_idx, 0, n_panels - 1)
+
+    e1 = xp.take(ei_mesh_xp, p_idx)                            # (n_e,)
+    e2 = xp.take(ei_mesh_xp, p_idx + 1)
+    f1 = xp.take(f_all, p_idx, axis=0)                         # (n_e, n_mu, n_ep)
+    f2 = xp.take(f_all, p_idx + 1, axis=0)
+
+    e_col = e_in.reshape(-1, 1, 1)
+    e1_col = e1.reshape(-1, 1, 1)
+    e2_col = e2.reshape(-1, 1, 1)
+    f_e = _law7_outer_e_interp_gathered(
+        e_col, e1_col, e2_col, f1, f2, lei_law, xp,
+    )
+    # (n_e, n_mu, n_ep) -> (n_e, n_ep, n_mu)
+    return xp.transpose(f_e, (0, 2, 1))
+
+
+def _law7_outer_e_interp_gathered(
+    e_col, e1_col, e2_col, f1, f2, lei_law, xp,
+):
+    """Outer 2-point Ein interpolation on already-gathered per-
+    query ``(f1, f2, e1, e2)``. Broadcasting shapes:
+    ``e_col``/``e1_col``/``e2_col`` are ``(n_e, 1, 1)``;
+    ``f1``/``f2`` are ``(n_e, n_mu, n_ep)``. Returns
+    ``(n_e, n_mu, n_ep)``. Same INT laws as ``_law7_outer_e_interp_
+    row`` but without per-panel scalar broadcasting.
+    """
+    _small = 1.0e-38
+    if lei_law == 1:
+        return f1
+    if lei_law == 2:
+        return f1 + (e_col - e1_col) * (f2 - f1) / (e2_col - e1_col)
+    if lei_law == 3:
+        e1s = xp.where(e1_col > 0.0, e1_col, _small)
+        e2s = xp.where(e2_col > 0.0, e2_col, _small)
+        e_safe = xp.where(e_col > 0.0, e_col, _small)
+        return f1 + xp.log(e_safe / e1s) * (f2 - f1) / xp.log(e2s / e1s)
+    if lei_law == 4:
+        f1_safe = xp.where(f1 == 0.0, _small, f1)
+        return f1_safe * xp.exp(
+            (e_col - e1_col) * xp.log(f2 / f1_safe) / (e2_col - e1_col)
         )
-        f1_xp = xp.asarray(f1)
-        f2_xp = xp.asarray(f2)
-        f_e = _law7_outer_e_interp_row(
-            e_col, e1, e2, f1_xp, f2_xp, lei_law, xp,
+    if lei_law == 5:
+        e1s = xp.where(e1_col > 0.0, e1_col, _small)
+        e2s = xp.where(e2_col > 0.0, e2_col, _small)
+        e_safe = xp.where(e_col > 0.0, e_col, _small)
+        f1_safe = xp.where(f1 == 0.0, _small, f1)
+        return f1_safe * xp.exp(
+            xp.log(e_safe / e1s) * xp.log(f2 / f1_safe)
+            / xp.log(e2s / e1s)
         )
-        if p < n_panels - 1:
-            in_p = (e_in >= e1) & (e_in < e2)
-        else:
-            in_p = (e_in >= e1) & (e_in <= e2)
-        result = xp.where(in_p.reshape(-1, 1, 1), f_e, result)
-    # Result axis order the caller wants: (n_e, n_ep, n_mu). Kernel
-    # accumulates (n_e, n_mu, n_ep); transpose the last two axes.
-    return xp.transpose(result, (0, 2, 1))
+    raise NotImplementedError(
+        f'LAW=7 traced-x outer Ein interp supports INT=1..5 only; '
+        f'got INT={lei_law}.'
+    )
 
 
 @pad_outside_dist2d_values
