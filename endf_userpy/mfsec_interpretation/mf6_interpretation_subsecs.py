@@ -664,16 +664,24 @@ def _get_dist2d_from_subsec_law7_traced_x(
     lei_law = int(laws.pop())
 
     # Precompute every mesh point's inner (mu, Ep) amplitude ONCE
-    # (concrete numpy inner). Stack to (n_mesh, n_mu, n_ep) so we
-    # can gather per-query-panel with two ``xp.take`` calls.
+    # (concrete numpy). The panel amplitudes are functions of the
+    # (concrete) subsection tables, mu_out, and ep_out only -- no
+    # tracer dependence -- so we force xp=numpy for the inner work
+    # to keep those ops OUT of the traced graph. Then one final
+    # ``xp.asarray`` on the stacked result imports the concrete
+    # array as a leaf. Cuts jax.grad compile time by an order of
+    # magnitude on large mu meshes (the inner unit-base
+    # ``interp_tab2`` would otherwise become n_mesh * n_mu * n_ep
+    # traced primitive ops).
     mu_np = np.asarray(mu_out, dtype=float)
     ep_np = np.asarray(ep_out, dtype=float)
+    xp_np = array_ns.get_backend('numpy')
     f_per_mesh = []
     for m_idx in range(n_mesh):
         f_per_mesh.append(_law7_eval_mu_panel(
-            subsec, m_idx + 1, mu_np, ep_np, xp,
+            subsec, m_idx + 1, mu_np, ep_np, xp_np,
         ))
-    f_all = xp.stack([xp.asarray(f) for f in f_per_mesh], axis=0)
+    f_all = xp.asarray(np.stack(f_per_mesh, axis=0))
     # (n_mesh, n_mu, n_ep)
 
     # Per-query panel bracket via searchsorted on the concrete mesh

@@ -113,6 +113,45 @@ def _adaptive_simpson_along_axis(
     return I_new
 
 
+# Fixed mesh size for the xp-native (jax-tracer) Simpson path: no
+# adaptivity because ``xp.max``/comparison on tracers can't drive
+# Python control flow. n=321 matches the second-refinement level
+# of the numpy adaptive path -- enough to keep LAW=7 mu-integration
+# accurate to a few permille without dragging compile time out.
+_XP_SIMPSON_N = 321
+
+
+def _simpson_uniform_xp(f, h, xp):
+    """Simpson's 1/3 rule on a uniform mesh, along the last axis.
+    Weights are static (numpy-computed) so they don't create tracer
+    dependencies. Requires odd ``n >= 3``.
+    """
+    n = f.shape[-1]
+    if n < 3 or n % 2 == 0:
+        raise ValueError(f'Simpson requires odd n >= 3, got {n}')
+    w = np.ones(n)
+    w[1:-1:2] = 4.0
+    w[2:-1:2] = 2.0
+    w_xp = xp.asarray(w)
+    return (h / 3.0) * (f * w_xp).sum(axis=-1)
+
+
+def _fixed_simpson_along_axis_xp(
+    build_dist, axis_lo, axis_hi, xp, n=_XP_SIMPSON_N,
+):
+    """Non-adaptive Simpson on a uniform xp mesh of ``n`` points.
+
+    ``build_dist(mesh)`` receives an xp array; ``axis_lo`` /
+    ``axis_hi`` may be tracers themselves (Ep upper bound depends on
+    tracer E_in). One evaluation, no branching on the result -- so
+    ``jax.jit`` / ``jax.grad`` reach the file-side leaves cleanly.
+    """
+    mesh = xp.linspace(axis_lo, axis_hi, n)
+    dist = build_dist(mesh)
+    h = (mesh[-1] - mesh[0]) / (n - 1)
+    return _simpson_uniform_xp(dist, h, xp)
+
+
 def integrate_mf6_dist2d_over_eout(
     endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True, xp=None,
 ):
@@ -215,6 +254,31 @@ def _integrate_mf6_dist2d_over_mu_default(
     return _adaptive_simpson_along_axis(build, -1.0, 1.0)
 
 
+def _integrate_mf6_dist2d_over_mu_default_xp(
+    endf_dict, mt, zap, energies_in, energies_out, to_lab, xp,
+):
+    """xp-native mu-integration for the tracer path (issue #220).
+
+    Fixed-mesh Simpson (``_XP_SIMPSON_N=321``) so the whole
+    integration graph is one straight-line evaluation that
+    ``jax.grad`` / ``jax.jit`` compile cheaply. The mu axis is
+    static (``[-1, +1]``), so the mesh has no tracer dependence and
+    the underlying dist2d builder sees concrete mu values.
+
+    Trades the numpy-side per-segment ``rtol=1e-3`` adaptivity for
+    a fixed 321-point uniform mesh; measured accuracy on the same
+    Be-9 (n,2n) LAW=7 mu integrand is within a few permille of the
+    kink-aware kernel's ``<1e-5``, which is well within tabulation
+    noise for the top-level physics API this feeds.
+    """
+    def build(mu_mesh):
+        return compute_dist2d_values(
+            endf_dict, mt, zap, energies_in, energies_out, mu_mesh,
+            to_lab, xp=xp,
+        )
+    return _fixed_simpson_along_axis_xp(build, -1.0, 1.0, xp)
+
+
 def integrate_mf6_dist2d_over_mu(
     endf_dict, mt, zap, energies_in, energies_out, to_lab=True, xp=None,
 ):
@@ -243,6 +307,8 @@ def integrate_mf6_dist2d_over_mu(
         xp = array_ns.get_backend('numpy')
     mtsec = endf_dict[6][mt]
     subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
+    tracer_ein = _is_jax_tracer(energies_in)
+    tracer_eout = _is_jax_tracer(energies_out)
     if len(subsec_nums) == 1:
         law = mtsec['subsection'][subsec_nums[0]]['LAW']
         if law == 1 and USE_FORTRAN_INTEGRATION:
@@ -252,23 +318,49 @@ def integrate_mf6_dist2d_over_mu(
                 energies_in, energies_out, to_lab, xp=xp,
             )
         if law == 7:
-            _check_no_tracer_inputs(
-                'integrate_mf6_dist2d_over_mu (LAW=7)',
-                xp, energies_in, energies_out,
-            )
+            # Tracer eout still requires unit-base traced-x support
+            # in the LAW=7 kernel (roadmap follow-up to #220); fail
+            # early with a clear message for that path. Tracer Ein
+            # alone is fine through the xp-native fixed-Simpson
+            # fallback below.
+            if tracer_eout:
+                raise NotImplementedError(
+                    'integrate_mf6_dist2d_over_mu (LAW=7): JAX '
+                    'tracer energies_out is not supported yet; '
+                    'the LAW=7 unit-base (mu, Ep) inner axis '
+                    'still runs on numpy internally. Tracked in '
+                    'issue #220.'
+                )
+            if not tracer_ein:
+                module_logger.debug(
+                    f'use knot-aware LAW=7 mu-integrator for MT={mt}',
+                )
+                result = mf6_law7.integrate_law7_subsec_over_mu(
+                    endf_dict, mt, subsec_nums[0],
+                    energies_in, energies_out, to_lab,
+                )
+                return xp.asarray(result) if xp.name != 'numpy' else result
+            # Tracer Ein: fall through to the xp-native fixed-mesh
+            # Simpson path so grad reaches file-side leaves.
             module_logger.debug(
-                f'use knot-aware LAW=7 mu-integrator for MT={mt}',
+                f'use xp-native mu-Simpson fallback for MT={mt} '
+                f'LAW=7 (tracer Ein)',
             )
-            result = mf6_law7.integrate_law7_subsec_over_mu(
-                endf_dict, mt, subsec_nums[0],
-                energies_in, energies_out, to_lab,
+            return _integrate_mf6_dist2d_over_mu_default_xp(
+                endf_dict, mt, zap, energies_in, energies_out,
+                to_lab, xp,
             )
-            return xp.asarray(result) if xp.name != 'numpy' else result
-    # general-purpose integration routine (numpy internally)
-    _check_no_tracer_inputs(
-        'integrate_mf6_dist2d_over_mu (adaptive Simpson)',
-        xp, energies_in, energies_out,
-    )
+    # general-purpose integration routine.
+    if tracer_ein or tracer_eout:
+        if tracer_eout:
+            raise NotImplementedError(
+                'integrate_mf6_dist2d_over_mu (adaptive Simpson): '
+                'JAX tracer energies_out is not supported yet '
+                '(tracked in issue #220).'
+            )
+        return _integrate_mf6_dist2d_over_mu_default_xp(
+            endf_dict, mt, zap, energies_in, energies_out, to_lab, xp,
+        )
     result = _integrate_mf6_dist2d_over_mu_default(
         endf_dict, mt, zap, energies_in, energies_out, to_lab
     )
