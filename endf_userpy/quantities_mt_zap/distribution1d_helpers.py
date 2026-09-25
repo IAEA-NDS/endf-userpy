@@ -318,20 +318,7 @@ def integrate_mf6_dist2d_over_mu(
                 energies_in, energies_out, to_lab, xp=xp,
             )
         if law == 7:
-            # Tracer eout still requires unit-base traced-x support
-            # in the LAW=7 kernel (roadmap follow-up to #220); fail
-            # early with a clear message for that path. Tracer Ein
-            # alone is fine through the xp-native fixed-Simpson
-            # fallback below.
-            if tracer_eout:
-                raise NotImplementedError(
-                    'integrate_mf6_dist2d_over_mu (LAW=7): JAX '
-                    'tracer energies_out is not supported yet; '
-                    'the LAW=7 unit-base (mu, Ep) inner axis '
-                    'still runs on numpy internally. Tracked in '
-                    'issue #220.'
-                )
-            if not tracer_ein:
+            if not (tracer_ein or tracer_eout):
                 module_logger.debug(
                     f'use knot-aware LAW=7 mu-integrator for MT={mt}',
                 )
@@ -340,11 +327,14 @@ def integrate_mf6_dist2d_over_mu(
                     energies_in, energies_out, to_lab,
                 )
                 return xp.asarray(result) if xp.name != 'numpy' else result
-            # Tracer Ein: fall through to the xp-native fixed-mesh
-            # Simpson path so grad reaches file-side leaves.
+            # Tracer Ein OR tracer Ep: fall through to the xp-native
+            # fixed-mesh Simpson path so grad reaches file-side and
+            # query-side leaves. Tracer Ep is now supported via the
+            # LAW=7 kernel's unit-base traced-x branch (issue #220
+            # PR 4).
             module_logger.debug(
                 f'use xp-native mu-Simpson fallback for MT={mt} '
-                f'LAW=7 (tracer Ein)',
+                f'LAW=7 (tracer Ein/Ep)',
             )
             return _integrate_mf6_dist2d_over_mu_default_xp(
                 endf_dict, mt, zap, energies_in, energies_out,

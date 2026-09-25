@@ -20,11 +20,13 @@ neutron-emission side. Nb-93 (adhoc corpus) for the resonance
 composition path in ``get_reaction_xs`` with
 ``include_resonance=True``.
 
-Known Phase 5 gap: issue #220 tracks the tracer-materialisation
-in the internal mu / Ep integration primitives of the top-level
-distribution API. Six configurations below are currently skipped
-via ``pytest.skip``; when #220 is fixed they should flip to
-positive assertions (see the comments on each skip).
+All ten configurations now assert on the actual numeric grad
+value (issue #220 fully closed across PRs 1-4). The Ep-axis
+tests for Be-9 (n,2n) rely on the fact that the file's inner
+Ep interp is INT=1 (histogram), so analytic grad is exactly zero
+in each bracket and FD is zero when the stencil doesn't cross a
+bracket boundary; the tracer-Ep pin still exercises the grad
+plumbing.
 """
 from __future__ import annotations
 
@@ -46,7 +48,7 @@ from endf_userpy.quantities import (
 )
 from endf_userpy.primitives import array_ns
 
-from _corpus import resolve_nb93
+from _corpus import resolve_nb93, resolve_h2
 
 
 DATA_DIR = Path(__file__).parent / 'data'
@@ -61,6 +63,18 @@ def be9_endf_dict():
     return EndfParserCpp(ignore_missing_tpid=True).parsefile(
         str(DATA_DIR / 'n-004_Be_009.endf'),
     )
+
+
+@pytest.fixture(scope='module')
+def h2_endf_dict():
+    """JEFF-4.0 H-2 (n,2n) MT16 uses MF6 LAW=7 with INT=2 (lin-lin)
+    on the inner Ep axis, which stresses the unit-base traced-x
+    branch more than Be-9 (n,2n)'s INT=1 histogram (issue #220
+    PR 4 evidence)."""
+    path = resolve_h2()
+    if path is None:
+        pytest.skip('H-2 corpus not present (fetch.sh)')
+    return EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
 
 
 @pytest.fixture(scope='module')
@@ -176,14 +190,6 @@ def test_get_particle_production_xs_grad_wrt_E(be9_endf_dict):
 # -------------------------------------------------------------------
 
 
-def _tracer_exc():
-    # After the #220 first-pass fix, the affected code paths raise
-    # NotImplementedError early with a clear message instead of
-    # letting the confusing TracerArrayConversionError surface
-    # deep in the numpy integrator.
-    return NotImplementedError
-
-
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
 def test_get_particle_production_dxs_dE_grad_wrt_E(be9_endf_dict):
     """``jax.grad(get_particle_production_dxs_dE)(E)`` end-to-end for
@@ -214,8 +220,17 @@ def test_get_particle_production_dxs_dE_grad_wrt_E(be9_endf_dict):
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_get_particle_production_dxs_dE_grad_wrt_Ep_currently_raises(be9_endf_dict):
-    """Regression pin for Phase 5 finding #220."""
+def test_get_particle_production_dxs_dE_grad_wrt_Ep(be9_endf_dict):
+    """``jax.grad(get_particle_production_dxs_dE)(Ep)`` for Be-9
+    (n,2n) neutron production, integrated over mu. The MF6 LAW=7
+    subsection's inner Ep interp for Be-9 (n,2n) is INT=1
+    (histogram / piecewise constant), so the analytic derivative
+    wrt Ep is exactly zero in the interior of each histogram
+    bracket and the 5-point FD stencil with a small h stays inside
+    one bracket -- both drop below ``atol=1e-6``. What this pins
+    is that the LAW=7 unit-base traced-x branch (issue #220 PR 4)
+    lets grad flow through the query Ep axis without materialising
+    the tracer."""
     import jax
     import jax.numpy as jnp
     xp_jx = array_ns.get_backend('jax')
@@ -229,8 +244,11 @@ def test_get_particle_production_dxs_dE_grad_wrt_Ep_currently_raises(be9_endf_di
                 ein, jnp.array([Ep_scalar]), xp=xp_jx,
             ).sum()
 
-    with pytest.raises(_tracer_exc()):
-        jax.grad(loss)(jnp.array(1.5e6))
+    for Ep_val in (2.5e5, 8e5, 2.3e6):
+        grad = float(jax.grad(loss)(jnp.array(Ep_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), Ep_val, Ep_val * 1e-4)
+        assert np.isfinite(grad)
+        np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
 
 
 # -------------------------------------------------------------------
@@ -323,8 +341,13 @@ def test_get_particle_production_ddxs_grad_wrt_E(be9_endf_dict):
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_get_particle_production_ddxs_grad_wrt_Ep_currently_raises(be9_endf_dict):
-    """Regression pin for Phase 5 finding #220."""
+def test_get_particle_production_ddxs_grad_wrt_Ep(be9_endf_dict):
+    """``jax.grad(get_particle_production_ddxs)(Ep)`` for Be-9
+    (n,2n). Same INT=1 histogram semantics on the inner Ep axis
+    as ``dxs_dE_grad_wrt_Ep``: analytic derivative is exactly zero
+    in each histogram bracket, and the FD stencil stays within one
+    bracket at these Ep values. The test pins the tracer-Ep flow
+    through the LAW=7 unit-base kernel (issue #220 PR 4)."""
     import jax
     import jax.numpy as jnp
     xp_jx = array_ns.get_backend('jax')
@@ -339,13 +362,23 @@ def test_get_particle_production_ddxs_grad_wrt_Ep_currently_raises(be9_endf_dict
                 ein, jnp.array([Ep_scalar]), mu, xp=xp_jx,
             ).sum()
 
-    with pytest.raises(_tracer_exc()):
-        jax.grad(loss)(jnp.array(1.5e6))
+    for Ep_val in (2.5e5, 8e5, 2.3e6):
+        grad = float(jax.grad(loss)(jnp.array(Ep_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), Ep_val, Ep_val * 1e-4)
+        assert np.isfinite(grad)
+        np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_get_particle_production_ddxs_grad_wrt_mu_currently_raises(be9_endf_dict):
-    """Regression pin for Phase 5 finding #220."""
+def test_get_particle_production_ddxs_grad_wrt_mu(be9_endf_dict):
+    """``jax.grad(get_particle_production_ddxs)(mu)`` for Be-9
+    (n,2n). Non-knot mu values are chosen intentionally: LAW=7's
+    mu tabulation for this subsection is on a 0.1-spaced grid, so
+    any mu at a knot is a piecewise-linear kink where FD picks up
+    a jump the analytic one-sided derivative does not. Away from
+    the knots both agree to double precision. Pins that tracer
+    mu flows through the LAW=7 unit-base traced-x branch
+    (issue #220 PR 4)."""
     import jax
     import jax.numpy as jnp
     xp_jx = array_ns.get_backend('jax')
@@ -360,5 +393,74 @@ def test_get_particle_production_ddxs_grad_wrt_mu_currently_raises(be9_endf_dict
                 ein, eout, jnp.array([mu_scalar]), xp=xp_jx,
             ).sum()
 
-    with pytest.raises(_tracer_exc()):
-        jax.grad(loss)(jnp.array(0.3))
+    for mu_val in (-0.53, 0.05, 0.34):
+        grad = float(jax.grad(loss)(jnp.array(mu_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), mu_val, 1e-4)
+        assert np.isfinite(grad)
+        np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
+
+
+# -------------------------------------------------------------------
+# LAW=7 with INT=2 inner Ep interp -- stronger check than the Be-9
+# (n,2n) pins above (which use INT=1 histogram, so grad is trivially
+# zero in each bracket). JEFF-4.0 H-2 (n,2n) uses lin-lin (INT=2)
+# on the inner Ep axis, and its LAW=7 unit-base transform gives a
+# smooth analytic derivative on both Ep and mu (away from mu knots)
+# that agrees with the FD reference to full float precision.
+# -------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_get_particle_production_ddxs_grad_wrt_Ep_h2_int2(h2_endf_dict):
+    """H-2 (n,2n) MF6 LAW=7 has INT=2 (lin-lin) on the inner Ep
+    axis, so the analytic grad wrt Ep is smooth and non-zero away
+    from bracket boundaries. FD-checked to double precision."""
+    import jax
+    import jax.numpy as jnp
+    xp_jx = array_ns.get_backend('jax')
+    ein = jnp.array([15e6])
+    mu = jnp.linspace(-0.9, 0.9, 9)
+
+    def loss(Ep_scalar):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return get_particle_production_ddxs(
+                h2_endf_dict, '(n,2n)', 'n',
+                ein, jnp.array([Ep_scalar]), mu, xp=xp_jx,
+            ).sum()
+
+    for Ep_val in (5e5, 5e6, 8e6):
+        grad = float(jax.grad(loss)(jnp.array(Ep_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), Ep_val, Ep_val * 1e-4)
+        assert np.isfinite(grad)
+        # Loose tolerance around Ep values that could straddle a
+        # bracket boundary at the requested h; atol handles the
+        # near-zero regime where FD noise dominates.
+        np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-14)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_get_particle_production_ddxs_grad_wrt_mu_h2_int2(h2_endf_dict):
+    """H-2 (n,2n) MF6 LAW=7 grad wrt mu. Unit-base with lin-lin
+    outer mu INT gives smooth analytic grad on the mu interior;
+    picking mu values away from the tabulated mu knots keeps FD
+    exact to double precision."""
+    import jax
+    import jax.numpy as jnp
+    xp_jx = array_ns.get_backend('jax')
+    ein = jnp.array([15e6])
+    eout = jnp.linspace(1e5, 8e6, 10)
+
+    def loss(mu_scalar):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return get_particle_production_ddxs(
+                h2_endf_dict, '(n,2n)', 'n',
+                ein, eout, jnp.array([mu_scalar]), xp=xp_jx,
+            ).sum()
+
+    for mu_val in (-0.63, 0.05, 0.34, 0.72):
+        grad = float(jax.grad(loss)(jnp.array(mu_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), mu_val, 1e-4)
+        assert np.isfinite(grad)
+        np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-12)

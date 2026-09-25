@@ -709,7 +709,60 @@ def _interp_tab2_traced_x(
         interp_type = int(interp_arr_np[p])
         curtab1 = tab1_records[p]
         curtab2 = tab1_records[p + 1]
-        if per_x_y:
+        if 21 <= interp_type <= 25:
+            # Unit-base traced-x path (roadmap #198 / issue #220
+            # PR 4): match the numpy branch's
+            # ``determine_unit_base_coordinates`` transform with
+            # per-x scalar broadcasting, then reuse the per-x-y
+            # outer 2pt interp with the derived non-unit-base code
+            # ``interp_type - 20``. Per-panel ``y_min`` / ``y_max``
+            # are static file constants (materialised to Python
+            # floats) so the unit-base arithmetic stays inside the
+            # xp graph on x, y and the inner ``interp_tab1``
+            # samples. LAW=7 is the primary use.
+            y1_np = np.asarray(curtab1[yp_name], dtype=float)
+            y2_np = np.asarray(curtab2[yp_name], dtype=float)
+            y1_min = float(y1_np.min())
+            y1_max = float(y1_np.max())
+            y2_min = float(y2_np.min())
+            y2_max = float(y2_np.max())
+            y1_delta = y1_max - y1_min
+            y2_delta = y2_max - y2_min
+            rx = (x_col - x1) / (x2 - x1)                       # (n_x, 1)
+            y_lo = y1_min + rx * (y2_min - y1_min)              # (n_x, 1)
+            y_hi = y1_max + rx * (y2_max - y1_max)              # (n_x, 1)
+            y_delta_col = y_hi - y_lo                           # (n_x, 1)
+            # Safe divide guard for degenerate panels where
+            # ``y_delta_col`` collapses. In-panel mask below will
+            # discard these rows anyway; the guard just keeps the
+            # arithmetic finite everywhere for jax.
+            _safe = xp.where(y_delta_col != 0.0, y_delta_col, 1.0)
+            if per_x_y:
+                y_arr = y_xp                                    # (n_x, n_y)
+            else:
+                y_arr = xp.broadcast_to(
+                    y_xp[0].reshape(1, -1), (n_x, n_y),
+                )
+            ry = (y_arr - y_lo) / _safe                         # (n_x, n_y)
+            cur_y1 = y1_min + ry * y1_delta                     # (n_x, n_y)
+            cur_y2 = y2_min + ry * y2_delta                     # (n_x, n_y)
+            jac1 = y1_delta / _safe                             # (n_x, 1)
+            jac2 = y2_delta / _safe                             # (n_x, 1)
+            f1_flat = interp_tab1(
+                cur_y1.reshape(-1), curtab1, yp_name, fp_name,
+                outside_value, xp=xp,
+            )
+            f2_flat = interp_tab1(
+                cur_y2.reshape(-1), curtab2, yp_name, fp_name,
+                outside_value, xp=xp,
+            )
+            f1_row = f1_flat.reshape(n_x, n_y) * jac1           # (n_x, n_y)
+            f2_row = f2_flat.reshape(n_x, n_y) * jac2
+            eff_interp = interp_type - 20
+            block = _outer_2pt_row(
+                eff_interp, x_col, x1, x2, f1_row, f2_row,
+            )
+        elif per_x_y:
             # y varies per x (e.g. LAW=2 LCT=2 with per-Ein CM mu).
             # Flatten to a single 1-D interp call, then reshape.
             y_flat = y_xp.reshape(-1)                          # (n_x * n_y,)
