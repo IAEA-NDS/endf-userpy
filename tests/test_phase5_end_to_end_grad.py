@@ -239,10 +239,12 @@ def test_get_particle_production_dxs_dE_grad_wrt_Ep_currently_raises(be9_endf_di
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_get_particle_production_dxs_dmu_grad_wrt_E_currently_raises(be9_endf_dict):
-    """Regression pin for Phase 5 finding #220. Uses (n,g)/g since
-    (n,n)/n through get_particle_production_dxs_dmu returns None
-    (elastic isn't a "production" reaction)."""
+def test_get_particle_production_dxs_dmu_grad_wrt_E(be9_endf_dict):
+    """``jax.grad(get_particle_production_dxs_dmu)(E)`` for Be-9
+    (n,g)/g. MF14 LI=1 (fully isotropic) here so the FD reference
+    is exact; what this test guards is that ``jax.grad`` flows
+    through the MF14 + MF12 yield-weighted angular distribution
+    without materialising the tracer Ein axis (issue #220 PR 3)."""
     import jax
     import jax.numpy as jnp
     xp_jx = array_ns.get_backend('jax')
@@ -256,13 +258,20 @@ def test_get_particle_production_dxs_dmu_grad_wrt_E_currently_raises(be9_endf_di
                 jnp.array([E_scalar]), mu, xp=xp_jx,
             ).sum()
 
-    with pytest.raises(_tracer_exc()):
-        jax.grad(loss)(jnp.array(1e6))
+    for E_val in (1e5, 1e6, 1e7):
+        grad = float(jax.grad(loss)(jnp.array(E_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), E_val, E_val * 1e-4)
+        assert np.isfinite(grad)
+        np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_get_particle_production_dxs_dmu_grad_wrt_mu_currently_raises(be9_endf_dict):
-    """Regression pin for Phase 5 finding #220."""
+def test_get_particle_production_dxs_dmu_grad_wrt_mu(be9_endf_dict):
+    """``jax.grad(get_particle_production_dxs_dmu)(mu)`` for Be-9
+    (n,g)/g. MF14 LI=1 (isotropic) makes the analytical grad
+    exactly zero at every mu; the test still exercises the
+    tracer-mu path end-to-end through the MF14 branch (issue #220
+    PR 3)."""
     import jax
     import jax.numpy as jnp
     xp_jx = array_ns.get_backend('jax')
@@ -276,8 +285,11 @@ def test_get_particle_production_dxs_dmu_grad_wrt_mu_currently_raises(be9_endf_d
                 ein, jnp.array([mu_scalar]), xp=xp_jx,
             ).sum()
 
-    with pytest.raises(_tracer_exc()):
-        jax.grad(loss)(jnp.array(0.3))
+    for mu_val in (-0.5, 0.0, 0.5):
+        grad = float(jax.grad(loss)(jnp.array(mu_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), mu_val, 1e-4)
+        assert np.isfinite(grad)
+        np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
 
 
 # -------------------------------------------------------------------
