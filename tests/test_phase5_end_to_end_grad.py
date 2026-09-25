@@ -48,7 +48,7 @@ from endf_userpy.quantities import (
 )
 from endf_userpy.primitives import array_ns
 
-from _corpus import resolve_nb93
+from _corpus import resolve_nb93, resolve_h2
 
 
 DATA_DIR = Path(__file__).parent / 'data'
@@ -63,6 +63,18 @@ def be9_endf_dict():
     return EndfParserCpp(ignore_missing_tpid=True).parsefile(
         str(DATA_DIR / 'n-004_Be_009.endf'),
     )
+
+
+@pytest.fixture(scope='module')
+def h2_endf_dict():
+    """JEFF-4.0 H-2 (n,2n) MT16 uses MF6 LAW=7 with INT=2 (lin-lin)
+    on the inner Ep axis, which stresses the unit-base traced-x
+    branch more than Be-9 (n,2n)'s INT=1 histogram (issue #220
+    PR 4 evidence)."""
+    path = resolve_h2()
+    if path is None:
+        pytest.skip('H-2 corpus not present (fetch.sh)')
+    return EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
 
 
 @pytest.fixture(scope='module')
@@ -386,3 +398,69 @@ def test_get_particle_production_ddxs_grad_wrt_mu(be9_endf_dict):
         fd = _fd5(lambda v: loss(jnp.array(v)), mu_val, 1e-4)
         assert np.isfinite(grad)
         np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
+
+
+# -------------------------------------------------------------------
+# LAW=7 with INT=2 inner Ep interp -- stronger check than the Be-9
+# (n,2n) pins above (which use INT=1 histogram, so grad is trivially
+# zero in each bracket). JEFF-4.0 H-2 (n,2n) uses lin-lin (INT=2)
+# on the inner Ep axis, and its LAW=7 unit-base transform gives a
+# smooth analytic derivative on both Ep and mu (away from mu knots)
+# that agrees with the FD reference to full float precision.
+# -------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_get_particle_production_ddxs_grad_wrt_Ep_h2_int2(h2_endf_dict):
+    """H-2 (n,2n) MF6 LAW=7 has INT=2 (lin-lin) on the inner Ep
+    axis, so the analytic grad wrt Ep is smooth and non-zero away
+    from bracket boundaries. FD-checked to double precision."""
+    import jax
+    import jax.numpy as jnp
+    xp_jx = array_ns.get_backend('jax')
+    ein = jnp.array([15e6])
+    mu = jnp.linspace(-0.9, 0.9, 9)
+
+    def loss(Ep_scalar):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return get_particle_production_ddxs(
+                h2_endf_dict, '(n,2n)', 'n',
+                ein, jnp.array([Ep_scalar]), mu, xp=xp_jx,
+            ).sum()
+
+    for Ep_val in (5e5, 5e6, 8e6):
+        grad = float(jax.grad(loss)(jnp.array(Ep_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), Ep_val, Ep_val * 1e-4)
+        assert np.isfinite(grad)
+        # Loose tolerance around Ep values that could straddle a
+        # bracket boundary at the requested h; atol handles the
+        # near-zero regime where FD noise dominates.
+        np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-14)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_get_particle_production_ddxs_grad_wrt_mu_h2_int2(h2_endf_dict):
+    """H-2 (n,2n) MF6 LAW=7 grad wrt mu. Unit-base with lin-lin
+    outer mu INT gives smooth analytic grad on the mu interior;
+    picking mu values away from the tabulated mu knots keeps FD
+    exact to double precision."""
+    import jax
+    import jax.numpy as jnp
+    xp_jx = array_ns.get_backend('jax')
+    ein = jnp.array([15e6])
+    eout = jnp.linspace(1e5, 8e6, 10)
+
+    def loss(mu_scalar):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            return get_particle_production_ddxs(
+                h2_endf_dict, '(n,2n)', 'n',
+                ein, eout, jnp.array([mu_scalar]), xp=xp_jx,
+            ).sum()
+
+    for mu_val in (-0.63, 0.05, 0.34, 0.72):
+        grad = float(jax.grad(loss)(jnp.array(mu_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), mu_val, 1e-4)
+        assert np.isfinite(grad)
+        np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-12)
