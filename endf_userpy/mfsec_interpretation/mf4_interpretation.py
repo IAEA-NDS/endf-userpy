@@ -143,6 +143,22 @@ def compute_angdist_from_tabulated(
 def compute_angdist_from_mixed(
     endf_dict, mt, energies, angle_cosines, xp=None,
 ):
+    """MF4 LTT=3 mixed Legendre + tabulated: evaluate the Legendre
+    branch below the break energy and the tabulated branch at or
+    above it, then select per-query with ``xp.where``.
+
+    Both branches are evaluated on the FULL query grid (with
+    ``outside_value=0.0`` so the branch that does not own a query
+    contributes zero at that query) and the selection uses only
+    xp operations, so ``jax.grad`` on a tracer ``energies`` flows
+    through cleanly (issue #201 remaining half). The 2x
+    per-query work vs the pre-fix branch-index scatter is a
+    small constant factor and only bites when both branches
+    would otherwise be dominated by dead work; on typical MF4
+    LTT=3 files the Legendre branch is far cheaper than the
+    tabulated one it complements so the doubling is not
+    measurable in practice.
+    """
     if xp is None:
         xp = array_ns.get_backend('numpy')
     mf4sec = endf_dict[4][mt]
@@ -162,40 +178,35 @@ def compute_angdist_from_mixed(
     int_arr2 = np.array(mf4sec['ang_int']['INT'])
     tab1_records = list(mf4sec['angtable'].values())
     assert num_ens2 == len(tab1_records)
-    # Split queries at the file-side break energy. `is_lower` is a
-    # concrete numpy bool over the query axis; for query-energy
-    # autodiff you would need to trace this branch, which is out of
-    # scope for issue #169's dict-first port.
     break_energy = float(en_mesh[num_ens1 - 1])
+
+    energies_xp = xp.asarray(energies)
+    n_e = int(energies_xp.shape[0])
     mu = angle_cosines
-    mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
-    energies_np = np.asarray(energies)
-    is_lower = energies_np < break_energy
-    energies_lower = energies_np[is_lower]
-    mu_lower = mu[is_lower, :]
-    f_lower = evaluate_interp_legendre_polynomials(
-        energies_lower, mu_lower, en_mesh1, coeffs_arr,
-        int_arr1, nbt_arr1, xp=xp,
+    if mu.ndim == 1:
+        mu = mu.reshape(1, -1)
+    n_mu = int(mu.shape[1])
+    # Broadcast mu to (n_e, n_mu) so both branches see one shape.
+    if mu.shape[0] == 1:
+        mu = xp.broadcast_to(mu, (n_e, n_mu))
+
+    # Legendre branch: zero outside ``en_mesh1``. For queries at or
+    # above ``break_energy`` this returns 0 and the ``xp.where``
+    # below drops it. Under xp=jax with a tracer ``energies``, this
+    # call routes through ``evaluate_interp_legendre_polynomials``'s
+    # traced-x path (verified in PR #234 pins).
+    f_lower_full = evaluate_interp_legendre_polynomials(
+        energies_xp, mu, en_mesh1, coeffs_arr,
+        int_arr1, nbt_arr1, outside_value=0.0, xp=xp,
     )
-    energies_upper = energies_np[~is_lower]
-    mu_upper = mu[~is_lower, :]
-    f_upper = interp_tab2(
-        energies_upper, mu_upper, en_mesh2, int_arr2, nbt_arr2,
-        tab1_records, 'mu', 'f', xp=xp,
+    # Tabulated branch: zero outside ``en_mesh2``. For queries below
+    # ``break_energy`` this returns 0.
+    f_upper_full = interp_tab2(
+        energies_xp, mu, en_mesh2, int_arr2, nbt_arr2,
+        tab1_records, 'mu', 'f', outside_value=0.0, xp=xp,
     )
-    # Assemble the result. Under xp=jax we scatter with `.at[].set()`;
-    # on numpy we use ordinary boolean indexing.
-    n_out = (len(energies_np), mu.shape[1])
-    f = xp.zeros(n_out, dtype=f_lower.dtype)
-    lower_idx = np.where(is_lower)[0]
-    upper_idx = np.where(~is_lower)[0]
-    if xp.name == 'jax':
-        f = f.at[lower_idx].set(f_lower)
-        f = f.at[upper_idx].set(f_upper)
-    else:
-        f[is_lower] = f_lower
-        f[~is_lower] = f_upper
-    return f
+    is_lower = (energies_xp < break_energy).reshape(-1, 1)
+    return xp.where(is_lower, f_lower_full, f_upper_full)
 
 
 def _compute_r2(endf_dict, mt, energies, xp=None):
