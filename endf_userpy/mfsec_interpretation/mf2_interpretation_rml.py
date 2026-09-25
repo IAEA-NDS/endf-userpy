@@ -52,6 +52,10 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..primitives import tab1
+from . import mf2_interpretation_factors as factors
+
+
+_EPS = 1e-38
 
 
 @dataclass
@@ -221,13 +225,358 @@ class RMLData:
         return int(self.ch_ppi.shape[1])
 
 
-def reconstruct(*args, **kwargs):
-    """Placeholder. The array-agnostic KRM=3 Reich-Moore
-    reconstruction is planned for a follow-up PR (see the arc
-    outline in this module's docstring)."""
-    raise NotImplementedError(
-        'MF2 LRF=7 (R-Matrix Limited) reconstruction is not yet '
-        'implemented. The preprocessor and dataclass landed first '
-        '(this PR); the KRM=3 Reich-Moore reconstruction is the '
-        'next PR in the arc. Tracked under the LRF=7 roadmap item.'
+def _signed_sqrt(x, xp):
+    """``sign(x) * sqrt(|x|)``. Zero-safe reduced-width amplitude
+    from a signed width."""
+    ax = xp.abs(x)
+    return xp.sign(x) * xp.sqrt(ax)
+
+
+def _put_2d(mat, i, j, val, xp):
+    """``mat[:, i, j] = val`` backend-agnostically. Copy for numpy,
+    ``.at[]`` for JAX."""
+    if getattr(xp, 'name', None) == 'jax':
+        return mat.at[:, i, j].set(val)
+    mat = mat.copy()
+    mat[:, i, j] = val
+    return mat
+
+
+def _put_col(mat, j, val, xp):
+    """``mat[:, j] = val`` backend-agnostically."""
+    if getattr(xp, 'name', None) == 'jax':
+        return mat.at[:, j].set(val)
+    mat = mat.copy()
+    mat[:, j] = val
+    return mat
+
+
+def _channel_kind(data: RMLData, ppi: int) -> str:
+    """Classify a channel by its particle-pair index (1-based).
+
+    - ``'gamma'`` if the pair has particle-A mass 0 (radiation).
+      Eliminated in the KRM=3 Reich-Moore approximation.
+    - ``'fission'`` if the pair's MT is 18 (or the pair's PNT is
+      ``-1`` with a non-gamma mass — kept for future coverage).
+    - ``'elastic'`` if the pair's MT is 2.
+    - ``'other'`` for everything else (inelastic to excited
+      levels, charged particle exit, ...); the initial scope
+      routes these through the particle branch with the standard
+      elastic-k penetration, which is not the correct kinematics
+      in general.  Files that need non-elastic particle channels
+      are out of scope for this arc.
+    """
+    ma = float(data.pp_ma[ppi - 1])
+    mt = int(round(float(data.pp_mt[ppi - 1])))
+    if ma == 0.0:
+        return 'gamma'
+    if mt == 18:
+        return 'fission'
+    if mt == 2:
+        return 'elastic'
+    return 'other'
+
+
+def _classify_group_channels(data: RMLData, g: int):
+    """Return ``(kind_list, particle_channels, gamma_channels,
+    elastic_slot)`` for group ``g``.
+
+    - ``kind_list``: per-slot channel kind, length ``max_nch`` (the
+      padded per-channel array width). Padded slots carry
+      ``'padded'``.
+    - ``particle_channels``: list of 0-based slot indices that are
+      explicit in the R-matrix (elastic, fission, other).
+    - ``gamma_channels``: list of 0-based slot indices that are
+      eliminated (radiation).
+    - ``elastic_slot``: index (into ``particle_channels``) of the
+      elastic channel that carries the incident wave. When a group
+      has more than one elastic channel (different (L, S) coupling
+      to the same J), the FIRST one in the padded layout is
+      chosen; multi-elastic-channel groups fall through the
+      standard sum-over-elastic-channels aggregation in the
+      caller.
+    """
+    max_nch = data.max_nch()
+    nch_true = int(data.group_nch[g])
+    kinds = []
+    particle = []
+    gamma = []
+    for c in range(max_nch):
+        if c >= nch_true:
+            kinds.append('padded')
+            continue
+        ppi = int(round(float(data.ch_ppi[g, c])))
+        kind = _channel_kind(data, ppi)
+        kinds.append(kind)
+        if kind == 'gamma':
+            gamma.append(c)
+        else:
+            particle.append(c)
+    elastic_slot = None
+    for i, c in enumerate(particle):
+        if kinds[c] == 'elastic':
+            elastic_slot = i
+            break
+    if elastic_slot is None:
+        raise ValueError(
+            f'LRF=7 group {g} has no elastic (MT=2) channel — '
+            f'kinds seen: {kinds[:nch_true]}. Non-elastic-incident '
+            f'groups are out of the initial scope of this arc.'
+        )
+    return kinds, particle, gamma, elastic_slot
+
+
+def _pair_uses_penetration(data: RMLData, ppi: int) -> bool:
+    """Whether the reconstruction should compute ``P_L(rho)`` for
+    the pair. False for gamma / fission / any ``PNT=-1`` pair;
+    True for elastic-like massive pairs."""
+    if _channel_kind(data, ppi) in ('gamma', 'fission'):
+        return False
+    pnt = int(round(float(data.pp_pnt[ppi - 1])))
+    if pnt == -1:
+        return False
+    return True
+
+
+def _reconstruct_group(
+    data: RMLData, g: int, e_safe, e_pos, pi_k2, xp,
+):
+    """Reconstruct one J-group's contribution to (elastic, capture,
+    fission).
+
+    Uses the KRM=3 Reich-Moore approximation: gamma channels are
+    eliminated by folding their reduced-width amplitudes into a
+    scalar ``Γ_γ_r`` per resonance that lives in the imaginary
+    part of the R-matrix denominator. The R-matrix operates only
+    over the particle channels.
+
+    Returns three ``(ne,)`` arrays: ``sct``, ``cap``, ``fis``,
+    each with the group's statistical weight and the ``π/k²``
+    prefactor already folded in.
+    """
+    kinds, particle, gamma, elastic_slot = _classify_group_channels(
+        data, g,
     )
+    npart = len(particle)
+    ne = int(e_safe.shape[0])
+
+    g_J = data.group_g[g]
+    ki = data.ki
+
+    res_er = data.res_er
+    res_group_arr = xp.asarray(data.res_group, dtype=xp.int32)
+    group_mask = (res_group_arr == g).astype(xp.float64)         # (nres,)
+    nres = int(res_er.shape[0])
+    if nres == 0:
+        z = xp.zeros_like(e_safe)
+        return z, z, z
+
+    # --- Per-channel P_c(E) and P_c(|E_r|), and phi_c(E) for
+    # phase-carrying channels. ---
+    # For the initial scope every channel uses the elastic-pair
+    # wavenumber ``ki`` (see `_channel_kind` docstring). Rho is
+    # computed per channel with its own APT (penetration) or APE
+    # (phase).
+    e_col = e_safe.reshape(-1, 1)                                 # (ne, 1)
+    er_row = res_er.reshape(1, -1)                                # (1, nres)
+    er_abs = xp.abs(res_er)                                        # (nres,)
+    sqrt_e = xp.sqrt(e_safe)                                       # (ne,)
+    sqrt_er = xp.sqrt(er_abs)                                      # (nres,)
+
+    # --- Per-resonance elimination sum: Γ_γ_r = 2 * Σ_{c ∈ gamma}
+    # γ_{r,c}^2 (P=1 convention for gamma channels). Equivalent to
+    # summing GAM values of gamma channels for each resonance
+    # (since γ^2 = |Γ| / (2 P) with P=1 for gamma; sign washes out
+    # of the sum because we square). ---
+    gam_full = data.res_gam                                        # (nres, max_nch)
+    gamma_gg = xp.zeros(nres, dtype=xp.float64)
+    for c in gamma:
+        gamma_gg = gamma_gg + xp.abs(gam_full[:, c])
+    # Mask out-of-group resonances so they don't contribute
+    # spuriously via the shared full-length arrays.
+    gamma_gg = gamma_gg * group_mask
+
+    # --- Particle channels: reduced-width amplitudes γ_{r,c}, phases. ---
+    # For each particle channel c: compute L, APT, APE, PNT-flag.
+    # gamma_pc[c] shape (nres,) is the reduced-width amplitude
+    # γ_{r, particle_channel_c} for that channel.
+    gamma_pc = []          # list of (nres,) per-particle-channel
+    p_e_list = []          # list of (ne,) per-particle-channel penetration
+    phase_list = []        # list of (ne,) per-particle-channel phi
+    for c in particle:
+        ppi = int(round(float(data.ch_ppi[g, c])))
+        L_c = int(round(float(data.ch_l[g, c])))
+        L_arr = xp.asarray(L_c)
+        apt_c = float(data.ch_apt[g, c])
+        ape_c = float(data.ch_ape[g, c])
+
+        # Rho at E and at |E_r|.
+        rho_e = ki * sqrt_e * apt_c                                # (ne,)
+        rho_r = ki * sqrt_er * apt_c                               # (nres,)
+        if _pair_uses_penetration(data, ppi):
+            p_e, _ = factors.pnt_shf(rho_e, L_arr, xp)
+            p_r, _ = factors.pnt_shf(rho_r, L_arr, xp)
+        else:
+            p_e = xp.ones_like(e_safe)
+            p_r = xp.ones_like(er_abs)
+        p_e_list.append(p_e)
+
+        # Hard-sphere phase only for elastic (particle A of pair is
+        # incident with non-zero charge/mass; fission gives zero
+        # scattering amplitude contribution).
+        if _channel_kind(data, ppi) == 'elastic':
+            rho_e_hat = ki * sqrt_e * ape_c
+            phi_c = factors.phase(rho_e_hat, L_arr, xp)
+        else:
+            phi_c = xp.zeros_like(e_safe)
+        phase_list.append(phi_c)
+
+        # Reduced-width amplitude γ_{r,c}.
+        denom = xp.where(p_r > _EPS, 2.0 * p_r, 1.0)
+        signed = _signed_sqrt(gam_full[:, c], xp)
+        gam_c = xp.where(
+            p_r > _EPS,
+            signed / xp.sqrt(denom),
+            signed / xp.sqrt(xp.asarray(2.0)),
+        )
+        # Mask out-of-group resonances.
+        gam_c = gam_c * group_mask
+        gamma_pc.append(gam_c)
+
+    # --- Build the R-matrix R_{cc'}(E) over particle channels only. ---
+    # Denominator: (E_r - E - i Γ_γ_r / 2), broadcast (ne, nres).
+    gg_row = gamma_gg.reshape(1, -1)                               # (1, nres)
+    denom_er = (er_row - e_col) - 1j * 0.5 * gg_row                # (ne, nres)
+    inv_denom = 1.0 / denom_er
+
+    R = xp.zeros((ne, npart, npart), dtype=xp.complex128)
+    for a in range(npart):
+        for b in range(a, npart):
+            w = (gamma_pc[a] * gamma_pc[b]).reshape(1, -1)          # (1, nres)
+            R_ab = xp.sum(w * inv_denom, axis=1)                    # (ne,)
+            R = _put_2d(R, a, b, R_ab, xp)
+            if b != a:
+                R = _put_2d(R, b, a, R_ab, xp)
+
+    # --- W = I - i R P, X = W^{-1} R. ---
+    P_diag = xp.zeros((ne, npart), dtype=xp.float64)
+    for a in range(npart):
+        P_diag = _put_col(P_diag, a, p_e_list[a], xp)
+    RP = R * P_diag.reshape(ne, 1, npart)                          # (ne, npart, npart)
+    I_ = xp.eye(npart, dtype=xp.complex128).reshape(1, npart, npart)
+    W = I_ - 1j * RP
+    X = xp.linalg.solve(W, R)                                       # (ne, npart, npart)
+
+    # --- U-row for the elastic (incident) channel. ---
+    # U_{ec, c} = Ω_ec Ω_c [ δ_{ec, c} + 2 i sqrt(P_ec) sqrt(P_c) X_{ec, c} ]
+    # where Ω_c = exp(-i phi_c) for elastic-like channels and 1 for
+    # non-phase (fission) channels.
+    ec = elastic_slot
+    sqrt_pe_ec = xp.sqrt(p_e_list[ec])
+    phi_ec = phase_list[ec]
+    omega_ec = xp.exp(-1j * phi_ec)
+
+    U_row = xp.zeros((ne, npart), dtype=xp.complex128)
+    for c in range(npart):
+        sqrt_pe_c = xp.sqrt(p_e_list[c])
+        phi_c = phase_list[c]
+        omega_c = xp.exp(-1j * phi_c)
+        term = 2j * sqrt_pe_ec * sqrt_pe_c * X[:, ec, c]
+        if c == ec:
+            term = 1.0 + term
+        U_row = _put_col(U_row, c, omega_ec * omega_c * term, xp)
+
+    # --- Cross sections (Lane-Thomas). ---
+    U_ee = U_row[:, ec]
+    sct = pi_k2 * g_J * xp.abs(1.0 - U_ee) ** 2
+    sumsq = xp.abs(U_row) ** 2
+    sumsq_total = xp.sum(sumsq, axis=1)
+    fis_slots = [
+        i for i, c in enumerate(particle)
+        if kinds[c] == 'fission'
+    ]
+    if fis_slots:
+        sumsq_fis = xp.sum(
+            xp.stack([sumsq[:, i] for i in fis_slots], axis=1),
+            axis=1,
+        )
+    else:
+        sumsq_fis = xp.zeros_like(sumsq_total)
+    fis = pi_k2 * g_J * sumsq_fis
+    cap = pi_k2 * g_J * (1.0 - sumsq_total)
+
+    zero = xp.zeros_like(sct)
+    sct = xp.where(e_pos, sct, zero)
+    cap = xp.where(e_pos, cap, zero)
+    fis = xp.where(e_pos, fis, zero)
+    return sct, cap, fis
+
+
+def reconstruct(data: RMLData, energies_in, xp):
+    """KRM=3 R-Matrix Limited reconstruction (ENDF-6 LRF=7).
+
+    Returns a dict with keys ``sct``, ``cap``, ``fis``, ``pot``,
+    ``tot``, each of shape ``(len(energies_in),)``, in barn (using
+    the ``ki`` convention baked into :class:`RMLData`).
+
+    Parameters
+    ----------
+    data : RMLData
+        Preprocessed LRF=7 input for the range.
+    energies_in : array_like
+        Incident-neutron energies (eV, lab-frame).
+    xp : backend
+        As returned by :func:`endf_userpy.primitives.array_ns.get_backend`.
+        Numpy and JAX supported in this PR; numba routes through
+        a future sibling module.
+    """
+    if data.krm != 3:
+        raise NotImplementedError(
+            f'LRF=7 KRM={data.krm} not supported by this arc; '
+            f'only KRM=3 (Reich-Moore approximation) is '
+            f'implemented in the initial scope.'
+        )
+    e = xp.asarray(energies_in, dtype=xp.float64)
+    e_pos = e > 0.0
+    e_safe = xp.maximum(e, 0.0)
+    k_e2 = (data.ki ** 2) * e_safe                                # (ne,)
+    inv_k2 = xp.where(
+        e_pos, xp.pi / xp.where(k_e2 > 0, k_e2, 1.0), 0.0,
+    )
+    pi_k2 = data.abn * inv_k2                                     # (ne,)
+
+    sct_tot = xp.zeros_like(e_safe)
+    cap_tot = xp.zeros_like(e_safe)
+    fis_tot = xp.zeros_like(e_safe)
+    pot_tot = xp.zeros_like(e_safe)
+
+    ngroups = data.n_groups()
+    for g in range(ngroups):
+        # Potential scattering contribution: sum g_J sin^2(phi_e_L)
+        # over groups, using the elastic channel's APE. Multi-
+        # elastic-channel groups pick the first elastic channel's
+        # radius for this diagnostic; a follow-up can refine.
+        _, particle, _, elastic_slot = _classify_group_channels(
+            data, g,
+        )
+        ec_slot = particle[elastic_slot]
+        L_e = int(round(float(data.ch_l[g, ec_slot])))
+        ape_e = float(data.ch_ape[g, ec_slot])
+        rho_e_hat = data.ki * xp.sqrt(e_safe) * ape_e
+        phi_e = factors.phase(rho_e_hat, xp.asarray(L_e), xp)
+        pot_tot = pot_tot + data.group_g[g] * xp.sin(phi_e) ** 2
+
+        # Resonant contribution.
+        sct_g, cap_g, fis_g = _reconstruct_group(
+            data, g, e_safe, e_pos, pi_k2, xp,
+        )
+        sct_tot = sct_tot + sct_g
+        cap_tot = cap_tot + cap_g
+        fis_tot = fis_tot + fis_g
+
+    pot_tot = 4.0 * pi_k2 * pot_tot
+    tot = sct_tot + cap_tot + fis_tot
+    return {
+        'sct': sct_tot, 'cap': cap_tot, 'fis': fis_tot,
+        'pot': pot_tot, 'tot': tot,
+    }
