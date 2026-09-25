@@ -552,26 +552,15 @@ def interp_tab1(x, tab1, xp_name, fp_name, outside_value=None, xp=None):
     'INT': ..., 'NBT': ...}` dict-of-arrays layout) at query `x`.
 
     Backend-agnostic: ``xp=None`` (default) is numpy; passing a
-    JAX backend preserves tracers in ``tab1[fp_name]``. Under
-    ``xp=jax`` the mesh is also passed through the backend so a
-    tracer stored at ``tab1[xp_name][idx]`` (mesh-knot autodiff)
-    survives into the interpolation kernel. INT / NBT stay numpy
-    because they are region-descriptor integers.
+    JAX backend preserves tracers stored at either ``tab1[fp_name]``
+    or ``tab1[xp_name]`` (fp-side or mesh-side autodiff). ``xp.asarray``
+    on a list containing a JAX tracer scalar preserves the tracer's
+    functional dependency. INT / NBT stay numpy because they are
+    region-descriptor integers with no autodiff meaning.
     """
     xp = _resolve_xp(xp)
-    # Do NOT force `f_mesh` to numpy: if the caller stores a JAX
-    # tracer in `tab1[fp_name]`, we want the gradient to flow.
-    f_mesh = tab1[fp_name]
-    if xp.name == 'numpy':
-        x_mesh = np.asarray(tab1[xp_name], dtype=float)
-        f_mesh = np.asarray(f_mesh, dtype=float)
-    else:
-        # Route both mesh and fp through xp so tracers on either side
-        # survive. ``xp.asarray`` on a list containing a tracer scalar
-        # promotes the whole array to xp-native with the tracer's
-        # dependency preserved.
-        x_mesh = xp.asarray(tab1[xp_name])
-        f_mesh = xp.asarray(f_mesh)
+    x_mesh = xp.asarray(tab1[xp_name], dtype=xp.float64)
+    f_mesh = xp.asarray(tab1[fp_name], dtype=xp.float64)
     int_arr = np.asarray(tab1['INT'], dtype=int)
     nbt_arr = np.asarray(tab1['NBT'], dtype=int)
     return endf_interp1d(
