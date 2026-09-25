@@ -205,6 +205,35 @@ def test_mf4_ltt2_grad_wrt_mu_al27():
         np.testing.assert_allclose(g, fd, rtol=1e-4, atol=1e-10)
 
 
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_mf4_ltt2_grad_wrt_E_al27():
+    """Al-27 (n,n_0) LTT=2 grad wrt incident E. This is the
+    "MF4 tabulated angular multipanel-traced kernel" line item
+    on roadmap #198 Phase 3: grad flowing across the MF4 E-mesh
+    panels via ``interp_tab2``'s unit-base traced-x branch
+    (#226). Pinned through ``compute_angdist_from_tabulated``
+    directly to bypass the LCT=2 CM<->LAB conversion (a separate
+    concern tracked as #210)."""
+    import jax
+    import jax.numpy as jnp
+    d = _load(resolve_al27())
+    xp = array_ns.get_backend('jax')
+    mu = jnp.array([0.34])
+
+    def f(E_v):
+        return mf4_interpretation.compute_angdist_from_tabulated(
+            d, 2, jnp.array([E_v]), mu, xp=xp,
+        ).sum()
+
+    # Al-27 MT=2 MF4 E-mesh has non-knot panel-interior points at
+    # these values (verified against the file's tabulated E-list).
+    for E in (1.5e5, 2.5e5, 3.5e5):
+        g = float(jax.grad(f)(jnp.array(E)))
+        fd = _fd_scalar(f, E, 1.0)
+        assert np.isfinite(g)
+        np.testing.assert_allclose(g, fd, rtol=1e-6, atol=1e-12)
+
+
 # ------------------------------------------------------------------
 # MF6 LAW=2 LANG=0 (Legendre): Al-27 (n,n_1) grad wrt E and mu.
 # LANG=12/14 (tabulated) is not present in the committed / ad-hoc
