@@ -459,8 +459,17 @@ def compute_cross_section(
         resonance_range = _resonance_range_var.get()
     sec = endf_dict[3][mt]
     xstab = sec['xstable']
-    e_mesh = np.asarray(xstab['E'], dtype=float)
-    e_max = float(e_mesh.max())
+    # Under xp=jax, keep the mesh xp-native so a tracer stored at
+    # ``xstab['E'][idx]`` (mesh-knot autodiff, issue #169) survives into
+    # the above-range mask machinery below. ``e_max`` is then a JAX
+    # scalar array, not a Python float, and ``float(...)`` on it would
+    # raise under trace.
+    if xp.name == 'numpy':
+        e_mesh = np.asarray(xstab['E'], dtype=float)
+        e_max = float(e_mesh.max())
+    else:
+        e_mesh = xp.asarray(xstab['E'])
+        e_max = e_mesh.max()
     xs = interp_tab1(
         energies_in, xstab, 'E', 'xs', outside_value=0.0, xp=xp,
     )
