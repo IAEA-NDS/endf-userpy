@@ -185,11 +185,14 @@ def _tracer_exc():
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
-def test_get_particle_production_dxs_dE_grad_wrt_E_currently_raises(be9_endf_dict):
-    """Regression pin for Phase 5 finding #220: the internal
-    Ep-integration builds an xp.linspace under trace, which
-    the LAW=7 kernel's ``np.asarray(ep_out)`` materialises. Flip
-    to a positive assertion when #220 is fixed."""
+def test_get_particle_production_dxs_dE_grad_wrt_E(be9_endf_dict):
+    """``jax.grad(get_particle_production_dxs_dE)(E)`` end-to-end for
+    Be-9 (n,2n) neutron production. Under xp=jax with tracer Ein the
+    LAW=7 mu-integration falls through to the xp-native fixed-mesh
+    Simpson path (issue #220 PR 2), so grad reaches file-side
+    leaves. Accuracy on the fixed-mesh Simpson is within a few
+    permille of the kink-aware kernel -- fine for the FD check
+    tolerance."""
     import jax
     import jax.numpy as jnp
     xp_jx = array_ns.get_backend('jax')
@@ -203,8 +206,11 @@ def test_get_particle_production_dxs_dE_grad_wrt_E_currently_raises(be9_endf_dic
                 jnp.array([E_scalar]), eout, xp=xp_jx,
             ).sum()
 
-    with pytest.raises(_tracer_exc()):
-        jax.grad(loss)(jnp.array(1e7))
+    for E_val in (5e6, 1e7, 1.5e7):
+        grad = float(jax.grad(loss)(jnp.array(E_val)))
+        fd = _fd5(lambda v: loss(jnp.array(v)), E_val, E_val * 1e-4)
+        assert np.isfinite(grad)
+        np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-6)
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
