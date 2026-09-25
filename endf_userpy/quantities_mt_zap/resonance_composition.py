@@ -23,16 +23,18 @@ Both are backend-agnostic: pass an ``xp`` returned by
 numpy, numba, or JAX. The default (``xp=None``) resolves to
 numpy.
 
-Supported LRU=1 formalisms: LRF=2 (MLBW) and LRF=3 (Reich-Moore).
-Supported LRU=2 formalisms: LRF=2 with INT=2 (Case C
-energy-dependent widths, lin-lin table interpolation).
+Supported LRU=1 formalisms: LRF=2 (MLBW), LRF=3 (Reich-Moore),
+and LRF=7 R-Matrix Limited with the KRM=3 Reich-Moore
+approximation. Supported LRU=2 formalisms: LRF=2 with INT=2
+(Case C energy-dependent widths, lin-lin table interpolation).
 
 Ranges the current implementation cannot reconstruct
-(Adler-Adler LRF=4, R-matrix limited LRF=7, URR with non-INT=2
-tables, ...) contribute zero. If a file has no supported range
-at all, or has an LSSF=0 URR range the reconstructor cannot
-handle, a :class:`UserWarning` names the specific formalism /
-INT code seen.
+(Adler-Adler LRF=4, LRF=7 with KRM other than 3 or with
+KBK / KPS / IFG / NRO out of the initial-scope
+zero-values, URR with non-INT=2 tables, ...) contribute zero. If
+a file has no supported range at all, or has an LSSF=0 URR range
+the reconstructor cannot handle, a :class:`UserWarning` names
+the specific formalism / INT code seen.
 """
 
 import warnings
@@ -42,6 +44,8 @@ from ..mfsec_interpretation import mf2_interpretation_mlbw
 from ..mfsec_interpretation import mf2_interpretation_mlbw_preproc
 from ..mfsec_interpretation import mf2_interpretation_reichmoore
 from ..mfsec_interpretation import mf2_interpretation_reichmoore_preproc
+from ..mfsec_interpretation import mf2_interpretation_rml
+from ..mfsec_interpretation import mf2_interpretation_rml_preproc
 from ..mfsec_interpretation import mf2_interpretation_urr
 from ..mfsec_interpretation import mf2_interpretation_urr_preproc
 from ..primitives import array_ns
@@ -68,6 +72,12 @@ _RM_MT_TO_KEYS = {
     27: ('cap', 'fis'),
     102: ('cap',),
 }
+
+# LRF=7 KRM=3 partials mirror the Reich-Moore shape: gamma is
+# eliminated, so 'cap' aggregates radiative capture and any other
+# implicit-channel contribution; 'fis' aggregates every explicit
+# fission channel; there is no competitive channel by construction.
+_RML_MT_TO_KEYS = _RM_MT_TO_KEYS
 
 # URR partials have the MLBW shape (sct / cap / fis / rxx / pot / tot),
 # so the same MT-to-keys map applies.
@@ -135,6 +145,24 @@ def _reconstruct_lru1_range(endf_dict, iso_i, rng_i, rng, energies, xp):
         )
         recon = mf2_interpretation_reichmoore.reconstruct(data, energies, xp)
         return recon, _RM_MT_TO_KEYS
+    if lrf == 7:
+        # LRF=7 R-Matrix Limited (KRM=3 Reich-Moore variant); the
+        # preproc rejects KRM != 3 with a clear NotImplementedError,
+        # so the composition layer never silently returns something
+        # wrong. Threading xp preserves JAX tracers on ER / GAM
+        # leaves the same way as LRF=3.
+        try:
+            data = mf2_interpretation_rml_preproc.rml_data_from_endf_dict(
+                endf_dict, isotope_idx=iso_i, range_idx=rng_i, xp=xp,
+            )
+        except NotImplementedError:
+            # Out-of-scope KRM / KRL / IFG / NRO / KBK / KPS: fall
+            # through to the caller's unsupported-LRF handling so
+            # the user sees a single summary warning instead of a
+            # deep traceback.
+            return None, None
+        recon = mf2_interpretation_rml.reconstruct(data, energies, xp)
+        return recon, _RML_MT_TO_KEYS
     return None, None
 
 
@@ -190,10 +218,13 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
     (n,2n) legitimately have no MF2 contribution and are handled
     entirely by MF3.
 
-    LRU=1 (RRR): supported LRFs are 2 (MLBW) and 3 (Reich-Moore).
-    Unsupported LRFs (Adler-Adler LRF=4, R-matrix limited LRF=7)
-    are skipped. If the file has no supported LRU=1 range at all,
-    a :class:`UserWarning` names the formalism seen.
+    LRU=1 (RRR): supported LRFs are 2 (MLBW), 3 (Reich-Moore),
+    and 7 (R-Matrix Limited with the KRM=3 Reich-Moore
+    approximation, KRL=0, IFG=0, NRO=0, KBK=0, KPS=0).
+    Unsupported LRFs (Adler-Adler LRF=4, LRF=7 outside the
+    initial scope) are skipped. If the file has no supported
+    LRU=1 range at all, a :class:`UserWarning` names the
+    formalism seen.
 
     LRU=2 (URR): LSSF=1 URR ranges never contribute (MF3 already
     carries the physical average XS -- correct as-is). LSSF=0 URR
@@ -209,16 +240,21 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
     e = xp.asarray(energies_in, dtype=xp.float64)
     total = xp.zeros_like(e)
 
-    # ---- LRU=1 (RRR): MLBW / Reich-Moore.
+    # ---- LRU=1 (RRR): MLBW / Reich-Moore / R-Matrix Limited.
     saw_lru1_supported = False
     lru1_unsupported = []
     for iso_i, rng_i, rng in _iter_lru1_ranges(endf_dict):
         lrf = int(rng.get('LRF', 0))
-        if lrf not in (2, 3):
+        if lrf not in (2, 3, 7):
             lru1_unsupported.append((iso_i, rng_i, lrf))
             continue
         saw_lru1_supported = True
-        keys = _MLBW_MT_TO_KEYS.get(mt) if lrf == 2 else _RM_MT_TO_KEYS.get(mt)
+        if lrf == 2:
+            keys = _MLBW_MT_TO_KEYS.get(mt)
+        elif lrf == 3:
+            keys = _RM_MT_TO_KEYS.get(mt)
+        else:
+            keys = _RML_MT_TO_KEYS.get(mt)
         if not keys:
             continue
         el = float(rng['EL'])
@@ -250,10 +286,9 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
                           for i, j, f in lru1_unsupported)
         warnings.warn(
             f'reconstruct_resonance_xs: no supported LRF (2 MLBW / 3 '
-            f'Reich-Moore) LRU=1 range found (saw: {parts}); returning '
-            f'zero resolved-resonance contribution. Adler-Adler '
-            f'(LRF=4) and R-matrix limited (LRF=7) are not '
-            f'implemented yet.',
+            f'Reich-Moore / 7 R-Matrix Limited KRM=3) LRU=1 range '
+            f'found (saw: {parts}); returning zero resolved-resonance '
+            f'contribution. Adler-Adler (LRF=4) is not implemented.',
             UserWarning, stacklevel=2,
         )
 
