@@ -547,6 +547,10 @@ def _law7_eval_mu_panel(subsec, e_panel_key, mu_out, ep_out, xp):
     normalising the code to the 21..25 range (``20 + (raw mod
     10)``), which triggers the unit-base branch of
     :func:`interp_tab2`.
+
+    ``mu_out`` / ``ep_out`` route through ``xp.asarray`` (not
+    ``np.asarray``) so JAX tracers on either axis survive into
+    ``interp_tab2``'s traced-x unit-base branch (issue #220 PR 4).
     """
     mu_mesh = dict2array(subsec['mu'][e_panel_key], dtype=float)
     mu_interpol = subsec['mu_interpol'][e_panel_key]
@@ -556,8 +560,8 @@ def _law7_eval_mu_panel(subsec, e_panel_key, mu_out, ep_out, xp):
     mu_int = 20 + (mu_int_raw % 10)
     records = _law7_tab1_records_for_e_panel(subsec, e_panel_key)
     return interp_tab2(
-        np.asarray(mu_out, dtype=float),
-        np.asarray(ep_out, dtype=float),
+        xp.asarray(mu_out, dtype=xp.float64),
+        xp.asarray(ep_out, dtype=xp.float64),
         mu_mesh, mu_int, mu_nbt, records, 'Ep', 'f',
         outside_value=0.0, xp=xp,
     )
@@ -638,13 +642,23 @@ def _get_dist2d_from_subsec_law7_traced_x(
         is_tracer = lambda v: isinstance(v, _jax_core.Tracer)
     except ImportError:
         is_tracer = lambda v: False
-    if is_tracer(mu_out) or is_tracer(ep_out):
+    tracer_mu = is_tracer(mu_out)
+    tracer_ep = is_tracer(ep_out)
+    tracer_e = is_tracer(e_in)
+    if (tracer_mu or tracer_ep) and tracer_e:
         raise NotImplementedError(
-            'LAW=7 traced-x kernel: mu_out / ep_out cannot be JAX '
-            'tracers because the inner (mu, Ep) unit-base '
-            'interp_tab2 runs on numpy. Pass concrete numpy or '
-            'concrete jax arrays for those axes; tracer support '
-            'is tracked as issue #220.'
+            'LAW=7 traced-x kernel: simultaneous JAX tracers on '
+            'e_in AND mu_out/ep_out are not supported (would need '
+            'cross-axis dispatch growing the graph in n_panels). '
+            'Pass at least one of the three as concrete.'
+        )
+    if tracer_mu or tracer_ep:
+        # Concrete e_in, tracer mu or ep: per-Ein bracket + inner
+        # unit-base traced-x. interp_tab2's unit-base traced-x
+        # branch (issue #220 PR 4) preserves grad through the mu
+        # or Ep query axis.
+        return _law7_traced_inner_dispatch(
+            subsec, ei_mesh, ei_interp, e_in, ep_out, mu_out, xp,
         )
     ei_mesh_np = np.asarray(ei_mesh, dtype=float)
     n_mesh = int(ei_mesh_np.shape[0])
@@ -704,6 +718,48 @@ def _get_dist2d_from_subsec_law7_traced_x(
     )
     # (n_e, n_mu, n_ep) -> (n_e, n_ep, n_mu)
     return xp.transpose(f_e, (0, 2, 1))
+
+
+def _law7_traced_inner_dispatch(
+    subsec, ei_mesh, ei_interp, e_in, ep_out, mu_out, xp,
+):
+    """Concrete-Ein / tracer-mu-or-Ep dispatch for MF6 LAW=7
+    (issue #220 PR 4). For each concrete Ein find the bracketing
+    Ein panel, evaluate ``_law7_eval_mu_panel`` on the two
+    bracketing mesh points (which now threads tracer mu / Ep
+    through :func:`interp_tab2`'s unit-base traced-x branch),
+    then apply the outer 2-point Ein interp.
+
+    Loops over ``n_e``; each iteration is O(1) in traced graph
+    depth. Typical top-level dxs_dmu / dxs_dE / ddxs grad tests
+    call this with n_e = 1, so the loop is a single iteration.
+    """
+    ei_mesh_np = np.asarray(ei_mesh, dtype=float)
+    e_in_np = np.asarray(e_in, dtype=float)
+    n_e = int(e_in_np.shape[0])
+
+    result_rows = []
+    for i in range(n_e):
+        e_val = float(e_in_np[i])
+        curidx = int(find_interval(
+            ei_mesh_np, np.array([e_val], dtype=float),
+        )[0])
+        e1 = float(ei_mesh_np[curidx])
+        e2 = float(ei_mesh_np[curidx + 1])
+        lei_law = int(ei_interp[curidx]) % 10
+        f1 = _law7_eval_mu_panel(
+            subsec, curidx + 1, mu_out, ep_out, xp,
+        )
+        f2 = _law7_eval_mu_panel(
+            subsec, curidx + 2, mu_out, ep_out, xp,
+        )
+        f_e = _interp_two_point_columns(
+            e_val, e1, e2, f1, f2, lei_law, xp,
+        )
+        # f_e shape (n_mu, n_ep); the caller wants (n_e, n_ep, n_mu),
+        # so transpose to (n_ep, n_mu) here and stack over Ein.
+        result_rows.append(xp.transpose(f_e, (1, 0)))
+    return xp.stack(result_rows, axis=0)
 
 
 def _law7_outer_e_interp_gathered(
