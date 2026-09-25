@@ -32,6 +32,13 @@ from ..primitives.helpers import dict2array
 from ..primitives.properties import (
     get_AWI, get_AWR, get_QI, get_ZA, get_ZAI,
 )
+from ..primitives.static_dict import StaticEndfDict
+
+
+# Preproc-cache key namespace for MF6 LAW=1. Kept as a constant so
+# other MF sections that later share the ``_preproc_cache`` dict on
+# a :class:`StaticEndfDict` can use their own disjoint namespace.
+_CACHE_TAG = 'mf6_law1'
 
 
 @dataclass
@@ -96,9 +103,38 @@ def mf6_law1_data_from_endf_dict(endf_dict, mt: int, subsec_num: int,
     JAX adapter routes the panel-marshaling through
     :func:`primitives.helpers.dict2array`'s xp-aware code path so
     JAX tracers stored in ``subsec['b']`` values propagate through.
+
+    When ``endf_dict`` is a :class:`StaticEndfDict` (produced via
+    :func:`endf_userpy.primitives.static_dict.wrap_endf_dict`), the
+    numpy build is cached on the wrapper's instance-attached
+    ``_preproc_cache`` dict, keyed by ``(mt, subsec_num)`` under
+    the ``'mf6_law1'`` namespace. Adaptive-Simpson integrators that
+    walk the same subsection per quadrature point then pay the
+    ``dict2array`` / ``pad_nested_ragged_lists`` overhead exactly
+    once per (wrapper, MT, subsec). A raw ``dict`` argument gets
+    no caching (safe fallback: no id-reuse risk, no stale reads
+    from in-place mutation). JAX is not cached either, so tracer
+    identities on file leaves stay confined to the call that
+    injected them.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    use_cache = xp.name == 'numpy' and isinstance(endf_dict, StaticEndfDict)
+    if use_cache:
+        cache = endf_dict._preproc_cache
+        key = (_CACHE_TAG, int(mt), int(subsec_num))
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        data = _mf6_law1_data_build(endf_dict, mt, subsec_num, xp)
+        cache[key] = data
+        return data
+    return _mf6_law1_data_build(endf_dict, mt, subsec_num, xp)
+
+
+def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data:
+    """Uncached build. ``mf6_law1_data_from_endf_dict`` is the
+    public entry point and adds the numpy-side LRU cache on top."""
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
     if subsec['LAW'] != 1:
