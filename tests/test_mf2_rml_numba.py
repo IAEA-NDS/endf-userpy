@@ -72,7 +72,6 @@ def test_rml_numba_matches_numpy(path_fn, label):
 def test_rml_numba_rejects_wide_group():
     """Groups with more than 3 particle channels are rejected by
     the numba wrapper with a clear NotImplementedError."""
-    from dataclasses import replace
     from endf_userpy.mfsec_interpretation.mf2_interpretation_rml import (
         RMLData,
     )
