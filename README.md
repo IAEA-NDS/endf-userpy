@@ -21,6 +21,17 @@ piece of data lives in.
 
 ## Installation
 
+> **PyPI releases lag behind `main`.** Development is active and
+> new capabilities land several PRs at a time before a release is
+> cut. Recent additions that are on `main` but not yet on PyPI
+> include end-to-end JAX autodiff through the top-level API across
+> all supported MF sections, resolved-resonance reconstruction
+> (MLBW and Reich-Moore) with numpy / numba / JAX backends, the
+> gamma production pipeline (MF12/13/14/15), and the tabulated
+> photon spectra path. If you need those, **install from source**
+> (see below). `pip install endf-userpy` gives you the last tagged
+> release, which may be missing recent work.
+
 ```bash
 pip install endf-userpy
 ```
@@ -38,7 +49,7 @@ automatically and need a Fortran compiler (`gfortran`) on `PATH`.
 Runtime dependencies (`numpy`, `scipy`, `endf_parserpy`) are pulled
 in automatically. Some examples additionally use `matplotlib`.
 
-### From source
+### From source (recommended for latest features)
 
 ```bash
 git clone https://github.com/IAEA-NDS/endf-userpy
@@ -46,9 +57,12 @@ cd endf-userpy
 pip install -e .
 ```
 
-Requires `gfortran` on `PATH`. Windows users who prefer to build
-with the Intel Fortran compiler (`ifx`) can opt in by setting
-`ENDF_USERPY_USE_IFX=1` in the environment before `pip install`.
+The default install is pure Python and needs no compiler. To also
+build the optional Fortran parity-oracle extension used by the
+equivalence-test suite, set `ENDF_USERPY_BUILD_FORTRAN=1` before
+`pip install` (requires `gfortran` on `PATH`; Windows users can
+opt into the Intel Fortran compiler `ifx` with
+`ENDF_USERPY_USE_IFX=1`).
 
 ## Quick start
 
