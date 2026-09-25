@@ -157,8 +157,23 @@ def compute_yields(
     return yields
 
 
-def compute_xs_mt5_contrib(endf_dict, mt, energies_in):
-    zero_xs_result = np.zeros_like(energies_in, dtype=float)
+def compute_xs_mt5_contrib(endf_dict, mt, energies_in, xp=None):
+    """MT5 backfill contribution for reactions with a unique-path-to-
+    residual. Returns the redistributed cross section ``y(E) * σ_MT5(E)``
+    where ``y`` is the MF6/MT=5 yield for the residual uniquely
+    identified by ``mt``, or zeros if the file has no MF6/MT=5 or the
+    reaction isn't unique-path-to-residual.
+
+    Backend-agnostic via ``xp`` (issue #215): tracers on
+    ``energies_in`` propagate through the yield reconstruction (which
+    is already xp-native) and through the MF3 cross-section
+    reconstruction; the returned array is xp-native. ``xp=None``
+    (default) is numpy and bit-identical to the pre-port behaviour.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    zero_xs_result = xp.zeros_like(xp.asarray(energies_in), dtype=xp.float64)
     if not properties.has_mf6_mt(endf_dict, 5):
         return zero_xs_result
 
@@ -179,9 +194,12 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in):
     if not mf6_help.has_subsecs_for_mt_zap(endf_dict, mt5, za_residual):
         return zero_xs_result
     yield_mt5 = compute_yields(
-        endf_dict, mt5, za_residual, energies_in, include_discrete=True
+        endf_dict, mt5, za_residual, energies_in, include_discrete=True,
+        xp=xp,
     )
-    xs_mt5 = mf3_interp.compute_cross_section(endf_dict, mt5, energies_in)
+    xs_mt5 = mf3_interp.compute_cross_section(
+        endf_dict, mt5, energies_in, xp=xp,
+    )
     return xs_mt5 * yield_mt5
 
 

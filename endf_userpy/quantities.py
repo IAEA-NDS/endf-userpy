@@ -391,56 +391,43 @@ def _get_reaction_xs_impl(
 
         # MT5 fallback component: adds a redistributed MT5
         # contribution at Es where the direct MT is zero. Only
-        # relevant when the file actually carries MF6/MT=5 data,
-        # so short-circuit otherwise (fixes issue #196: under
-        # xp=jax the ``np.asarray(cur_xs)`` below would materialise
-        # a tracer and crash, but for files without MT=5 the
-        # fallback contribution is zero and the whole block is a
-        # no-op).
+        # relevant when the file actually carries MF6/MT=5 data.
+        # Under xp=jax the fallback now stays xp-native end-to-end
+        # (issue #215): ``compute_xs_mt5_contrib`` accepts xp, and
+        # the "only backfill where direct MT is zero" mask uses
+        # ``xp.where`` so tracers survive.
         if (mt in user_mts
                 and mt5_contrib
                 and 5 not in user_mts
                 and not reac.any_ancestor_in_mts(5, user_mts)
                 and reac.is_unique_path_to_residual(proj, mt)
                 and prop.has_mf6_mt(endf_dict, 5)):
-            energies_in_np = np.asarray(energies_in)
+            energies_in_xp = xp.asarray(energies_in)
             if not mt_available or not should_select:
-                cur_xs_np = np.zeros_like(energies_in_np, dtype=float)
+                cur_xs_ref = xp.zeros_like(
+                    energies_in_xp, dtype=xp.float64,
+                )
             else:
-                # MT5 fallback still requires materialising the
-                # direct-MT result on numpy to compute
-                # ``eincs_sel`` (which Es are zero and thus need
-                # the MT5 backfill). Under xp=jax this loses the
-                # tracer, so the fallback is a numpy-boundary
-                # operation. Callers who need jax.grad through
-                # this reaction can pass ``mt5_contrib=False`` to
-                # skip the fallback entirely.
-                if xp.name == 'jax':
-                    raise NotImplementedError(
-                        f'MT5 fallback path for MT={mt} on an MF6/MT=5 '
-                        f'file is not yet xp-agnostic. Pass '
-                        f'mt5_contrib=False to skip it (loses the MT5 '
-                        f'redistribution contribution).'
-                    )
-                cur_xs_np = np.asarray(cur_xs, dtype=float)
-            eincs_sel = (
-                (cur_xs_np == 0.0) if mt_available
-                else np.ones_like(energies_in_np, dtype=bool)
+                cur_xs_ref = cur_xs
+            mt5_xs_all = quant_mt_zap.compute_xs_mt5_contrib(
+                endf_dict, mt, energies_in, xp=xp,
             )
-            mt5_xs = quant_mt_zap.compute_xs_mt5_contrib(
-                endf_dict, mt, energies_in_np[eincs_sel]
+            # Backfill: add mt5_xs_all where the direct MT gave zero
+            # (or wasn't selected), leave xs unchanged where the
+            # direct MT already had a value. Compute the full MT5
+            # array on all Es rather than slicing to concrete
+            # indices; slice-selection would materialise ``cur_xs``
+            # and lose tracer under xp=jax. The extra cost is one
+            # MT5 evaluation on Es where the direct MT already
+            # covered the reaction; MT5 backfill is only physically
+            # meaningful where the direct MT is zero, so this
+            # doesn't change the numerical result.
+            xs = xp.where(
+                cur_xs_ref == 0.0, xs + mt5_xs_all, xs,
             )
-            if np.any(mt5_xs != 0.0):
+            mt5_xs = mt5_xs_all
+            if xp.any(mt5_xs != 0.0):
                 module_logger.debug(f'include MF6/MT5 component for MT={mt}')
-            # Scatter mt5_xs (numpy) into the xp-native xs
-            # accumulator on the eincs_sel positions.
-            idxs = np.where(eincs_sel)[0]
-            if xp.name == 'jax':
-                xs = xs.at[idxs].add(xp.asarray(mt5_xs))
-            else:
-                xs_np = np.asarray(xs)
-                xs_np[eincs_sel] = xs_np[eincs_sel] + mt5_xs
-                xs = xs_np
     return xs
 
 

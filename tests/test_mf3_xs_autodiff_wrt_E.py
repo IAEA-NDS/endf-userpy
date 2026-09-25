@@ -23,15 +23,12 @@ has a 1256-point 1/v-like grid at low energy plus higher-order
 structure above. Both are pure MF3 lookups with no resonance
 region on this file.
 
-Historical Phase 1 finding (issue #196, fixed): the MT5 fallback
-path in ``get_reaction_xs`` used to unconditionally
-``np.asarray`` the compute_xs result even when the file had no
-MF6/MT=5 to redistribute, crashing under xp=jax on any
-unique-path-to-residual reaction. Now short-circuits when
-``prop.has_mf6_mt(endf_dict, 5)`` is False (typical for files
-like Be-9). Files that DO carry MF6/MT=5 still need
-``mt5_contrib=False`` under xp=jax; the underlying MT5
-redistribution compute path is still numpy-native.
+Historical Phase 1 finding (issue #196, fixed by #214 for files
+without MF6/MT=5 and issue #215 for files WITH MF6/MT=5): the
+MT5 fallback path used to unconditionally ``np.asarray`` the
+compute_xs result even under xp=jax, crashing on any
+unique-path-to-residual reaction. Both the no-MT5 short-circuit
+and the tracer-safe MT5-in-file backfill are pinned below.
 """
 from __future__ import annotations
 
@@ -44,6 +41,8 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_reaction_xs
+
+from _corpus import resolve_al27
 
 
 DATA_DIR = Path(__file__).parent / 'data'
@@ -209,3 +208,73 @@ def test_grad_wrt_E_vector_matches_fd_elementwise(be9_endf_dict):
             grad_vec[i], fd, rtol=5e-3, atol=1e-30,
             err_msg=f'i={i} E={E_val}: ad={grad_vec[i]:.4e} fd={fd:.4e}',
         )
+
+
+# --- Issue #215: MT5-in-file backfill under xp=jax. -------------
+# Al-27 endfb81 has MF6/MT=5 and (n,3n) is a unique-path-to-residual
+# where the direct MT=17 threshold is well above the reaction
+# threshold, so the MT5 backfill is the ONLY contribution above
+# ~25 MeV. Pins the tracer-safe rewrite that landed in this PR.
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_get_reaction_xs_numpy_jax_parity_n3n_mt5_backfill_al27():
+    """(n,3n) on Al-27 exercises the MT5 backfill (unique-path-to-
+    residual + file carries MF6/MT=5). Numpy and JAX must agree
+    bit-exactly with ``mt5_contrib=True``, and the backfill must
+    actually contribute (XS_on != XS_off) at high energy."""
+    import jax.numpy as jnp
+    path = resolve_al27()
+    if path is None:
+        pytest.skip('Al-27 corpus not present (fetch.sh)')
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
+    xp_np = array_ns.get_backend('numpy')
+    xp_jx = array_ns.get_backend('jax')
+
+    E = np.array([2e7, 3e7, 5e7], dtype=np.float64)
+    xs_np_on = np.asarray(get_reaction_xs(
+        d, '(n,3n)', E, mt5_contrib=True, xp=xp_np,
+    ))
+    xs_jx_on = np.asarray(get_reaction_xs(
+        d, '(n,3n)', jnp.asarray(E), mt5_contrib=True, xp=xp_jx,
+    ))
+    xs_np_off = np.asarray(get_reaction_xs(
+        d, '(n,3n)', E, mt5_contrib=False, xp=xp_np,
+    ))
+    # Bit-exact numpy / jax parity.
+    np.testing.assert_allclose(xs_np_on, xs_jx_on, rtol=1e-10, atol=1e-30)
+    # Backfill is real: mt5_contrib=True picks up XS at Es where
+    # the direct MT=17 tabulation is zero.
+    assert np.any(xs_np_on > 0.0)
+    assert np.all(xs_np_off == 0.0)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_grad_wrt_E_n3n_mt5_backfill_al27_finite():
+    """``jax.grad(get_reaction_xs('(n,3n)'))(E)`` returns a finite
+    number even when the XS at that E comes entirely from the
+    MT5 backfill (no direct-MT contribution). Pre-#215 this
+    raised ``NotImplementedError`` or ``TracerArrayConversionError``.
+
+    Exact FD agreement is not pinned here because the backfill
+    kicks in via ``xp.where(cur_xs == 0, ...)`` masking, which is
+    piecewise across the direct-MT-to-MT5 crossover and gives
+    the correct one-sided analytic derivative that a two-sided
+    FD stencil averages across."""
+    import jax
+    import jax.numpy as jnp
+    path = resolve_al27()
+    if path is None:
+        pytest.skip('Al-27 corpus not present (fetch.sh)')
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
+    xp_jx = array_ns.get_backend('jax')
+
+    def loss(E_scalar):
+        return get_reaction_xs(
+            d, '(n,3n)', jnp.array([E_scalar]),
+            mt5_contrib=True, xp=xp_jx,
+        ).sum()
+
+    for E_val in (3e7, 5e7):
+        g = float(jax.grad(loss)(jnp.array(E_val)))
+        assert np.isfinite(g), f'grad at E={E_val} not finite: {g}'
