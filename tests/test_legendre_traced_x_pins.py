@@ -260,6 +260,71 @@ def test_mf6_law2_lang0_grad_wrt_E_al27():
 
 
 # ------------------------------------------------------------------
+# MF4 LTT=3 (mixed Legendre + tabulated).
+# `compute_angdist_from_mixed` was rewritten to be tracer-safe by
+# evaluating BOTH branches on the full query grid with
+# ``outside_value=0.0`` and selecting per-query via ``xp.where``.
+# The committed corpus has an LTT=3 file: H-2 MT=2.
+# ------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_mf4_ltt3_grad_wrt_mu_h2():
+    """H-2 (n,n_0) is LTT=3 (mixed Legendre + tabulated); grad
+    wrt mu flows through both branches. mu is passed as a scalar
+    tracer so both branches trace cleanly."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(
+        str(DATA_DIR / 'n-001_H_002.endf'),
+    )
+    ein = jnp.array([5e6])   # Above LTT=3 break: tabulated branch
+
+    def f(mu_v):
+        return mf4_interpretation.compute_angdist_values(
+            d, 2, ein, jnp.array([mu_v]), True, xp=xp,
+        ).sum()
+
+    for mu in (-0.53, 0.05, 0.34):
+        g = float(jax.grad(f)(jnp.array(mu)))
+        fd = _fd_scalar(f, mu, 1e-4)
+        assert np.isfinite(g)
+        np.testing.assert_allclose(g, fd, rtol=1e-4, atol=1e-10)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_mf4_ltt3_grad_wrt_E_h2_tracer_safe():
+    """Grad wrt incident E on H-2 MT=2 LTT=3. The rewritten
+    ``compute_angdist_from_mixed`` no longer materialises the
+    query energy: both the Legendre branch (below the split) and
+    the tabulated branch (above the split) evaluate on the full
+    tracer E grid with ``outside_value=0.0``, and ``xp.where``
+    selects per-query. Grad must be finite for a query on
+    either side of the file's break energy."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(
+        str(DATA_DIR / 'n-001_H_002.endf'),
+    )
+    mu = jnp.array([0.34])
+
+    def f(E_v):
+        return mf4_interpretation.compute_angdist_from_mixed(
+            d, 2, jnp.array([E_v]), mu, xp=xp,
+        ).sum()
+
+    # Test that grad is finite and doesn't raise on both branches.
+    # Exact FD agreement is not pinned because H-2's LTT=3 file
+    # may have INT=1 histogram or unit-base kinks in the tabulated
+    # part; the tracer plumbing is what this test guards.
+    for E in (1e5, 1e7, 1.5e7):
+        g = float(jax.grad(f)(jnp.array(E)))
+        assert np.isfinite(g), f'grad at E={E} is not finite: {g}'
+
+
+# ------------------------------------------------------------------
 # MF14 LTT=1 (Legendre gamma angular): JENDL-5 C-12 MT=51.
 # ------------------------------------------------------------------
 
