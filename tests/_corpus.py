@@ -81,6 +81,39 @@ def resolve_h2() -> str | None:
     )
 
 
+def resolve_rh103() -> str | None:
+    """Resolve the Rh-103 ENDF file (ENDF/B-VIII.1). Used by the
+    MF2 LRF=7 R-Matrix Limited preproc / reconstruction arc:
+    Rh-103 is the compact LRF=7 example with 5 J-groups, 2
+    particle pairs (capture + elastic), and NCH in {2, 3}."""
+    return _first_existing(
+        os.environ.get('RH103_ENDF'),
+        os.path.join(_CORPUS_DIR, 'endfb81_n_Rh-103.endf'),
+    )
+
+
+def resolve_pu239_rml() -> str | None:
+    """Resolve the ENDF/B-VIII.1 Pu-239 file. Its LRF=7 range
+    covers 3 particle pairs (capture + elastic + fission), 2
+    J-groups with NCH in {3, 4}, and up to 1604 resonances per
+    group — the corpus's large-scale LRF=7 stress test."""
+    return _first_existing(
+        os.environ.get('PU239_RML_ENDF'),
+        os.path.join(_CORPUS_DIR, 'endfb81_n_Pu-239.endf'),
+    )
+
+
+def resolve_cu63_rml() -> str | None:
+    """Resolve the JEFF-4.0 Cu-63 file. Its LRF=7 range covers 6
+    J-groups with NCH in {2, 3}, capture + elastic pairs; a
+    mid-mass balance between the compact Rh-103 and the large
+    Pu-239 cases."""
+    return _first_existing(
+        os.environ.get('CU63_RML_ENDF'),
+        os.path.join(_CORPUS_DIR, 'jeff40_n_Cu-63.endf'),
+    )
+
+
 def resolve_c12() -> str | None:
     """Resolve the C-12 ENDF file (JENDL-5). Used by the MF14
     Legendre-branch parity tests (issue #169 tier-2 photon path):
