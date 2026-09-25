@@ -230,18 +230,13 @@ def _endf_interp1d_traced_x(
     _small = 1.0e-38
     x = xp.asarray(x)
     fp = xp.asarray(fp)
-
-    # Mesh may be a JAX tracer (mesh-autodiff path): ``np.asarray``
-    # then raises ``TracerArrayConversionError`` and ``treat_duplicates``
-    # can't run its ``np.unique`` check under trace. Fall back to using
-    # the mesh as-is on the xp side; the caller's preproc is responsible
-    # for de-duplicating file-side mesh values before injecting a tracer.
-    # Concrete mesh (numpy or concrete jax) keeps the dedup step.
-    try:
-        xp_mesh_np = treat_duplicates(np.asarray(xp_mesh))
-        xp_mesh_xp = xp.asarray(xp_mesh_np, dtype=x.dtype)
-    except Exception:
-        xp_mesh_xp = xp.asarray(xp_mesh)
+    # No ``treat_duplicates`` here: the ``dx_safe`` line below already
+    # handles zero-width brackets from duplicated mesh values (ENDF-6
+    # encodes a step discontinuity as two adjacent equal-x mesh points).
+    # Skipping dedup also lets a JAX-tracer mesh flow through for
+    # mesh-knot autodiff, since ``np.asarray(tracer)`` would raise
+    # inside the numpy-only dedup step.
+    xp_mesh_xp = xp.asarray(xp_mesh)
     n_mesh = int(xp_mesh_xp.shape[0])
     if n_mesh < 2:
         # Degenerate: too few mesh points for any bracket. Return
