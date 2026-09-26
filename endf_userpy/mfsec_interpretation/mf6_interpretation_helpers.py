@@ -169,9 +169,20 @@ def has_angdist_part(endf_dict, mt, zap):
 def _filter_energies_in(
     energies_in, endf_dict, mt, subsec_num,  *args, **kwargs
 ):
+    eincs = energies_in
+    xp = kwargs.get('xp')
+    if xp is not None and xp.name != 'numpy':
+        # Under a non-numpy backend (e.g. JAX with a tracer mesh for
+        # mesh-knot autodiff, or a tracer query for query-side
+        # autodiff) the ``pad_outside_values`` decorator cannot
+        # inspect a JAX bool mask via its ``np.all(v)`` fast-path
+        # check. Short-circuit to "all inside"; the traced
+        # reconstruction kernels below handle out-of-range via
+        # their own ``outside_value`` fills. Mirrors the MF4
+        # helper fix landed in PR #244.
+        return np.ones(eincs.shape, dtype=bool)
     subsec = endf_dict[6][mt]['subsection'][subsec_num]
     ei_mesh = dict2array(subsec['E'], dtype=float)
-    eincs = energies_in
     return (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
 
 

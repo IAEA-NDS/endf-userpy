@@ -114,7 +114,13 @@ def compute_angdist_from_legendre(
         interp_table = einc_interp_tables[eg_idx + 1]
         nbt_arr = np.array(interp_table['NBT'], dtype=int)
         int_arr = np.array(interp_table['INT'], dtype=int)
-        einc_mesh = dict2array(mtsec['E'][eg_idx + 1], dtype=float)
+        # Route the per-photon-line Ein mesh through xp so a JAX
+        # tracer at ``mtsec['E'][eg_idx + 1][idx]`` (mesh-knot
+        # autodiff) survives the Legendre coefficient interpolation.
+        # Under xp=numpy this is bit-identical.
+        einc_mesh = dict2array(
+            mtsec['E'][eg_idx + 1], dtype=float, xp=xp,
+        )
         coeffs_arr = _convert_legendre_to_numpy_array(
             mtsec['a'][eg_idx + 1], xp=xp,
         )

@@ -179,7 +179,11 @@ def mf6_law2_data_from_endf_dict(endf_dict, mt: int, subsec_num: int,
     lct = int(sec['LCT'])
     lang = int(subsec['LANG'])
     zap = float(subsec.get('ZAP', 0.0))
-    ei_mesh = dict2array(subsec['E'], dtype=float)
+    # Route the incident-energy mesh through xp so a JAX tracer at
+    # ``subsec['E'][idx]`` (mesh-knot autodiff) survives into the
+    # LAW=2 outer TAB2 interpolation. Under xp=numpy this is
+    # bit-identical.
+    ei_mesh = dict2array(subsec['E'], dtype=float, xp=xp)
     int_arr = np.array(subsec['INT'], dtype=int)
     nbt_arr = np.array(subsec['NBT'], dtype=int)
     coeffs = None
