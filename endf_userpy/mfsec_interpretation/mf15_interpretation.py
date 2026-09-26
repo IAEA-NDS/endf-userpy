@@ -30,7 +30,11 @@ def compute_tabulated_spectrum(
     int_arr = np.array(contrib_sec['INT'])
     nbt_arr = np.array(contrib_sec['NBT'])
 
-    ein_mesh = dict2array(contrib_sec['E'])
+    # Route the incident-energy mesh through xp so a JAX tracer at
+    # ``contrib_sec['E'][idx]`` (mesh-knot autodiff, mirrors the
+    # MF5 LF=1 mesh path) survives ``interp_tab2``'s traced-x
+    # variant. Under xp=numpy this is bit-identical.
+    ein_mesh = dict2array(contrib_sec['E'], dtype=float, xp=xp)
     tab1_records = list(contrib_sec['rtfm1_tab'].values())
     f = interp_tab2(
         ein, eout, ein_mesh, int_arr, nbt_arr, tab1_records,
