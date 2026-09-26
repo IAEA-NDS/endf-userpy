@@ -175,18 +175,27 @@ each include the `wget` command to fetch the JENDL-5 file they need.
 
 ## Known limitations
 
-- **No resonance reconstruction.** MF2 (resolved/unresolved resonance
-  parameters) is not reconstructed. For evaluations whose MF3 is empty
-  in the resonance region, pre-process the file with
-  [NJOY RECONR](https://github.com/njoy/NJOY2016) and pass the PENDF
-  file in. Evaluations that store MF3 as a **subtractive background**
-  in the resolved-resonance region (which ENDF-6 permits, and which
-  can produce negative raw MF3 values -- e.g. JENDL-5 Cu-63 MT1/MT2
-  tabulate `-0.9 barn` at thermal energies) return the raw background
-  by default and emit one summary `UserWarning` per call naming the
-  affected MTs and RRR bounds. Configure with the `resonance_range=`
-  kwarg on every `get_*` XS API: `'warn'` (default),
-  `'warn_nan'`, `'nan'`, `'raise'`.
+- **Resonance reconstruction is opt-in.** The default cross-section
+  path returns raw MF3, which for evaluations that store the
+  resolved-resonance region (RRR) as a **subtractive background** is
+  not the physical cross section and can be negative (e.g. JENDL-5
+  Cu-63 MT1/MT2 tabulate `-0.9 barn` at thermal energies). One
+  summary `UserWarning` per call names the affected MTs and RRR
+  bounds; configure with the `resonance_range=` kwarg
+  (`'warn'` default, `'warn_nan'`, `'nan'`, `'raise'`). To compose
+  the reconstruction on top of the MF3 background instead, pass
+  `include_resonance=True` to every `get_*` XS API. Supported
+  formalisms: **LRU=1 LRF=2 MLBW**, **LRU=1 LRF=3 Reich-Moore**,
+  **LRU=1 LRF=7 R-Matrix Limited (KRM=3, KRL=0, IFG=0, NRO=0,
+  KBK=0, KPS=0)**, and **LRU=2 LRF=2 URR (Case C, INT=2)** with
+  Gauss-Legendre or Ross-10 fluctuation-integral quadratures.
+  Unsupported ranges (Adler-Adler LRF=4, LRF=7 with KRM≠3 or with
+  KBK/KPS/IFG/NRO out of range, URR with non-INT=2 tables)
+  contribute zero and a `UserWarning` names the specific formalism.
+  All backends (`resonance_backend=` numpy/numba/JAX) are supported;
+  JAX propagates `jax.grad` to file-side ER / Γn / Γγ / Γf leaves.
+  For files that pre-process to a full PENDF (e.g. NJOY RECONR
+  output), pass the PENDF file in and leave `include_resonance=False`.
 - **Aggregate-reaction sum-MT queries under-count on sparse files.**
   `get_reaction_xs("(n,n)")` resolves to MT4 (inelastic-scattering
   sum over MT51..90). The admission heuristic drops the parent MT4
@@ -251,10 +260,9 @@ each include the `wget` command to fetch the JENDL-5 file they need.
   per call. Configure with the `above_range=` kwarg (`'warn_nan'`
   default, or `'nan'`, `'warn_zero'`, `'zero'`, `'raise'`).
 - **Unimplemented representations** raise `NotImplementedError`:
-  MF5 LF=11 (energy-dependent Watt), LF=12 (Madland-Nix); MF6 LAW=3
-  (charged-particle elastic isotropic in CM), LAW=4 (recoil), LAW=5
-  (charged-particle with phase shift); MF14 LTT=2 (tabulated photon
-  angular).
+  MF6 LAW=3 (charged-particle elastic isotropic in CM), LAW=4
+  (recoil), LAW=5 (charged-particle with phase shift); MF14 LTT=2
+  (tabulated photon angular).
 - **Stubs.** `endf_userpy/discrete_quantities.py` and
   `endf_userpy/translation.py` are work-in-progress sketches; do not
   rely on them.
