@@ -193,4 +193,15 @@ def test_jax_grad_wrt_broadening_sigma_top_level(al27_endf_dict):
     assert val > 0.0
     eps = 5e2
     fd = (float(loss(sv + eps)) - float(loss(sv - eps))) / (2 * eps)
+    # Sentinel against a zero-equals-zero pass: if the broadened
+    # DDX becomes independent of sigma at the chosen query grid
+    # (e.g. all queries fall in flat regions of the smoothed
+    # spectrum), FD and grad both trivialise to 0 and
+    # ``assert_allclose`` would succeed without pinning that the
+    # tracer propagates through the FFT convolution and the
+    # composition sum.
+    assert abs(fd) > 0.0, (
+        'FD is exactly zero: chose an insensitive broadening scale; '
+        'test is uninformative'
+    )
     np.testing.assert_allclose(grad, fd, rtol=1e-2, atol=1e-15)

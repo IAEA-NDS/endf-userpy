@@ -121,4 +121,12 @@ def test_jax_grad_wrt_mlbw_ER_end_to_end_nb93(nb93_endf_dict):
     assert val > 0.0
     eps = 1e-3 * abs(original) if original != 0.0 else 1e-6
     fd = (float(loss(jnp.array(original + eps))) - float(loss(jnp.array(original - eps)))) / (2 * eps)
+    # Sentinel against a zero-equals-zero pass: if a future edit
+    # moves the perturbation to a resonance parameter whose
+    # contribution at the chosen ein grid is zero, FD would be
+    # exactly 0 and grad would also be 0, and ``assert_allclose``
+    # would succeed without pinning that the tracer propagates.
+    assert abs(fd) > 0.0, (
+        'FD is exactly zero: chose an inert leaf; test is uninformative'
+    )
     np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-20)
