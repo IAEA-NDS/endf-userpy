@@ -615,8 +615,14 @@ def _interp_tab2_traced_x(
     if y_xp.ndim == 1:
         y_xp = y_xp.reshape(1, -1)
 
-    xp_mesh_np = np.asarray(xp_mesh)
-    n_panels = int(xp_mesh_np.shape[0]) - 1
+    # Route the mesh through xp so a tracer stored in ``xp_mesh``
+    # (mesh-knot autodiff) survives the panel arithmetic below. The
+    # panel index ``p`` is still concrete (categorical, non-diff),
+    # but ``x1``/``x2`` used inside the outer-interp arithmetic come
+    # from ``xp.take(xp_mesh_xp, p)`` so their contribution to the
+    # gradient chain is preserved.
+    xp_mesh_xp = xp.asarray(xp_mesh)
+    n_panels = int(xp_mesh_xp.shape[0]) - 1
     if n_panels < 1:
         raise ValueError('interp_tab2 requires >= 2 mesh points')
     interp_arr_np = convert_interp_repr(int_arr, nbt_arr)
@@ -630,7 +636,7 @@ def _interp_tab2_traced_x(
     def _outer_2pt(interp_type, x_col, x1, x2, y1, y2):
         """Return an (n_x, n_y) block for one panel, given the
         panel's inner-interp values ``y1``, ``y2`` (both (n_y,))
-        and scalars ``x1``, ``x2``."""
+        and xp-native scalars ``x1``, ``x2`` (tracer-safe)."""
         y1_row = y1.reshape(1, -1)                              # (1, n_y)
         y2_row = y2.reshape(1, -1)                              # (1, n_y)
         if interp_type == 1:
@@ -638,12 +644,11 @@ def _interp_tab2_traced_x(
         if interp_type == 2:
             return y1_row + (x_col - x1) * (y2_row - y1_row) / (x2 - x1)
         if interp_type == 3:
-            x1s = x1 if x1 != 0.0 else _small
-            x2s = x2 if x2 != 0.0 else _small
-            # x may be zero or negative under trace; clamp for log
-            # safety on the branches we do not select. Selection is
-            # by is_in_panel; only the correct panel's values reach
-            # the output.
+            # Log-safe zero guards on x1, x2 (may be xp-native under
+            # mesh autodiff, so use xp.where rather than Python
+            # conditionals).
+            x1s = xp.where(x1 == 0.0, _small, x1)
+            x2s = xp.where(x2 == 0.0, _small, x2)
             x_safe = xp.where(x_col > 0.0, x_col, _small)
             return y1_row + xp.log(x_safe / x1s) * (
                 y2_row - y1_row
@@ -654,8 +659,8 @@ def _interp_tab2_traced_x(
                 (x_col - x1) * xp.log(y2_row / y1_safe) / (x2 - x1)
             )
         if interp_type == 5:
-            x1s = x1 if x1 != 0.0 else _small
-            x2s = x2 if x2 != 0.0 else _small
+            x1s = xp.where(x1 == 0.0, _small, x1)
+            x2s = xp.where(x2 == 0.0, _small, x2)
             x_safe = xp.where(x_col > 0.0, x_col, _small)
             y1_safe = xp.where(y1_row == 0.0, _small, y1_row)
             return y1_safe * xp.exp(
@@ -670,14 +675,15 @@ def _interp_tab2_traced_x(
 
     def _outer_2pt_row(interp_type, x_col, x1, x2, y1_row, y2_row):
         """Per-x-y outer 2-point interp when y1/y2 already have
-        shape (n_x, n_y) (per-x y case)."""
+        shape (n_x, n_y) (per-x y case). ``x1``/``x2`` may be
+        xp-native tracer scalars."""
         if interp_type == 1:
             return y1_row
         if interp_type == 2:
             return y1_row + (x_col - x1) * (y2_row - y1_row) / (x2 - x1)
         if interp_type == 3:
-            x1s = x1 if x1 != 0.0 else _small
-            x2s = x2 if x2 != 0.0 else _small
+            x1s = xp.where(x1 == 0.0, _small, x1)
+            x2s = xp.where(x2 == 0.0, _small, x2)
             x_safe = xp.where(x_col > 0.0, x_col, _small)
             return y1_row + xp.log(x_safe / x1s) * (
                 y2_row - y1_row
@@ -688,8 +694,8 @@ def _interp_tab2_traced_x(
                 (x_col - x1) * xp.log(y2_row / y1_safe) / (x2 - x1)
             )
         if interp_type == 5:
-            x1s = x1 if x1 != 0.0 else _small
-            x2s = x2 if x2 != 0.0 else _small
+            x1s = xp.where(x1 == 0.0, _small, x1)
+            x2s = xp.where(x2 == 0.0, _small, x2)
             x_safe = xp.where(x_col > 0.0, x_col, _small)
             y1_safe = xp.where(y1_row == 0.0, _small, y1_row)
             return y1_safe * xp.exp(
@@ -703,11 +709,13 @@ def _interp_tab2_traced_x(
 
     # Assemble by masking each panel's block into the result.
     result = xp.zeros((n_x, n_y), dtype=xp.float64)
-    mesh_lo = float(xp_mesh_np[0])
-    mesh_hi = float(xp_mesh_np[-1])
+    # Mesh endpoints stay xp-native so an outside_value fill wraps
+    # tracer comparisons correctly under mesh autodiff.
+    mesh_lo = xp_mesh_xp[0]
+    mesh_hi = xp_mesh_xp[-1]
     for p in range(n_panels):
-        x1 = float(xp_mesh_np[p])
-        x2 = float(xp_mesh_np[p + 1])
+        x1 = xp_mesh_xp[p]
+        x2 = xp_mesh_xp[p + 1]
         interp_type = int(interp_arr_np[p])
         curtab1 = tab1_records[p]
         curtab2 = tab1_records[p + 1]
