@@ -15,17 +15,17 @@ def _filter_energies_in(
         # Purely isotropic angular distributions (LTT=0, LI=1)
         # don't come with an incident energy mesh
         return (eincs > 0)
-    try:
-        ei_mesh = dict2array(orig_en_dict, dtype=float)
-    except Exception:
-        # Under mesh-knot autodiff a JAX tracer sits at some
-        # ``ei_mesh`` entry; ``dict2array`` without ``xp`` then
-        # raises ``TracerArrayConversionError``. The pad_outside
-        # fast-path needs a concrete boolean mask, so assume all
-        # query energies are inside the mesh and let the traced
-        # reconstruction kernels handle out-of-range via their
-        # own ``outside_value`` fill.
-        return np.ones(np.asarray(eincs).shape, dtype=bool)
+    xp = kwargs.get('xp')
+    if xp is not None and xp.name != 'numpy':
+        # Under a non-numpy backend (e.g. JAX with a tracer mesh
+        # for mesh-knot autodiff) we cannot safely build a concrete
+        # in/out-of-range mask. The traced reconstruction kernels
+        # below handle out-of-range via their own ``outside_value``
+        # fill, so short-circuit to "all inside" and let the
+        # ``pad_outside_values`` fast path take the wrapped call
+        # unchanged.
+        return np.ones(eincs.shape, dtype=bool)
+    ei_mesh = dict2array(orig_en_dict, dtype=float)
     return (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
 
 
