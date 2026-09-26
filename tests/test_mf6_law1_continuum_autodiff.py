@@ -184,7 +184,20 @@ def test_jax_grad_flows_from_dict_stored_tracer(al27_endf_dict):
     ``endf_dict[6][mt]['subsection'][sn]['b'][panel][ep_row][coef_idx]``
     and calls the dict-facing entry point with a JAX backend. The
     tracer-preserving ``dict2array`` in the preproc keeps the
-    tracer alive, and jax.grad reaches back through it."""
+    tracer alive, and jax.grad reaches back through it.
+
+    Perturbation site chosen so the leaf actually participates in
+    the reconstruction at the chosen query grid: ``e_in`` sits
+    inside the panel-8 / panel-9 interpolation bracket, and
+    ``Ep[8][17]`` (Kalbach f0 at Ep=482 keV) lies inside the
+    ``e_out`` linspace, so a perturbation has a strong FD signal.
+    The Kalbach r leaf (``coef_idx_key=1``) at the same
+    (panel, Ep_row) also flows a tracer but averages to near-zero
+    FD when integrated over the symmetric mu grid, so testing r
+    instead of f0 would pass on a spurious zero-equals-zero
+    condition. A sentinel below asserts that the FD magnitude is
+    meaningfully nonzero to keep the test faithful to its intent.
+    """
     import jax
     import jax.numpy as jnp
     xp_jax = array_ns.get_backend('jax')
@@ -194,13 +207,14 @@ def test_jax_grad_flows_from_dict_stored_tracer(al27_endf_dict):
     # Panel 8 (1-indexed 8+1=9 -> use 8 with 0-indexed logic; here
     # dict is 1-indexed so panel_idx=7 -> dict key 8), pick a
     # tabulated (Ep_row, coef) leaf. Al-27 LANG=2 has NA=1 -> b has
-    # 2 cols per row (f0, r).
+    # 2 cols per row (f0, r); ``coef_idx_key=0`` picks f0.
     panel_key = 8
-    ep_row_key = 5     # 1-indexed
-    coef_idx_key = 1   # 1-indexed: b[panel][ep_row][coef]
+    ep_row_key = 17    # 1-indexed; Ep=482 keV, inside the e_out linspace
+    coef_idx_key = 0   # 0-indexed: Kalbach f0
     original = float(
         al27_endf_dict[6][91]['subsection'][1]['b'][panel_key][ep_row_key][coef_idx_key]
     )
+    assert original != 0.0, 'sentinel: chose a zero-valued Kalbach f0 leaf'
 
     def loss(theta):
         d_t = copy.deepcopy(al27_endf_dict)
@@ -212,10 +226,20 @@ def test_jax_grad_flows_from_dict_stored_tracer(al27_endf_dict):
     grad = float(jax.grad(loss)(jnp.array(original)))
     assert np.isfinite(grad)
     # Finite-diff sanity
-    eps = 1e-4
+    eps = abs(original) * 1e-3
     lp = float(loss(jnp.array(original + eps)))
     lm = float(loss(jnp.array(original - eps)))
     fd = (lp - lm) / (2.0 * eps)
+    # Sentinel: reject a zero-equals-zero pass. Without this check,
+    # a perturbation site whose leaf never participates in the
+    # reconstruction at the chosen query grid would give FD=0 and
+    # grad=0, and the test would pass while providing no evidence
+    # that the tracer actually propagates.
+    assert abs(fd) > 1e-3, (
+        f'FD is essentially zero ({fd:.3g}): the chosen leaf does not '
+        'meaningfully participate in the reconstruction at this query '
+        'grid, so grad-vs-FD parity would be uninformative'
+    )
     # Rel tolerance loose because Kalbach loss surface has some
     # tricky gradient scales.
     np.testing.assert_allclose(grad, fd, rtol=5e-3, atol=1e-8)
