@@ -230,9 +230,13 @@ def _endf_interp1d_traced_x(
     _small = 1.0e-38
     x = xp.asarray(x)
     fp = xp.asarray(fp)
-
-    xp_mesh_np = treat_duplicates(np.asarray(xp_mesh))
-    xp_mesh_xp = xp.asarray(xp_mesh_np, dtype=x.dtype)
+    # No ``treat_duplicates`` here: the ``dx_safe`` line below already
+    # handles zero-width brackets from duplicated mesh values (ENDF-6
+    # encodes a step discontinuity as two adjacent equal-x mesh points).
+    # Skipping dedup also lets a JAX-tracer mesh flow through for
+    # mesh-knot autodiff, since ``np.asarray(tracer)`` would raise
+    # inside the numpy-only dedup step.
+    xp_mesh_xp = xp.asarray(xp_mesh)
     n_mesh = int(xp_mesh_xp.shape[0])
     if n_mesh < 2:
         # Degenerate: too few mesh points for any bracket. Return
@@ -543,17 +547,15 @@ def interp_tab1(x, tab1, xp_name, fp_name, outside_value=None, xp=None):
     'INT': ..., 'NBT': ...}` dict-of-arrays layout) at query `x`.
 
     Backend-agnostic: ``xp=None`` (default) is numpy; passing a
-    JAX backend preserves tracers in ``tab1[fp_name]``. The mesh
-    and INT/NBT are always numpy since they are file-side data
-    and drive panel-indexing lookups.
+    JAX backend preserves tracers stored at either ``tab1[fp_name]``
+    or ``tab1[xp_name]`` (fp-side or mesh-side autodiff). ``xp.asarray``
+    on a list containing a JAX tracer scalar preserves the tracer's
+    functional dependency. INT / NBT stay numpy because they are
+    region-descriptor integers with no autodiff meaning.
     """
     xp = _resolve_xp(xp)
-    x_mesh = np.asarray(tab1[xp_name], dtype=float)
-    # Do NOT force `f_mesh` to numpy: if the caller stores a JAX
-    # tracer in `tab1[fp_name]`, we want the gradient to flow.
-    f_mesh = tab1[fp_name]
-    if xp.name == 'numpy':
-        f_mesh = np.asarray(f_mesh, dtype=float)
+    x_mesh = xp.asarray(tab1[xp_name], dtype=xp.float64)
+    f_mesh = xp.asarray(tab1[fp_name], dtype=xp.float64)
     int_arr = np.asarray(tab1['INT'], dtype=int)
     nbt_arr = np.asarray(tab1['NBT'], dtype=int)
     return endf_interp1d(
