@@ -152,7 +152,12 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
     lct = int(sec['LCT'])
     lang = int(subsec['LANG'])
     lep = int(subsec['LEP'])
-    ei_mesh = dict2array(subsec['E'], dtype=float)
+    # Route ``ei_mesh`` through xp so a JAX tracer at
+    # ``subsec['E'][idx]`` (mesh-knot autodiff) survives the
+    # kernel's default-path panel loop. Under xp=numpy this
+    # remains a numpy build. Region-descriptor arrays and
+    # per-panel counts stay integer.
+    ei_mesh = dict2array(subsec['E'], dtype=float, xp=xp)
     int_arr = np.array(subsec['INT'], dtype=int)
     nbt_arr = np.array(subsec['NBT'], dtype=int)
     nd_arr = dict2array(subsec['ND'], dtype=int)

@@ -31,6 +31,31 @@ from ..primitives import array_ns
 from ..primitives.helpers import find_interval
 
 
+def _is_jax_tracer(x) -> bool:
+    """Return True if ``x`` is a JAX Tracer, i.e. an abstract value
+    inside a ``jax.grad`` / ``jax.jit`` / ``jax.vmap`` trace whose
+    concrete numerical contents are not available to Python-side
+    control flow. Concrete arrays (numpy or realised jax.Array) and
+    plain Python scalars return False.
+
+    Used to steer the LAW=1 kernel between its fast concrete-mesh
+    sparse-scatter path and the tracer-safe full-eval ``xp.where``
+    fallback: the concrete path materialises the mesh and query to
+    numpy for panel enumeration; the fallback treats every panel
+    index Python-side and masks contributions xp-native. The
+    branch decision is by JAX API, not by exception handling.
+
+    JAX is imported lazily so numpy-only environments do not
+    require JAX at import time; if JAX is not installed the
+    function trivially returns False.
+    """
+    try:
+        import jax.core
+    except ImportError:
+        return False
+    return isinstance(x, jax.core.Tracer)
+
+
 _MF6CM_D2_MIN = 1.0e-38
 _MF6CM_C_MIN = 1.0e-19
 _LOG_SMALL = 1.0e-38
@@ -620,43 +645,82 @@ def reconstruct(data, energies_in, energies_out, angle_cosines_out,
         )
 
     # Panel-by-panel continuum evaluation. Group query E by panel.
-    ei_mesh_np = np.asarray(data.ei_mesh)
-    # Build the full per-panel INT lookup (mirror the outer
-    # int_arr / nbt_arr conversion).
+    # Two code paths:
+    #   * Concrete mesh AND concrete query (the common numpy /
+    #     concrete-jax case): materialise ``ei_mesh`` and ``e_in``
+    #     to numpy, use ``find_interval`` + sparse scatter. Each
+    #     panel is evaluated on only the query rows that fall
+    #     inside it, keeping the numpy path fast.
+    #   * Either the mesh or the query is a tracer (mesh-knot
+    #     autodiff perturbs ``ei_mesh``; ``jax.jit`` wraps
+    #     ``e_in``): ``np.asarray`` on the tracer raises. Fall back
+    #     to a full-eval xp.where path that loops Python-side over
+    #     every panel index and masks contributions via
+    #     ``(e_in >= mesh[p]) & (e_in < mesh[p+1])``. Slower (each
+    #     panel evaluates the full ``n_e`` rows) but keeps tracers
+    #     alive so ``jax.grad`` reaches back to the perturbed leaf
+    #     and ``jax.jit`` can compile the reconstruction.
     from ..primitives.helpers import convert_interp_repr as _cvt
     ei_interp_full = _cvt(np.asarray(data.int_arr), np.asarray(data.nbt_arr))
-    e_in_np = np.asarray(e_in)
-    # Only compute for E's that are inside the ei_mesh range.
-    e_min = float(ei_mesh_np[0])
-    e_max = float(ei_mesh_np[-1])
-    inside_mask_np = (e_in_np >= e_min) & (e_in_np <= e_max)
+    _needs_fallback = _is_jax_tracer(data.ei_mesh) or _is_jax_tracer(e_in)
 
     result = xp.zeros((n_e, n_ep, n_mu), dtype=tp_bc.dtype)
-    if not inside_mask_np.any():
+
+    if not _needs_fallback:
+        ei_mesh_np = np.asarray(data.ei_mesh)
+        e_in_np = np.asarray(e_in)
+        e_min = float(ei_mesh_np[0])
+        e_max = float(ei_mesh_np[-1])
+        inside_mask_np = (e_in_np >= e_min) & (e_in_np <= e_max)
+        if not inside_mask_np.any():
+            return result * dinv_bc
+
+        e_inside_np = e_in_np[inside_mask_np]
+        idcs = find_interval(ei_mesh_np, e_inside_np)
+        inside_positions = np.where(inside_mask_np)[0]
+
+        for panel_idx in np.unique(idcs):
+            row_mask = (idcs == panel_idx)
+            rows_np = inside_positions[row_mask]        # positions in full n_e
+            # Slice the broadcast arrays to the E-rows for this panel
+            rows_xp = xp.asarray(rows_np)
+            e_sub = xp.take(e_bc[:, 0, 0], rows_xp, axis=0)[:, None, None]
+            tp_sub = xp.take(tp_bc, rows_xp, axis=0)
+            w_sub = xp.take(w_bc, rows_xp, axis=0)
+            e_sub_bc = xp.broadcast_to(
+                e_sub, (rows_np.shape[0], n_ep, n_mu),
+            )
+            lei = int(ei_interp_full[panel_idx])
+            f_sub = _f6law1con_panel_pair_bc(
+                data, int(panel_idx), lei, e_sub_bc, tp_sub, w_sub, xp,
+            )
+            # Scatter back into result at these rows
+            result = _scatter_rows(result, rows_np, f_sub, xp)
+
         return result * dinv_bc
 
-    e_inside_np = e_in_np[inside_mask_np]
-    idcs = find_interval(ei_mesh_np, e_inside_np)
-    inside_positions = np.where(inside_mask_np)[0]
-
-    for panel_idx in np.unique(idcs):
-        row_mask = (idcs == panel_idx)
-        rows_np = inside_positions[row_mask]        # positions in full n_e
-        # Slice the broadcast arrays to the E-rows for this panel
-        rows_xp = xp.asarray(rows_np)
-        e_sub = xp.take(e_bc[:, 0, 0], rows_xp, axis=0)[:, None, None]
-        tp_sub = xp.take(tp_bc, rows_xp, axis=0)
-        w_sub = xp.take(w_bc, rows_xp, axis=0)
-        e_sub_bc = xp.broadcast_to(
-            e_sub, (rows_np.shape[0], n_ep, n_mu),
+    # Fallback (tracer mesh OR tracer query): evaluate every panel
+    # over the full query grid and mask via xp.where on the panel's
+    # Ein bracket.
+    n_panels = int(data.ei_mesh.shape[0])
+    e_in_col = e_in[:, None, None]                            # (n_e, 1, 1)
+    e_bc_full = xp.broadcast_to(e_bc, (n_e, n_ep, n_mu))
+    for p in range(n_panels - 1):
+        e_p = data.ei_mesh[p]
+        e_p_next = data.ei_mesh[p + 1]
+        # Panel p covers [ei_mesh[p], ei_mesh[p+1]); the top panel
+        # is closed on both ends so the last mesh knot is included.
+        is_last = p == n_panels - 2
+        if is_last:
+            in_panel = (e_in_col >= e_p) & (e_in_col <= e_p_next)
+        else:
+            in_panel = (e_in_col >= e_p) & (e_in_col < e_p_next)
+        in_panel_bc = xp.broadcast_to(in_panel, (n_e, n_ep, n_mu))
+        lei = int(ei_interp_full[p])
+        f_p = _f6law1con_panel_pair_bc(
+            data, p, lei, e_bc_full, tp_bc, w_bc, xp,
         )
-        lei = int(ei_interp_full[panel_idx])
-        f_sub = _f6law1con_panel_pair_bc(
-            data, int(panel_idx), lei, e_sub_bc, tp_sub, w_sub, xp,
-        )
-        # Scatter back into result at these rows
-        result = _scatter_rows(result, rows_np, f_sub, xp)
-
+        result = xp.where(in_panel_bc, f_p, result)
     return result * dinv_bc
 
 
