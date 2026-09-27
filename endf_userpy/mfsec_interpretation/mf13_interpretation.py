@@ -18,7 +18,10 @@ def _compute_total_production_xs(endf_dict, mt, energies_in, xp=None):
     mtsec = endf_dict[13][mt]
     int_arr = np.array(mtsec['INT'])
     nbt_arr = np.array(mtsec['NBT'])
-    einc_mesh = np.array(mtsec['E'])
+    # Route the incident-energy mesh through xp so a JAX tracer at
+    # ``mtsec['E'][idx]`` (mesh-knot autodiff) survives the
+    # interpolation kernel. Under xp=numpy this is bit-identical.
+    einc_mesh = xp.asarray(mtsec['E'], dtype=xp.float64)
     xs_mesh = mtsec['sigma_tot']
     if xp.name == 'numpy':
         xs_mesh = np.asarray(xs_mesh, dtype=float)
