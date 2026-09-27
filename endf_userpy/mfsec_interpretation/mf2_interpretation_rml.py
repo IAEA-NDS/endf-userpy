@@ -407,8 +407,10 @@ def _reconstruct_group(
         ppi = int(round(float(data.ch_ppi[g, c])))
         L_c = int(round(float(data.ch_l[g, c])))
         L_arr = xp.asarray(L_c)
-        apt_c = float(data.ch_apt[g, c])
-        ape_c = float(data.ch_ape[g, c])
+        # xp scalars so tracer channel-radii flow through the rho /
+        # penetration / phase arithmetic below.
+        apt_c = data.ch_apt[g, c]
+        ape_c = data.ch_ape[g, c]
 
         # Rho at E and at |E_r|.
         rho_e = ki * sqrt_e * apt_c                                # (ne,)
@@ -564,7 +566,10 @@ def reconstruct(data: RMLData, energies_in, xp):
         )
         ec_slot = particle[elastic_slot]
         L_e = int(round(float(data.ch_l[g, ec_slot])))
-        ape_e = float(data.ch_ape[g, ec_slot])
+        # Keep ape_e as an xp scalar (not Python float) so tracer
+        # channel-radius / ki values flow through the phase-shift
+        # arithmetic below.
+        ape_e = data.ch_ape[g, ec_slot]
         rho_e_hat = data.ki * xp.sqrt(e_safe) * ape_e
         phi_e = factors.phase(rho_e_hat, xp.asarray(L_e), xp)
         pot_tot = pot_tot + data.group_g[g] * xp.sin(phi_e) ** 2

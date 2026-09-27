@@ -106,7 +106,11 @@ def rml_data_from_endf_dict(
 
     d151 = endf_dict[2][151]
     d_iso = d151['isotope'][isotope_idx]
-    abn = float(np.asarray(d_iso['ABN'], dtype=np.float64))
+    # ``abn`` multiplies the whole per-isotope cross section (the
+    # ``abn * pi / k^2`` prefactor in reconstruction). Fitters do
+    # tune isotopic abundances against natural-target measurements,
+    # so route it through xp.
+    abn = xp.asarray(d_iso['ABN'], dtype=xp.float64)
     d_range = d_iso['range'][range_idx]
 
     if int(d_range['LRU']) != 1 or int(d_range['LRF']) != 7:
@@ -151,7 +155,11 @@ def rml_data_from_endf_dict(
     # these numpy regardless of xp. Only ``res_er`` and ``res_gam``
     # (the resonance parameters a fitter tunes) route through xp.
     pp_ma = dict2array(d_range['MA'], dtype=float)
-    pp_mb = dict2array(d_range['MB'], dtype=float)
+    # ``pp_mb`` (target mass) enters the wavenumber prefactor ``ki``
+    # smoothly. Route through xp so a tracer flows into ``ki`` and
+    # thence into the reconstruction's ``k = ki * sqrt(E)``. Every
+    # other pp_* stays numpy per the surrounding comment.
+    pp_mb = dict2array(d_range['MB'], dtype=float, xp=xp)
     pp_za = dict2array(d_range['ZA'], dtype=float)
     pp_zb = dict2array(d_range['ZB'], dtype=float)
     pp_ia = dict2array(d_range['IA'], dtype=float)
@@ -182,15 +190,20 @@ def rml_data_from_endf_dict(
     # with awi the incident mass in mn units and mb the target mass
     # in mn units. For LRF=7 elastic, awi is the neutron mass (~1)
     # and mb is the target mass, i.e. pp_mb[elastic_idx - 1].
-    mb_inc = float(pp_mb[incident_idx - 1])
-    ki = float(_KN * np.sqrt(awi) * mb_inc / (mb_inc + awi))
+    mb_inc = pp_mb[incident_idx - 1]
+    ki = _KN * xp.sqrt(xp.asarray(awi, dtype=xp.float64)) * mb_inc / (
+        mb_inc + awi
+    )
 
     # Range-level scattering radius. NRO=0 -> constant AP over the
     # whole range; wrap in a TAB1 to keep the reconstruction
     # backend-uniform with LRF=2 / LRF=3.
-    ap = float(d_range.get('AP', 0.0))
+    # Route ``ap`` (range-level scattering radius) through xp so
+    # fitters can autodiff against it. ``_radius_tab1_from_ap``
+    # already threads xp through the two-point TAB1 it builds.
+    ap = xp.asarray(d_range.get('AP', 0.0), dtype=xp.float64)
     emax = float(d_range['EH'])
-    r_ap = _radius_tab1_from_ap(ap, emax)
+    r_ap = _radius_tab1_from_ap(ap, emax, xp=xp)
 
     # ---- Per J-group + per-channel + per-resonance extraction ----
     sg = d_range.get('spingroup') or d_range.get('l_group')
@@ -241,8 +254,12 @@ def rml_data_from_endf_dict(
         ll  = dict2array(g['L'],   dtype=float)
         sch = dict2array(g['SCH'], dtype=float)
         bnd = dict2array(g['BND'], dtype=float)
-        ape = dict2array(g['APE'], dtype=float)
-        apt = dict2array(g['APT'], dtype=float)
+        # Route per-channel radii through xp so tracers survive at
+        # this preproc stage. ``ape`` / ``apt`` are the channel-side
+        # penetrability and true-scattering radii, both fittable
+        # against thermal cross sections / coherent scattering data.
+        ape = dict2array(g['APE'], dtype=float, xp=xp)
+        apt = dict2array(g['APT'], dtype=float, xp=xp)
         if not (ppi.shape[0] == ll.shape[0] == sch.shape[0] ==
                 bnd.shape[0] == ape.shape[0] == apt.shape[0] == nch):
             raise ValueError(
@@ -291,23 +308,33 @@ def rml_data_from_endf_dict(
 
     max_nch = int(group_nch.max()) if njs > 0 else 0
 
-    # Pack per-(group, channel) arrays with padding.
+    # Pack per-(group, channel) arrays with padding. Structural
+    # fields (ppi, l, sch, bnd, active) stay numpy; radii (ape, apt)
+    # go through xp so tracers survive.
     ch_ppi = np.zeros((njs, max_nch), dtype=np.float64)
     ch_l = np.zeros((njs, max_nch), dtype=np.float64)
     ch_sch = np.zeros((njs, max_nch), dtype=np.float64)
     ch_bnd = np.zeros((njs, max_nch), dtype=np.float64)
-    ch_ape = np.zeros((njs, max_nch), dtype=np.float64)
-    ch_apt = np.zeros((njs, max_nch), dtype=np.float64)
     ch_active = np.zeros((njs, max_nch), dtype=bool)
+    ch_ape_rows = []
+    ch_apt_rows = []
     for gi, ch in enumerate(per_group_channels):
         nch = int(group_nch[gi])
         ch_ppi[gi, :nch] = np.asarray(ch['PPI'])
         ch_l[gi, :nch] = np.asarray(ch['L'])
         ch_sch[gi, :nch] = np.asarray(ch['SCH'])
         ch_bnd[gi, :nch] = np.asarray(ch['BND'])
-        ch_ape[gi, :nch] = np.asarray(ch['APE'])
-        ch_apt[gi, :nch] = np.asarray(ch['APT'])
         ch_active[gi, :nch] = True
+        # xp-native padded row: [ch['APE'], zeros(max_nch - nch)].
+        if nch < max_nch:
+            pad = xp.zeros(max_nch - nch, dtype=xp.float64)
+            ch_ape_rows.append(xp.concatenate([ch['APE'], pad]))
+            ch_apt_rows.append(xp.concatenate([ch['APT'], pad]))
+        else:
+            ch_ape_rows.append(ch['APE'])
+            ch_apt_rows.append(ch['APT'])
+    ch_ape = xp.stack(ch_ape_rows, axis=0)
+    ch_apt = xp.stack(ch_apt_rows, axis=0)
 
     # Pack per-(resonance) and per-(resonance, channel) arrays.
     total_nres = sum(int(er.shape[0]) for er, _ in per_group_resonances)
