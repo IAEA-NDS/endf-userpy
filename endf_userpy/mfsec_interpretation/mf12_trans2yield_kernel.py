@@ -137,23 +137,35 @@ def init_trans2yield(elis, qm, qi, maxlevel: int, xp=None):
     return ee, r, a
 
 
-def _match_direct(esi, eek, tp, gp, xp):
-    """Vectorised level-matching against ``eek``. Returns
-    ``(p_direct, a_val)`` scalars (0 if no match). Tracer-safe."""
-    diffs = xp.abs(esi - eek)
-    # Tolerance rule matches the Fortran two-branch logic exactly:
-    #   esi=0 and eek=0  -> diff=0, tol=0, within=True (ground state).
+def _match_direct_vectorised(esi, ee_slice, tp, gp, xp):
+    """Vectorised level-matching for every ``k in [0, j0-1]``
+    simultaneously. Same two-branch tolerance semantics as the
+    Fortran but computed with a single ``(j0, nt)`` outer product
+    so the trace graph does not grow with ``j0``.
+
+    Parameters
+    ----------
+    esi : (nt,)  lower-level energies.
+    ee_slice : (j0,)  running-state levels ``ee[0:j0]``.
+    tp, gp : (nt,)  direct transition and photon-branching factors.
+
+    Returns ``(p_direct, a_val)`` of shape ``(j0,)`` each, with
+    zero at positions where no lower level matched.
+    """
+    diffs = xp.abs(esi[None, :] - ee_slice[:, None])         # (j0, nt)
+    # Tolerance rule matches the Fortran two-branch logic:
+    #   esi=0 and eek=0  -> diff=0, tol=0, within=True.
     #   esi=0 and eek!=0 -> diff=|eek|, tol=0, within=False.
     #   esi!=0 and eek=0 -> diff=|esi|, tol=1e-4*|esi|, within=False.
     #   esi!=0 and eek!=0-> |esi-eek| <= 1e-4*|esi|.
-    tol_abs = 1e-4 * xp.abs(esi)
-    within = diffs <= tol_abs
-    matched = xp.any(within)
-    # First-True index; if all False, argmax returns 0 but ``matched`` masks
-    # the value out downstream.
-    first_idx = xp.argmax(within.astype(xp.int32))
-    p_direct = xp.where(matched, tp[first_idx], 0.0)
-    a_val = xp.where(matched, tp[first_idx] * gp[first_idx], 0.0)
+    tol_abs = 1e-4 * xp.abs(esi)[None, :]                    # (1, nt)
+    within = diffs <= tol_abs                                # (j0, nt)
+    matched = xp.any(within, axis=1)                         # (j0,)
+    first_idx = xp.argmax(within.astype(xp.int32), axis=1)   # (j0,)
+    tp_at = tp[first_idx]                                    # (j0,)
+    gp_at = gp[first_idx]                                    # (j0,)
+    p_direct = xp.where(matched, tp_at, 0.0)                 # (j0,)
+    a_val = xp.where(matched, tp_at * gp_at, 0.0)            # (j0,)
     return p_direct, a_val
 
 
@@ -206,21 +218,46 @@ def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
 
     ee = _set_1d(ee, j0, esns, xp)
 
-    for k in range(j0 - 1, -1, -1):
-        eek = ee[k]
+    if j0 > 0:
+        # Vectorised match: one (j0, nt) outer product instead of j0
+        # per-k dispatches.
+        ee_slice = ee[0:j0]
         if nt > 0:
-            p_direct, a_val = _match_direct(esi, eek, tp, gp, xp)
+            p_direct_vec, a_val_vec = _match_direct_vectorised(
+                esi, ee_slice, tp, gp, xp,
+            )
         else:
-            p_direct = xp.asarray(0.0, dtype=xp.float64)
-            a_val = xp.asarray(0.0, dtype=xp.float64)
-        r_update = p_direct
-        # Sequential Fortran-order accumulation so the reference
-        # parity tests stay bit-exact (a pairwise xp.sum reduction
-        # can drift by a single ULP on small vectors).
-        for i in range(k + 1, j0):
-            r_update = r_update + a[k, i] * r[i, j0]
-        r = _set_2d(r, k, j0, r_update, xp)
-        a = _set_2d(a, k, j0, a_val, xp)
+            p_direct_vec = xp.zeros(j0, dtype=xp.float64)
+            a_val_vec = xp.zeros(j0, dtype=xp.float64)
+
+        # Write column j0 of ``a`` in one op.
+        if xp.name == 'jax':
+            a = a.at[0:j0, j0].set(a_val_vec)
+        else:
+            a[0:j0, j0] = a_val_vec
+
+        # Solve column j0 of ``r`` as a triangular back-substitution:
+        #   (I - strict_upper(a[0:j0, 0:j0])) @ r_col = p_direct
+        # The old code did this row-by-row with a sequential
+        # accumulation. A single triangular solve emits ONE XLA
+        # primitive per MT instead of O(j0^2) chained adds, which is
+        # the compile-time bottleneck on deep cascades. Introduces a
+        # ~1-ULP drift vs the pre-rewrite Fortran-parity reference.
+        eye_j0 = xp.eye(j0, dtype=xp.float64)
+        strict_upper_A = xp.triu(a[0:j0, 0:j0], k=1)
+        M = eye_j0 - strict_upper_A
+        if xp.name == 'jax':
+            import jax.scipy.linalg as _jsp_la
+            r_col = _jsp_la.solve_triangular(
+                M, p_direct_vec, lower=False, unit_diagonal=True,
+            )
+            r = r.at[0:j0, j0].set(r_col)
+        else:
+            from scipy.linalg import solve_triangular as _solve_triangular
+            r_col = _solve_triangular(
+                M, p_direct_vec, lower=False, unit_diagonal=True,
+            )
+            r[0:j0, j0] = r_col
 
     if j0 == 0:
         empty = xp.zeros(0, dtype=xp.float64)

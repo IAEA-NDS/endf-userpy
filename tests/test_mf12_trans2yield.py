@@ -63,7 +63,14 @@ def test_init_trans2yield_matches_fortran(fe56_endf_dict):
 
 def test_trans2yield_matches_fortran_full_series_fe56(fe56_endf_dict):
     """Walk the entire (n, n') discrete series and check every MT's
-    photon lines and running state match the Fortran reference."""
+    photon lines and running state match the Fortran reference.
+
+    ``ee`` and ``a`` stay bit-exact (they only assign values, no
+    reduction); ``r`` and derived ``photon_yield`` drift by up to
+    ~1 ULP after the sequential inner-accumulation loop was
+    replaced with a single triangular solve for compile-time
+    reasons. ``rtol=1e-13`` accommodates that.
+    """
     py_mts, py_state = py_h.init_trans2yield(fe56_endf_dict, 51)
     ft_mts, ft_state = fort_h.init_trans2yield_fort_wrapper(
         fe56_endf_dict, 51,
@@ -80,12 +87,15 @@ def test_trans2yield_matches_fortran_full_series_fe56(fe56_endf_dict):
         np.testing.assert_array_equal(
             py_out['level_energy'], ft_out['level_energy'],
         )
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             py_out['photon_yield'], ft_out['photon_yield'],
+            rtol=1e-13, atol=0.0,
         )
         # And the running state must stay in lockstep.
         np.testing.assert_array_equal(py_state['ee'], ft_state['ee'])
-        np.testing.assert_array_equal(py_state['r'], ft_state['r'])
+        np.testing.assert_allclose(
+            py_state['r'], ft_state['r'], rtol=1e-13, atol=0.0,
+        )
         np.testing.assert_array_equal(py_state['a'], ft_state['a'])
 
 
@@ -115,8 +125,11 @@ def test_public_api_photon_yields_unchanged(fe56_endf_dict):
         np.testing.assert_array_equal(
             py_all[mt]['photon_energy'], ref[mt]['photon_energy'],
         )
-        np.testing.assert_array_equal(
+        # Same ~1-ULP drift from triangular-solve back-substitution
+        # as in the per-MT parity test above.
+        np.testing.assert_allclose(
             py_all[mt]['photon_yield'], ref[mt]['photon_yield'],
+            rtol=1e-13, atol=0.0,
         )
 
 
