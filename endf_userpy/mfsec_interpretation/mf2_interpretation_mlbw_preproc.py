@@ -104,7 +104,7 @@ def _incident_particle_from_endf(endf_dict):
     return mass / _MN_AMU, spin
 
 
-def _radius_tab1_from_ap(ap: float, emax: float) -> TAB1:
+def _radius_tab1_from_ap(ap, emax, xp=None) -> TAB1:
     """Constant scattering radius packaged as a two-point TAB1
     (lin-lin), matching the format the reconstruction expects.
 
@@ -120,10 +120,17 @@ def _radius_tab1_from_ap(ap: float, emax: float) -> TAB1:
     comparison landing in this branch). Radius is truly constant
     across the wide range anyway, so extending is physically
     correct.
+
+    Under ``xp=jax`` with a tracer ``ap`` (AP autodiff), route the
+    two-point ``y`` array through xp so the tracer survives. The
+    fixed ``x`` grid is numpy either way (categorical / non-
+    differentiable). Numpy path is bit-identical.
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     return TAB1(
         x=np.array([1e-5, 1e11], dtype=np.float64),
-        y=np.array([ap, ap], dtype=np.float64),
+        y=xp.asarray([ap, ap], dtype=xp.float64),
         nbt=np.array([1], dtype=np.int32),      # 0-indexed, one region
         intp=np.array([2], dtype=np.int32),     # lin-lin
     )
@@ -180,7 +187,7 @@ def _get_l_group(d_range: dict) -> dict:
     return grp
 
 
-def _channel_radius(ap: float, awri: float, naps: int) -> float:
+def _channel_radius(ap, awri, naps: int):
     """Channel radius ``a`` per ENDF-6 conventions.
 
     NAPS=0: derive from mass, ``a = 0.123 * (AWRI * mn)^{1/3} + 0.08`` fm.
@@ -188,9 +195,12 @@ def _channel_radius(ap: float, awri: float, naps: int) -> float:
     NAPS=2: derive from mass (same formula as NAPS=0), while the
             scattering radius ``R'`` stays ``AP`` separately. This is
             the case where the two radii differ.
+
+    Returns whatever type ``ap`` / ``awri`` are: a JAX tracer for
+    autodiff wrt AP or AWRI, otherwise a numpy or Python float.
     """
     if naps == 1:
-        return float(ap)
+        return ap
     mwri = awri * _MN_AMU
     return 0.123 * mwri ** (1.0 / 3.0) + 0.08
 
@@ -249,7 +259,12 @@ def mlbw_data_from_endf_dict(
 
     d151 = endf_dict[2][151]
     d_iso = d151['isotope'][isotope_idx]
-    abn = np.asarray(d_iso['ABN'], dtype=np.float64)
+    # Route file-side scalar leaves through xp so a JAX tracer at
+    # ``ABN``, ``SPI``, ``AP``, ``EH``, or per-L ``AWRI`` (scattering
+    # radius / mass-ratio autodiff) survives the resonance
+    # reconstruction. Under xp=numpy this is bit-identical to the
+    # previous ``np.asarray(..., dtype=np.float64)`` casts.
+    abn = xp.asarray(d_iso['ABN'], dtype=xp.float64)
     d_range = d_iso['range'][range_idx]
 
     lru = int(d_range['LRU'])
@@ -261,10 +276,10 @@ def mlbw_data_from_endf_dict(
         )
     naps = int(d_range['NAPS'])
     nro = int(d_range.get('NRO', 0))
-    spi = np.asarray(d_range['SPI'], dtype=np.float64)
-    ap = np.asarray(d_range.get('AP', 0.0), dtype=np.float64)
+    spi = xp.asarray(d_range['SPI'], dtype=xp.float64)
+    ap = xp.asarray(d_range.get('AP', 0.0), dtype=xp.float64)
     nls = int(d_range['NLS'])
-    emax = np.asarray(d_range['EH'], dtype=np.float64)
+    emax = xp.asarray(d_range['EH'], dtype=xp.float64)
     d_grp = _get_l_group(d_range)
 
     # --- Sweep L-groups to build the channel table + per-resonance rows.
@@ -297,7 +312,7 @@ def mlbw_data_from_endf_dict(
     for l_idx in range(1, nls + 1):
         d_l = d_grp[l_idx]
         L = int(d_l['L'])
-        awri = np.asarray(d_l['AWRI'], dtype=np.float64)
+        awri = xp.asarray(d_l['AWRI'], dtype=xp.float64)
         if awri_ref is None:
             awri_ref = awri
         # QX may carry a tracer; route through xp so the arithmetic
@@ -409,10 +424,10 @@ def mlbw_data_from_endf_dict(
     if ape is not None:
         r_ap = _radius_tab1_from_ape(ape, emax)
     else:
-        r_ap = _radius_tab1_from_ap(ap, emax)
+        r_ap = _radius_tab1_from_ap(ap, emax, xp=xp)
 
     a = _channel_radius(ap, awri_ref, naps)
-    r_a = _radius_tab1_from_ap(a, emax)
+    r_a = _radius_tab1_from_ap(a, emax, xp=xp)
 
     # Integer-typed channel bookkeeping stays on numpy (it steers
     # scatter/gather, not differentiable). Float-typed per-resonance
