@@ -217,9 +217,13 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
         b_rows.append(b_padded)
     b_panels = xp.stack(b_rows, axis=0)
 
-    # Under xp=jax, route ``ei_mesh`` and ``ep_panels`` through the
-    # backend so tracer values at those leaves flow through the
-    # kernel. ``nep_arr`` / ``nd_arr`` / ``na_arr`` stay numpy
+    # Route ``ei_mesh`` and ``ep_panels`` through the backend so
+    # tracer values at those leaves flow through the kernel.
+    # Under xp=numpy, ``xp.asarray`` on an already-numpy array is a
+    # trivial no-op (measured at ~0.1 us on the two arrays combined
+    # for Al-27 MT=91, i.e. 0.01% of the preproc call), so the
+    # earlier ``if xp.name != 'numpy':`` guard was not worth the
+    # asymmetry. ``nep_arr`` / ``nd_arr`` / ``na_arr`` stay numpy
     # unconditionally: they are integer descriptors that (i) drive
     # Python-side control flow in the reconstruction fallback path,
     # and (ii) still work as-is in the tracer-panel-index kernel,
@@ -228,9 +232,8 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
     # ``jax.jit(loss)`` and ``jax.jit(jax.grad(loss))``, where the
     # whole preproc runs inside a JAX trace, do not turn integer
     # counts into tracers whose ``int(...)`` would raise.
-    if xp.name != 'numpy':
-        ei_mesh = xp.asarray(ei_mesh)
-        ep_panels = xp.asarray(ep_panels)
+    ei_mesh = xp.asarray(ei_mesh)
+    ep_panels = xp.asarray(ep_panels)
 
     return MF6Law1Data(
         awi=awi, awr=awr, awp=awp, q=q,
