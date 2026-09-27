@@ -103,7 +103,14 @@ def rm_data_from_endf_dict(
 
     d151 = endf_dict[2][151]
     d_iso = d151['isotope'][isotope_idx]
-    abn = np.asarray(d_iso['ABN'], dtype=np.float64)
+    # Route file-side scalar leaves through xp so a JAX tracer at
+    # ``ABN``, ``AP``, ``EH``, or per-L ``AWRI`` / ``APL`` (scattering
+    # radius / mass-ratio autodiff) survives the resonance
+    # reconstruction. ``SPI`` stays numpy: it is a discrete quantum
+    # number that drives Python-side channel-spin bookkeeping and is
+    # not a differentiable target. Under xp=numpy every ``xp.asarray``
+    # below is bit-identical to the previous ``np.asarray`` cast.
+    abn = xp.asarray(d_iso['ABN'], dtype=xp.float64)
     d_range = d_iso['range'][range_idx]
 
     lru = int(d_range['LRU'])
@@ -116,9 +123,9 @@ def rm_data_from_endf_dict(
     naps = int(d_range['NAPS'])
     nro = int(d_range.get('NRO', 0))
     spi = np.asarray(d_range['SPI'], dtype=np.float64)
-    ap = np.asarray(d_range.get('AP', 0.0), dtype=np.float64)
+    ap = xp.asarray(d_range.get('AP', 0.0), dtype=xp.float64)
     nls = int(d_range['NLS'])
-    emax = np.asarray(d_range['EH'], dtype=np.float64)
+    emax = xp.asarray(d_range['EH'], dtype=xp.float64)
     d_grp = _get_l_group(d_range)
 
     spin_inc_val = float(spin_inc)
@@ -163,9 +170,12 @@ def rm_data_from_endf_dict(
     for l_idx in range(1, nls + 1):
         d_l = d_grp[l_idx]
         L = int(d_l['L'])
-        awri = np.asarray(d_l['AWRI'], dtype=np.float64)
-        apl = np.asarray(d_l.get('APL', 0.0), dtype=np.float64)
-        apl_by_L[L] = float(apl)
+        awri = xp.asarray(d_l['AWRI'], dtype=xp.float64)
+        apl = xp.asarray(d_l.get('APL', 0.0), dtype=xp.float64)
+        # Keep ``apl`` xp-native so a JAX tracer at APL survives; the
+        # dispatch in ``_r_ap_for_L`` below uses ``xp.where`` on the
+        # tracer-safe path.
+        apl_by_L[L] = apl
         if awri_ref is None:
             awri_ref = awri
 
@@ -289,31 +299,57 @@ def rm_data_from_endf_dict(
     # AWRI, NAPS). Applies per group so the reconstruction uses
     # the correct r_a / r_ap for the group's L. See JEFF-4.0
     # Fe-56 for a real file where per-L APL differs.
-    def _r_ap_for_L(L: int) -> float:
+    def _r_ap_for_L(L: int):
+        """Per-L scattering radius: APL if the file provides a
+        non-zero override, else the range-level AP. Both branches
+        may carry a JAX tracer under autodiff, so use ``xp.where``
+        rather than a Python ``if`` on the tracer comparison.
+        Concrete APL / AP inputs make ``xp.where`` degenerate into
+        one branch under xp=numpy.
+        """
         apl_val = apl_by_L.get(L, 0.0)
-        return apl_val if apl_val > 0 else float(ap)
+        # ``apl_val`` is xp-native (potentially tracer) when the file
+        # populated APL for this L; if L is not in ``apl_by_L`` we
+        # get the concrete 0.0 default. Wrap both branches in xp.asarray
+        # so the comparison and where op always run on xp-native inputs.
+        apl_xp = xp.asarray(apl_val)
+        return xp.where(apl_xp > 0, apl_xp, ap)
 
-    group_r_ap_arr = np.zeros(ngroups, dtype=np.float64)
-    group_r_a_arr = np.zeros(ngroups, dtype=np.float64)
+    # Assemble the per-group r_ap / r_a as xp lists so tracer values
+    # from AP or per-L APL propagate; stack at the end. Previous
+    # numpy in-place assignment ``group_r_ap_arr[g] = ...`` would
+    # reject a tracer scalar.
+    group_r_ap_rows = []
+    group_r_a_rows = []
     for g, (L, _j2, _spin) in enumerate(group_keys):
         r_ap_g = _r_ap_for_L(L)
-        group_r_ap_arr[g] = r_ap_g
-        group_r_a_arr[g] = _channel_radius(r_ap_g, awri_ref, naps)
+        group_r_ap_rows.append(r_ap_g)
+        group_r_a_rows.append(_channel_radius(r_ap_g, awri_ref, naps))
+    if group_r_ap_rows:
+        group_r_ap_arr = xp.stack(
+            [xp.asarray(r, dtype=xp.float64) for r in group_r_ap_rows]
+        )
+        group_r_a_arr = xp.stack(
+            [xp.asarray(r, dtype=xp.float64) for r in group_r_a_rows]
+        )
+    else:
+        group_r_ap_arr = xp.zeros((0,), dtype=xp.float64)
+        group_r_a_arr = xp.zeros((0,), dtype=xp.float64)
 
     # Range-level r_a / r_ap TAB1s: kept for backward compat and
     # NRO=1 (energy-dependent scattering radius) support. Fill
     # from the first L-group's radius; reconstruction prefers
     # the per-group arrays above and falls back to these TAB1s
     # only if the per-group arrays are absent.
-    r_ap_val_range = _r_ap_for_L(int(group_l[0])) if ngroups else float(ap)
+    r_ap_val_range = _r_ap_for_L(int(group_l[0])) if ngroups else ap
     ape = d_range.get('AP_table') if nro else None
     if ape is not None:
         r_ap = _radius_tab1_from_ape(ape, emax)
     else:
-        r_ap = _radius_tab1_from_ap(r_ap_val_range, emax)
+        r_ap = _radius_tab1_from_ap(r_ap_val_range, emax, xp=xp)
 
     a = _channel_radius(r_ap_val_range, awri_ref, naps)
-    r_a = _radius_tab1_from_ap(a, emax)
+    r_a = _radius_tab1_from_ap(a, emax, xp=xp)
 
     # Integer-typed group / channel bookkeeping stays on numpy.
     # Per-resonance ER / GN / GG lists may contain JAX tracer
