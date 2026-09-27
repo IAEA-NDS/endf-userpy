@@ -310,6 +310,17 @@ class URRData:
     r_ap: tab1.TAB1
 
 
+def _is_jax_tracer(x):
+    """Lazy-import isinstance(x, jax.core.Tracer). Returns False when
+    jax is not installed (numpy-only environments)."""
+    try:
+        import jax  # noqa: F401
+    except Exception:
+        return False
+    from jax.core import Tracer
+    return isinstance(x, Tracer)
+
+
 def _interp_per_group(table, es, e_query, xp, int_codes=None):
     """Per-group interp: for a (nJ, NE_tab) table with per-group
     ES rows and an ``(NE,)`` query grid, return ``(NE, nJ)``.
@@ -326,21 +337,39 @@ def _interp_per_group(table, es, e_query, xp, int_codes=None):
 
     Real URR ranges use INT=2 or INT=5 (typically per group). Other
     INT codes still raise upstream in :func:`reconstruct`.
+
+    Under jax with a tracer ``y_row`` (e.g. ``jax.grad`` wrt a width
+    parameter) the ``all-positive`` check can't materialise to a
+    Python bool, so we take a functional path: compute both the
+    log-log and lin-lin interpolants and select with
+    ``xp.where``. Non-tracer inputs keep the fast one-branch path.
     """
     cols = []
     for g in range(int(table.shape[0])):
         y_row = table[g]
         e_row = es[g]
         code = 2 if int_codes is None else int(int_codes[g])
-        if code == 5 and bool(xp.all(y_row > 0)) and bool(xp.all(e_row > 0)):
-            # log-log: interp in (log E, log y) space.
-            col = xp.exp(xp.interp(
-                xp.log(e_query), xp.log(e_row), xp.log(y_row),
+        if code != 5:
+            cols.append(xp.interp(e_query, e_row, y_row))
+            continue
+        if _is_jax_tracer(y_row) or _is_jax_tracer(e_row):
+            # Tracer-safe: compute both branches, select via mask.
+            all_pos = xp.all(y_row > 0) & xp.all(e_row > 0)
+            y_safe = xp.maximum(y_row, 1e-300)
+            e_safe = xp.maximum(e_row, 1e-300)
+            eq_safe = xp.maximum(e_query, 1e-300)
+            log_col = xp.exp(xp.interp(
+                xp.log(eq_safe), xp.log(e_safe), xp.log(y_safe),
             ))
+            lin_col = xp.interp(e_query, e_row, y_row)
+            cols.append(xp.where(all_pos, log_col, lin_col))
+            continue
+        if bool(xp.all(y_row > 0)) and bool(xp.all(e_row > 0)):
+            cols.append(xp.exp(xp.interp(
+                xp.log(e_query), xp.log(e_row), xp.log(y_row),
+            )))
         else:
-            # lin-lin (INT=2) or zero-row fallback for INT=5.
-            col = xp.interp(e_query, e_row, y_row)
-        cols.append(col)
+            cols.append(xp.interp(e_query, e_row, y_row))
     return xp.stack(cols, axis=-1)   # (NE, nJ)
 
 
@@ -475,12 +504,13 @@ def _reconstruct_ross_moments(
     vectorised implementation would need padding to the worst-case
     DOF; the per-group loop keeps the shapes tight.
     """
-    ne = alpha_n_phys.shape[0]
-    nJ = alpha_n_phys.shape[1]
-    R_ncap = xp.zeros((ne, nJ), dtype=xp.float64)
-    R_nfis = xp.zeros((ne, nJ), dtype=xp.float64)
-    R_ncomp = xp.zeros((ne, nJ), dtype=xp.float64)
-    R_nn = xp.zeros((ne, nJ), dtype=xp.float64)
+    nJ = int(alpha_n_phys.shape[1])
+    # Build column-by-column then stack once at the end so the same
+    # code path works under numpy (mutable) and jax (immutable).
+    ncap_cols = []
+    nfis_cols = []
+    ncomp_cols = []
+    nn_cols = []
     for g in range(nJ):
         r_cap, r_fis, r_comp, r_nn = _ross_average_group(
             alpha_n_phys[:, g], alpha_gg[:, g],
@@ -491,15 +521,14 @@ def _reconstruct_ross_moments(
             int(round(float(nu_x_arr[0, g]))),
             xp,
         )
-        # Assignment via xp.concatenate/xp.stack to stay backend-agnostic.
-        # `xp` supports advanced indexing on numpy; for JAX we would
-        # use `.at[...].set(...)`. For now keep the simple per-column
-        # assignment; the Ross path is numpy-oriented (JAX/numba fall
-        # back to the default 32-point Gauss-Legendre).
-        R_ncap[:, g] = r_cap
-        R_nfis[:, g] = r_fis
-        R_ncomp[:, g] = r_comp
-        R_nn[:, g] = r_nn
+        ncap_cols.append(r_cap)
+        nfis_cols.append(r_fis)
+        ncomp_cols.append(r_comp)
+        nn_cols.append(r_nn)
+    R_ncap = xp.stack(ncap_cols, axis=-1)
+    R_nfis = xp.stack(nfis_cols, axis=-1)
+    R_ncomp = xp.stack(ncomp_cols, axis=-1)
+    R_nn = xp.stack(nn_cols, axis=-1)
     return R_ncap, R_nfis, R_ncomp, R_nn
 
 
