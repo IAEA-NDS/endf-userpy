@@ -31,6 +31,31 @@ from ..primitives import array_ns
 from ..primitives.helpers import find_interval
 
 
+def _is_jax_tracer(x) -> bool:
+    """Return True if ``x`` is a JAX Tracer, i.e. an abstract value
+    inside a ``jax.grad`` / ``jax.jit`` / ``jax.vmap`` trace whose
+    concrete numerical contents are not available to Python-side
+    control flow. Concrete arrays (numpy or realised jax.Array) and
+    plain Python scalars return False.
+
+    Used to steer the LAW=1 kernel between its fast concrete-mesh
+    sparse-scatter path and the tracer-safe full-eval ``xp.where``
+    fallback: the concrete path materialises the mesh and query to
+    numpy for panel enumeration; the fallback treats every panel
+    index Python-side and masks contributions xp-native. The
+    branch decision is by JAX API, not by exception handling.
+
+    JAX is imported lazily so numpy-only environments do not
+    require JAX at import time; if JAX is not installed the
+    function trivially returns False.
+    """
+    try:
+        import jax.core
+    except ImportError:
+        return False
+    return isinstance(x, jax.core.Tracer)
+
+
 _MF6CM_D2_MIN = 1.0e-38
 _MF6CM_C_MIN = 1.0e-19
 _LOG_SMALL = 1.0e-38
@@ -637,18 +662,13 @@ def reconstruct(data, energies_in, energies_out, angle_cosines_out,
     #     and ``jax.jit`` can compile the reconstruction.
     from ..primitives.helpers import convert_interp_repr as _cvt
     ei_interp_full = _cvt(np.asarray(data.int_arr), np.asarray(data.nbt_arr))
-    try:
-        ei_mesh_np = np.asarray(data.ei_mesh)
-        e_in_np = np.asarray(e_in)
-        _needs_fallback = False
-    except Exception:
-        ei_mesh_np = None
-        e_in_np = None
-        _needs_fallback = True
+    _needs_fallback = _is_jax_tracer(data.ei_mesh) or _is_jax_tracer(e_in)
 
     result = xp.zeros((n_e, n_ep, n_mu), dtype=tp_bc.dtype)
 
     if not _needs_fallback:
+        ei_mesh_np = np.asarray(data.ei_mesh)
+        e_in_np = np.asarray(e_in)
         e_min = float(ei_mesh_np[0])
         e_max = float(ei_mesh_np[-1])
         inside_mask_np = (e_in_np >= e_min) & (e_in_np <= e_max)
