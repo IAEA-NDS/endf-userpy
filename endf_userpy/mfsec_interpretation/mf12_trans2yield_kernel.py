@@ -174,6 +174,22 @@ def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
     """Convert one section's transition probabilities into photon
     yields, and return updated cascade state.
 
+    Dispatch layer: numpy backends take the tight-shape path
+    (:func:`_trans2yield_tight`) which matches the pre-rewrite
+    per-MT arithmetic footprint; jax backends take the fully
+    static-padded path (:func:`_trans2yield_padded`) which fixes
+    every internal shape at ``ee.shape[0]`` so XLA's per-shape
+    first-call compile cost is paid once instead of once per MT.
+
+    Both paths return ``(ee, r, a, result_dict)`` with the same
+    physical content; the padded path emits a longer fixed-length
+    ``result_dict['photon_yield']`` where entries beyond the
+    cascade positions are zero, which the downstream matcher in
+    :mod:`mf12_interpretation` handles transparently.
+
+    ``maxnk`` is kept for API compatibility and unused (both paths
+    emit a fixed-size grid rather than a variable-length list).
+
     Parameters
     ----------
     mt : int. MT number of the discrete inelastic reaction (must be
@@ -183,30 +199,23 @@ def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
     esi : (nt,) array-like. Energies of the lower levels this
         section describes direct transitions to. ``esi[i] = 0`` is
         the ground state. Tracer-safe.
-    tp : (nt,) array-like. Direct transition probabilities to each
-        ``esi[i]``. Tracer-safe.
-    gp : (nt,) array-like. Conditional probability that the
-        transition is photon (rather than internal-conversion). For
-        ``LG=1`` sections this is all ones. Tracer-safe.
+    tp, gp : (nt,) array-like. Direct transition probabilities and
+        photon-vs-internal-conversion factors. Tracer-safe.
     ee, r, a : running cascade state from :func:`init_trans2yield`.
-    maxnk : int. Reserved for API parity; the new kernel emits a
-        fixed ``(j0 * j0,)`` grid rather than a variable-length
-        list, so this argument is unused.
     xp : array-namespace adapter; ``None`` defaults to numpy.
-
-    Returns
-    -------
-    (ee, r, a, result_dict) : the updated state plus a dict with
-        keys ``level_energy``, ``photon_energy``, ``photon_yield``
-        (each a 1-D float array of size ``j0 * j0``, sorted by
-        descending photon energy to match the Fortran output).
-        Entries with zero yield are inactive cascade positions; the
-        downstream matcher ignores them.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    del maxnk  # kept for API compatibility
+    del maxnk
+    if xp.name == 'numpy':
+        return _trans2yield_tight(mt, esns, esi, tp, gp, ee, r, a, xp)
+    return _trans2yield_padded(mt, esns, esi, tp, gp, ee, r, a, xp)
 
+
+def _trans2yield_tight(mt, esns, esi, tp, gp, ee, r, a, xp):
+    """Numpy path: per-MT arithmetic at tight (j0,) / (j0, j0)
+    shapes. No compile cost applies, so padding would be pure
+    waste (~2x wall time)."""
     esi = xp.asarray(esi, dtype=xp.float64)
     tp = xp.asarray(tp, dtype=xp.float64)
     gp = xp.asarray(gp, dtype=xp.float64)
@@ -291,6 +300,127 @@ def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
         photon_energy_flat = photon_energy_flat[keep]
         level_energy_flat = level_energy_flat[keep]
 
+    order = xp.argsort(-photon_energy_flat)
+    return ee, r, a, {
+        'level_energy': level_energy_flat[order],
+        'photon_energy': photon_energy_flat[order],
+        'photon_yield': yld_flat[order],
+    }
+
+
+def _pad_to_N(vec, N, fill, xp):
+    """Pad a 1-D array to length ``N`` with ``fill`` (or truncate)."""
+    v = xp.asarray(vec, dtype=xp.float64)
+    n = int(v.shape[0])
+    if n == N:
+        return v
+    if n > N:
+        return v[:N]
+    tail = xp.full((N - n,), fill, dtype=xp.float64)
+    return xp.concatenate([v, tail])
+
+
+def _match_direct_padded(esi_padded, ee_full, tp_padded, gp_padded, xp):
+    """Same match-with-tolerance semantics as :func:`_match_direct_vectorised`
+    but at fixed ``(N, N)`` shape.
+
+    ``esi_padded`` unused slots hold ``-1e30`` so no ``k`` can
+    match those columns; ``tp_padded`` / ``gp_padded`` unused
+    slots hold 0. ``ee_full`` is the full state vector of length
+    ``N``. Returns ``p_direct, a_val`` of shape ``(N,)`` each.
+    """
+    diffs = xp.abs(esi_padded[None, :] - ee_full[:, None])
+    tol_abs = 1e-4 * xp.abs(esi_padded)[None, :]
+    within = diffs <= tol_abs
+    matched = xp.any(within, axis=1)
+    first_idx = xp.argmax(within.astype(xp.int32), axis=1)
+    tp_at = tp_padded[first_idx]
+    gp_at = gp_padded[first_idx]
+    p_direct = xp.where(matched, tp_at, 0.0)
+    a_val = xp.where(matched, tp_at * gp_at, 0.0)
+    return p_direct, a_val
+
+
+def _trans2yield_padded(mt, esns, esi, tp, gp, ee, r, a, xp):
+    """JAX path: every internal op runs at fixed ``(N, N)`` shape,
+    where ``N = ee.shape[0]`` (the state matrix side, currently
+    :data:`mf12_interpretation_helpers.MAX_NUM_LEVEL` = 60). XLA's
+    per-shape first-call compile is then amortised across all MTs
+    in the cascade series (~22x eager-cold speedup on Pb-208 MT=90
+    vs the tight per-MT path)."""
+    N = int(ee.shape[0])
+    esi = xp.asarray(esi, dtype=xp.float64)
+    tp = xp.asarray(tp, dtype=xp.float64)
+    gp = xp.asarray(gp, dtype=xp.float64)
+    esns = xp.asarray(esns, dtype=xp.float64)
+
+    mt0 = _series_mt0(int(mt))
+    j0 = int(mt) - mt0
+
+    ee = _set_1d(ee, j0, esns, xp)
+
+    if j0 == 0:
+        empty = xp.zeros(0, dtype=xp.float64)
+        return ee, r, a, {
+            'level_energy': empty,
+            'photon_energy': empty,
+            'photon_yield': empty,
+        }
+
+    esi_padded = _pad_to_N(esi, N, -1e30, xp)
+    tp_padded = _pad_to_N(tp, N, 0.0, xp)
+    gp_padded = _pad_to_N(gp, N, 0.0, xp)
+
+    p_direct_full, a_val_full = _match_direct_padded(
+        esi_padded, ee, tp_padded, gp_padded, xp,
+    )
+    # Only rows k < j0 participate in this MT's cascade; mask the
+    # padded tail to zero contribution.
+    row_mask = xp.arange(N) < j0
+    p_direct_full = xp.where(row_mask, p_direct_full, 0.0)
+    a_val_full = xp.where(row_mask, a_val_full, 0.0)
+
+    a = a.at[:, j0].set(a_val_full)
+
+    # Triangular solve at fixed (N, N). ``a`` is strictly upper
+    # triangular by construction; ``xp.triu`` keeps the intent
+    # explicit and lets XLA fuse the mask.
+    eye_N = xp.eye(N, dtype=xp.float64)
+    M = eye_N - xp.triu(a, k=1)
+    import jax.scipy.linalg as _jsp_la
+    r_col = _jsp_la.solve_triangular(
+        M, p_direct_full, lower=False, unit_diagonal=True,
+    )
+    # r[j0, j0] must stay 1 (identity structure) for later MTs to
+    # read the correct running state. The solve returns 0 there
+    # because p_direct_full[j0] = 0 and a[j0, i>j0] = 0.
+    r_col = r_col.at[j0].set(1.0)
+    r = r.at[:, j0].set(r_col)
+
+    # Photon-line enumeration at fixed (N-1, N-1) shape. Positions
+    # outside this MT's cascade (j1 > j0, or j2 mapped to padded
+    # levels) produce zero yield naturally through the zeros in
+    # ``r[:, j0]`` and ``a[j2, j1]``.
+    j1_arr = np.arange(1, N)
+    j2_arr = np.arange(0, N - 1)
+    j1_bc, j2_bc = np.meshgrid(j1_arr, j2_arr, indexing='ij')
+    yld_grid = a[j2_bc, j1_bc] * r[j1_bc, j0]
+    photon_energy_grid = ee[j1_bc] - ee[j2_bc]
+    level_energy_grid = ee[j1_bc]
+
+    yld_flat = yld_grid.reshape(-1)
+    photon_energy_flat = photon_energy_grid.reshape(-1)
+    level_energy_flat = level_energy_grid.reshape(-1)
+
+    # Mask the photon_energy of zero-yield entries to a sentinel
+    # far from any physical query, so the wrapper's tolerance
+    # matcher (find_indices_with_tol under concrete, argmin under
+    # tracer) never routes a user photon-energy query into a
+    # non-emitting cascade position. Zero-yield rows still occupy
+    # the fixed-shape grid, they just do not compete for matches.
+    photon_energy_flat = xp.where(
+        yld_flat > 0.0, photon_energy_flat, -1e30,
+    )
     order = xp.argsort(-photon_energy_flat)
     return ee, r, a, {
         'level_energy': level_energy_flat[order],
