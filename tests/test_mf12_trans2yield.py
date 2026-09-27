@@ -142,7 +142,7 @@ def test_kernel_yield_sums_to_expected_for_synthetic_two_level():
     qi = [-1.0e6]
     ee, r, a = _kernel.init_trans2yield(elis, qm, qi, maxlevel=10)
     # MT=51, first excited: one transition to ground (esi=0), tp=1
-    out = _kernel.trans2yield(
+    ee, r, a, out = _kernel.trans2yield(
         mt=51, esns=1.0e6, esi=[0.0], tp=[1.0], gp=[1.0],
         ee=ee, r=r, a=a,
     )
@@ -165,13 +165,13 @@ def test_kernel_yield_cascade_three_level():
     qi = [-1.0e6, -3.0e6]
     ee, r, a = _kernel.init_trans2yield(elis, qm, qi, maxlevel=10)
     # MT=51 (populate level 1, direct decay to ground)
-    out51 = _kernel.trans2yield(
+    ee, r, a, out51 = _kernel.trans2yield(
         mt=51, esns=1.0e6, esi=[0.0], tp=[1.0], gp=[1.0],
         ee=ee, r=r, a=a,
     )
     assert out51['photon_energy'].shape == (1,)
     # MT=52 (populate level 2, 50% -> level 1, 50% -> ground)
-    out52 = _kernel.trans2yield(
+    ee, r, a, out52 = _kernel.trans2yield(
         mt=52, esns=3.0e6, esi=[0.0, 1.0e6], tp=[0.5, 0.5], gp=[1.0, 1.0],
         ee=ee, r=r, a=a,
     )

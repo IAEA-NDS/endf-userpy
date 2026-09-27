@@ -1,4 +1,5 @@
 import numpy as np
+from ..primitives import array_ns
 from ..primitives import properties as prop
 from ..primitives.helpers import dict2array
 from ..mfsec_interpretation import mf3_interpretation as mf3_interp
@@ -39,33 +40,38 @@ def get_available_series_mts(endf_dict, mt, include_ground_state=False):
     return avail_series_mts
 
 
-def init_trans2yield(endf_dict, mt):
+def init_trans2yield(endf_dict, mt, xp=None):
     """Return ``(available_mts, state_cache)`` for the discrete
-    inelastic series containing ``mt``. Pure-Python port of the
-    Fortran ``init_trans2yield``; the Fortran-backed variant is
-    preserved as :func:`mf12_interpretation_helpers_fort.init_trans2yield_fort_wrapper`.
+    inelastic series containing ``mt``. Backend-agnostic (``xp=None``
+    defaults to numpy).
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     elis = prop.get_ELIS(endf_dict)
     avail_series_mts = get_available_series_mts(endf_dict, mt, False)
     qms = [prop.get_QM(endf_dict, mt) for mt in avail_series_mts]
     qis = [prop.get_QI(endf_dict, mt) for mt in avail_series_mts]
 
-    ee, r, a = _kernel.init_trans2yield(elis, qms, qis, MAX_NUM_LEVEL)
+    ee, r, a = _kernel.init_trans2yield(
+        elis, qms, qis, MAX_NUM_LEVEL, xp=xp,
+    )
     state_cache = {'ee': ee, 'r': r, 'a': a}
     return avail_series_mts, state_cache
 
 
-def trans2yield(endf_dict, mt, state_cache):
-    """Convert the ``mt`` MF12 LO=2 section into photon lines,
-    updating ``state_cache`` in place. Pure-Python port; call in
+def trans2yield(endf_dict, mt, state_cache, xp=None):
+    """Convert the ``mt`` MF12 LO=2 section into photon lines and
+    update ``state_cache`` with the new cascade state. Call in
     ascending-MT order per :func:`init_trans2yield`'s
     ``avail_series_mts`` so cascades resolve correctly.
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     mtsec = endf_dict[12][mt]
     esns = mtsec['ES_NS']
     nt = len(mtsec['ES'])
-    esi = dict2array(mtsec['ES'], dtype=float)
-    tp = dict2array(mtsec['TP'], dtype=float)
+    esi = dict2array(mtsec['ES'], dtype=float, xp=xp)
+    tp = dict2array(mtsec['TP'], dtype=float, xp=xp)
 
     if mtsec['LO'] != 2:
         raise ValueError(
@@ -73,16 +79,20 @@ def trans2yield(endf_dict, mt, state_cache):
         )
 
     if mtsec['LG'] == 1:
-        gp = np.ones(nt, dtype=float)
+        gp = xp.ones(nt, dtype=xp.float64)
     elif mtsec['LG'] == 2:
-        gp = dict2array(mtsec['GP'], dtype=float)
+        gp = dict2array(mtsec['GP'], dtype=float, xp=xp)
     else:
         raise ValueError(
             f'invalid value for LG encountered (LG={mtsec["LG"]})'
         )
 
-    return _kernel.trans2yield(
+    new_ee, new_r, new_a, result = _kernel.trans2yield(
         mt, esns, esi, tp, gp,
         state_cache['ee'], state_cache['r'], state_cache['a'],
-        maxnk=MAX_NK,
+        maxnk=MAX_NK, xp=xp,
     )
+    state_cache['ee'] = new_ee
+    state_cache['r'] = new_r
+    state_cache['a'] = new_a
+    return result

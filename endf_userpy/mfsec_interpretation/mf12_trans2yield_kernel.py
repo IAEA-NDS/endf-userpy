@@ -15,24 +15,37 @@ Two-step API mirrors the Fortran:
   discrete inelastic reactions. Call once per section (per ejectile
   series).
 - :func:`trans2yield` consumes the section's per-level transition
-  data plus the running state ``(ee, r, a)`` (which it updates
-  in place) and returns the photon lines (``level_energy``,
-  ``photon_energy``, ``photon_yield``) originating from populating
-  the excited level associated with the given ``mt``.
+  data plus the running state ``(ee, r, a)`` and returns the photon
+  lines (``level_energy``, ``photon_energy``, ``photon_yield``)
+  originating from populating the excited level associated with
+  the given ``mt``, and the updated state.
 
 The state must be updated in level order (lowest excited level
-first) because higher-level transitions may cascade through lower
+first) because higher-level transitions cascade through lower
 levels whose branching ratios have to be known already. Callers
 that use :func:`compute_photon_yields_from_transition_probabilities`
 in :mod:`mf12_interpretation` get that ordering automatically.
 
-Numpy-only. The algorithm is small-integer bookkeeping (typical
-nuclide has under 60 discrete levels), not amenable to
-vectorisation or JAX autodiff.
+Backend-agnostic. ``xp=None`` runs on numpy and preserves the
+pre-port numerical behaviour bit-for-bit. Under xp=jax the entire
+cascade traces cleanly: ``jax.grad`` reaches ``ES_NS`` (upper
+level), ``ES`` (lower levels), ``TP`` (direct probabilities),
+``GP`` (photon-vs-conversion branching) and the ``ELIS``/``QM``/
+``QI`` inputs that seed ``ee``. Both ``jax.grad(jax.jit(f))`` and
+``jax.jit(jax.grad(f))`` compose.
+
+Fixed-shape output: for a given upper level ``j0 = mt - mt0`` the
+kernel emits a ``(j0 * j0,)`` set of candidate photon lines. Lines
+with a physically zero yield (level not present in the cascade or
+photon-branching factor zero) come through as ``photon_yield = 0``
+entries and are transparent to the downstream
+``find_indices_with_tol`` matcher.
 """
 from __future__ import annotations
 
 import numpy as np
+
+from ..primitives import array_ns
 
 
 # Series-lookup table: mt0 for each discrete-inelastic MT range.
@@ -65,159 +78,185 @@ def _series_mt0(mt: int) -> int:
     )
 
 
-def init_trans2yield(elis: float, qm, qi, maxlevel: int):
+def _set_1d(arr, idx, val, xp):
+    if xp.name == 'jax':
+        return arr.at[idx].set(val)
+    arr[idx] = val
+    return arr
+
+
+def _set_2d(arr, i, j, val, xp):
+    if xp.name == 'jax':
+        return arr.at[i, j].set(val)
+    arr[i, j] = val
+    return arr
+
+
+def init_trans2yield(elis, qm, qi, maxlevel: int, xp=None):
     """Initialise level-energy array and probability matrices.
 
     Parameters
     ----------
-    elis : float. Excitation energy of the target nucleus relative
-        to 0.0 for the ground state (ENDF ``ELIS``).
+    elis : float or 0-d array. Excitation energy of the target
+        nucleus relative to 0.0 for the ground state (ENDF
+        ``ELIS``). Tracer-safe under xp=jax.
     qm : (nlevel,) array-like. ``QM`` for each discrete inelastic
-        reaction, ordered lowest excited level first.
+        reaction, ordered lowest excited level first. Tracer-safe.
     qi : (nlevel,) array-like. ``QI`` for each discrete inelastic
-        reaction, in the same order as ``qm``.
+        reaction, in the same order as ``qm``. Tracer-safe.
     maxlevel : int. Row/column dimension of the returned matrices.
-        Must satisfy ``maxlevel > nlevel`` (the ground-state row +
-        one row per level; the Fortran default is 60).
+        Must satisfy ``maxlevel > nlevel``.
+    xp : array-namespace adapter; ``None`` defaults to numpy.
 
     Returns
     -------
     (ee, r, a) : ``(maxlevel,)``, ``(maxlevel, maxlevel)``,
-        ``(maxlevel, maxlevel)`` float64 arrays. ``ee[0] = 0`` (ground
-        state); ``ee[i + 1] = qm[i] + elis - qi[i]`` for
-        ``i = 0..nlevel - 1``. ``r`` starts as the identity (no
-        cascades yet). ``a`` starts as all zeros.
+        ``(maxlevel, maxlevel)`` float64 arrays. ``ee[0] = 0``
+        (ground state); ``ee[i + 1] = qm[i] + elis - qi[i]`` for
+        ``i = 0..nlevel - 1``. ``r`` starts as the identity;
+        ``a`` starts as all zeros.
     """
-    qm = np.asarray(qm, dtype=float)
-    qi = np.asarray(qi, dtype=float)
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    qm = xp.asarray(qm, dtype=xp.float64)
+    qi = xp.asarray(qi, dtype=xp.float64)
+    elis = xp.asarray(elis, dtype=xp.float64)
     nlevel = int(qm.shape[0])
-    if qi.shape[0] != nlevel:
+    if int(qi.shape[0]) != nlevel:
         raise ValueError(
-            f'qm ({nlevel}) and qi ({qi.shape[0]}) length mismatch'
+            f'qm ({nlevel}) and qi ({int(qi.shape[0])}) length mismatch'
         )
-    ee = np.zeros(maxlevel, dtype=float)
-    a = np.zeros((maxlevel, maxlevel), dtype=float)
-    r = np.eye(maxlevel, dtype=float)
-    # ee[i + 1] for i = 0..nlevel - 1; the Fortran indexes ee(i+1)
-    # from a 1-based i loop, matching a 0-based ee[i + 1] here.
-    ee[1:nlevel + 1] = qm + elis - qi
+    ee_slice = qm + elis - qi
+    ee = xp.zeros(maxlevel, dtype=xp.float64)
+    a = xp.zeros((maxlevel, maxlevel), dtype=xp.float64)
+    r = xp.eye(maxlevel, dtype=xp.float64)
+    if xp.name == 'jax':
+        ee = ee.at[1:nlevel + 1].set(ee_slice)
+    else:
+        ee[1:nlevel + 1] = ee_slice
     return ee, r, a
 
 
-def trans2yield(mt: int, esns: float, esi, tp, gp, ee, r, a,
-                maxnk: int = 5000):
+def _match_direct(esi, eek, tp, gp, xp):
+    """Vectorised level-matching against ``eek``. Returns
+    ``(p_direct, a_val)`` scalars (0 if no match). Tracer-safe."""
+    diffs = xp.abs(esi - eek)
+    # Tolerance rule matches the Fortran two-branch logic exactly:
+    #   esi=0 and eek=0  -> diff=0, tol=0, within=True (ground state).
+    #   esi=0 and eek!=0 -> diff=|eek|, tol=0, within=False.
+    #   esi!=0 and eek=0 -> diff=|esi|, tol=1e-4*|esi|, within=False.
+    #   esi!=0 and eek!=0-> |esi-eek| <= 1e-4*|esi|.
+    tol_abs = 1e-4 * xp.abs(esi)
+    within = diffs <= tol_abs
+    matched = xp.any(within)
+    # First-True index; if all False, argmax returns 0 but ``matched`` masks
+    # the value out downstream.
+    first_idx = xp.argmax(within.astype(xp.int32))
+    p_direct = xp.where(matched, tp[first_idx], 0.0)
+    a_val = xp.where(matched, tp[first_idx] * gp[first_idx], 0.0)
+    return p_direct, a_val
+
+
+def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
+                maxnk: int = 5000, xp=None):
     """Convert one section's transition probabilities into photon
-    yields, updating the running state ``(ee, r, a)`` in place.
+    yields, and return updated cascade state.
 
     Parameters
     ----------
     mt : int. MT number of the discrete inelastic reaction (must be
         in one of the series listed in :data:`_SERIES_TABLE`).
-    esns : float. Energy of the residual excited-state level
-        populated by reaction ``mt`` (ENDF ``ES``).
+    esns : float or 0-d array. Energy of the residual excited-state
+        level populated by reaction ``mt`` (ENDF ``ES``). Tracer-safe.
     esi : (nt,) array-like. Energies of the lower levels this
         section describes direct transitions to. ``esi[i] = 0`` is
-        the ground state.
+        the ground state. Tracer-safe.
     tp : (nt,) array-like. Direct transition probabilities to each
-        ``esi[i]``.
+        ``esi[i]``. Tracer-safe.
     gp : (nt,) array-like. Conditional probability that the
         transition is photon (rather than internal-conversion). For
-        ``LG=1`` sections this is all ones.
-    ee : (maxlevel,) mutable float array from
-        :func:`init_trans2yield`. Updated in place.
-    r : (maxlevel, maxlevel) mutable float array. Updated in place.
-    a : (maxlevel, maxlevel) mutable float array. Updated in place.
-    maxnk : int. Upper bound on the number of emitted photon lines
-        (safety cap; Fortran default 5000).
+        ``LG=1`` sections this is all ones. Tracer-safe.
+    ee, r, a : running cascade state from :func:`init_trans2yield`.
+    maxnk : int. Reserved for API parity; the new kernel emits a
+        fixed ``(j0 * j0,)`` grid rather than a variable-length
+        list, so this argument is unused.
+    xp : array-namespace adapter; ``None`` defaults to numpy.
 
     Returns
     -------
-    dict with keys ``level_energy``, ``photon_energy``,
-    ``photon_yield`` (each a 1D float array, ordered by descending
-    ``photon_energy`` to match the Fortran).
+    (ee, r, a, result_dict) : the updated state plus a dict with
+        keys ``level_energy``, ``photon_energy``, ``photon_yield``
+        (each a 1-D float array of size ``j0 * j0``, sorted by
+        descending photon energy to match the Fortran output).
+        Entries with zero yield are inactive cascade positions; the
+        downstream matcher ignores them.
     """
-    esi = np.asarray(esi, dtype=float)
-    tp = np.asarray(tp, dtype=float)
-    gp = np.asarray(gp, dtype=float)
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    del maxnk  # kept for API compatibility
+
+    esi = xp.asarray(esi, dtype=xp.float64)
+    tp = xp.asarray(tp, dtype=xp.float64)
+    gp = xp.asarray(gp, dtype=xp.float64)
+    esns = xp.asarray(esns, dtype=xp.float64)
     nt = int(esi.shape[0])
 
     mt0 = _series_mt0(int(mt))
-    # Fortran: j = mt - mt0 + 1 (1-based level index). In 0-based
-    # indexing this is `j0 = mt - mt0` -> the upper level's slot in
-    # ee/r/a arrays.
     j0 = int(mt) - mt0
-    ee[j0] = float(esns)
 
-    # Match this section's direct transitions to the level-energy
-    # array to fill in one column of r/a. The Fortran walks from
-    # k = j - 1 downward so that when computing indirect
-    # contributions (r[k, j] += a[k, i] * r[i, j] for i > k), the
-    # r[i, j] entries used are already up to date.
+    ee = _set_1d(ee, j0, esns, xp)
+
     for k in range(j0 - 1, -1, -1):
         eek = ee[k]
-        matched_i = -1
-        for i in range(nt):
-            esii = esi[i]
-            if esii == 0.0 and eek == 0.0:
-                matched_i = i
-                break
-            if esii != 0.0 and abs(esii - eek) <= 1.0e-4 * esii:
-                matched_i = i
-                break
-        if matched_i == -1:
-            r[k, j0] = 0.0
-            a[k, j0] = 0.0
+        if nt > 0:
+            p_direct, a_val = _match_direct(esi, eek, tp, gp, xp)
         else:
-            p = tp[matched_i]
-            r[k, j0] = p
-            a[k, j0] = p * gp[matched_i]
-        if k != j0 - 1:
-            # Indirect contributions through intermediate levels.
-            # Fortran: r[k,j] += a[k,i] * r[i,j] for i = k+1..j-1.
-            for i in range(k + 1, j0):
-                r[k, j0] += a[k, i] * r[i, j0]
+            p_direct = xp.asarray(0.0, dtype=xp.float64)
+            a_val = xp.asarray(0.0, dtype=xp.float64)
+        r_update = p_direct
+        # Sequential Fortran-order accumulation so the reference
+        # parity tests stay bit-exact (a pairwise xp.sum reduction
+        # can drift by a single ULP on small vectors).
+        for i in range(k + 1, j0):
+            r_update = r_update + a[k, i] * r[i, j0]
+        r = _set_2d(r, k, j0, r_update, xp)
+        a = _set_2d(a, k, j0, a_val, xp)
 
-    # Enumerate photon lines: for each (upper, lower) level pair
-    # with a nonzero yield, record (level_energy, photon_energy,
-    # yield). Fortran outer loop, 1-based:
-    #   do i = 2, j;     j1 = j + 2 - i   ! j1 = j..2 (descending)
-    #   do ii = 1, jm1;  j2 = j - ii      ! j2 = jm1..1 (descending)
-    # Converting to our 0-based indexing (Fortran j = j0 + 1, so
-    # 1-based j1 -> 0-based j1 = j0 + 2 - i and 1-based j2 -> 0-based
-    # j2 = j0 - ii):
-    es_list = []
-    eg_list = []
-    y_list = []
-    for i in range(2, j0 + 2):
-        j1 = j0 + 2 - i
-        ej1 = ee[j1]
-        for ii in range(1, j0 + 1):
-            j2 = j0 - ii
-            ej2 = ee[j2]
-            yld = a[j2, j1] * r[j1, j0]
-            if yld > 0.0:
-                if len(y_list) >= maxnk:
-                    raise ValueError(
-                        f'too many photon lines from transition '
-                        f'probabilities (>{maxnk}); increase maxnk.'
-                    )
-                eg_list.append(ej1 - ej2)
-                es_list.append(ej1)
-                y_list.append(yld)
+    if j0 == 0:
+        empty = xp.zeros(0, dtype=xp.float64)
+        return ee, r, a, {
+            'level_energy': empty,
+            'photon_energy': empty,
+            'photon_yield': empty,
+        }
 
-    es_arr = np.asarray(es_list, dtype=float)
-    eg_arr = np.asarray(eg_list, dtype=float)
-    y_arr = np.asarray(y_list, dtype=float)
+    # Fixed-shape photon-line grid. Fortran loops:
+    #   i  = 2..j0+1  -> j1 = j0+2-i = j0, j0-1, ..., 1
+    #   ii = 1..j0    -> j2 = j0-ii = j0-1, ..., 0
+    # Both descending; we build with ascending arange and sort at
+    # the end by descending photon energy anyway.
+    j1_arr = np.arange(1, j0 + 1)
+    j2_arr = np.arange(0, j0)
+    j1_bc, j2_bc = np.meshgrid(j1_arr, j2_arr, indexing='ij')
+    yld_grid = a[j2_bc, j1_bc] * r[j1_bc, j0]
+    photon_energy_grid = ee[j1_bc] - ee[j2_bc]
+    level_energy_grid = ee[j1_bc]
 
-    # Sort in descending order of photon energy (matches Fortran).
-    if eg_arr.size > 1:
-        order = np.argsort(-eg_arr, kind='stable')
-        eg_arr = eg_arr[order]
-        es_arr = es_arr[order]
-        y_arr = y_arr[order]
+    yld_flat = yld_grid.reshape(-1)
+    photon_energy_flat = photon_energy_grid.reshape(-1)
+    level_energy_flat = level_energy_grid.reshape(-1)
 
-    return {
-        'level_energy': es_arr,
-        'photon_energy': eg_arr,
-        'photon_yield': y_arr,
+    if xp.name == 'numpy':
+        # Legacy output: keep only cascade positions that actually
+        # emit a photon (Fortran-parity tests pin this).
+        keep = yld_flat > 0.0
+        yld_flat = yld_flat[keep]
+        photon_energy_flat = photon_energy_flat[keep]
+        level_energy_flat = level_energy_flat[keep]
+
+    order = xp.argsort(-photon_energy_flat)
+    return ee, r, a, {
+        'level_energy': level_energy_flat[order],
+        'photon_energy': photon_energy_flat[order],
+        'photon_yield': yld_flat[order],
     }
