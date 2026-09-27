@@ -159,108 +159,104 @@ def compute_general_evaporation_spectrum(
         G(E) = integral from 0 to (E - U)/theta(E) of g(x) dx
 
     provides the normalisation. The normalisation integral is
-    computed by the trapezoid integrator on the ``g_table`` mesh
-    clipped to ``[0, x_max]``. Exact for the common LIN-LIN
-    (INT=2) interpolation; panel-exact integration for the four
+    evaluated by a fully vectorised trapezoid on the ``g_table``
+    mesh: the mesh is padded with a leading ``x=0`` (adding a
+    zero-width segment when the mesh already starts at 0) and each
+    segment is clipped to ``[0, x_max_i]`` for every incident
+    energy, with a final linear taper to zero for the region above
+    the tabulated ``x[-1]``. Exact for the common LIN-LIN (INT=2)
+    interpolation; panel-exact integration for the four
     log/histogram INT values is a follow-up.
 
-    Backend-agnostic: ``xp=None`` runs on numpy. Under xp=jax the
-    per-incident-energy loop body traces cleanly (each mask
-    ``allowed`` and mesh slice ``m_used`` is a concrete numpy
-    computation from ``ein_arr[i]``, then only the actual g /
-    normalisation arithmetic runs xp-native). Grad wrt tracers in
-    ``contrib_sec['theta_table']['theta']`` and
-    ``contrib_sec['g_table']['g']`` reaches back through the
-    reconstruction end-to-end.
+    Backend-agnostic: ``xp=None`` runs on numpy. The reconstruction
+    is xp-native over the incident-energy axis (no per-Ein Python
+    loop), so ``jax.grad`` composes with ``jax.jit`` for tracers
+    in ``contrib_sec['theta_table']['theta']``,
+    ``contrib_sec['g_table']['g']``, and ``contrib_sec['U']``.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    ein_arr = np.asarray(energies_in, dtype=float).reshape(-1)
-    eout_arr = np.asarray(energies_out, dtype=float).reshape(-1)
-    ein = ein_arr.reshape(-1, 1)
-    theta = _compute_theta(contrib_sec, ein, xp=xp)  # (n_ein, 1)
-    U = contrib_sec['U']
+
+    ein_arr = xp.asarray(energies_in, dtype=xp.float64).reshape(-1)
+    eout_arr = xp.asarray(energies_out, dtype=xp.float64).reshape(-1)
+    theta = _compute_theta(contrib_sec, ein_arr, xp=xp).reshape(-1)
+    U = xp.asarray(contrib_sec['U'])
 
     g_tab = contrib_sec['g_table']
-    x_mesh = np.asarray(g_tab['x'], dtype=float)
-    # ``g_tab['g']`` is a plain Python list in endf_parserpy's
-    # output; use xp.asarray directly so JAX tracer scalars stored
-    # in the list survive (dict2array would fail here because it
-    # expects a dict).
+    # ``x`` is fixed descriptor data (never a tracer); keep numpy
+    # for the interp_tab1 kernel. ``g`` may carry tracers when
+    # differentiating the shape's leaf values.
+    x_mesh_np = np.asarray(g_tab['x'], dtype=float)
     g_mesh = xp.asarray(g_tab['g'], dtype=xp.float64)
 
-    n_ein = ein_arr.size
-    n_eout = eout_arr.size
-    dtype_ = theta.dtype
-    f = xp.zeros((n_ein, n_eout), dtype=dtype_)
+    n_ein = int(ein_arr.shape[0])
+    n_eout = int(eout_arr.shape[0])
 
-    for i in range(n_ein):
-        E_minus_U = ein_arr[i] - U
-        if float(np.asarray(E_minus_U)) <= 0:
-            continue  # no allowed E'; leave row zero
-        th = theta[i, 0]
-        # ``th`` may be a jax tracer; skip only on the concrete
-        # boundary case ``th <= 0`` where the closed form is
-        # undefined (files never carry non-positive theta).
-        x_max = E_minus_U / th
+    # Per-Ein kinematic scalars: allowed range boundary and the
+    # dimensionless upper limit ``x_max_i = (E_i - U)/theta_i``.
+    E_minus_U = ein_arr - U
+    ein_valid = E_minus_U > 0
+    theta_valid = theta > 0
+    valid_row = ein_valid & theta_valid
+    theta_safe = xp.where(theta_valid, theta, 1.0)
+    E_minus_U_safe = xp.where(ein_valid, E_minus_U, 0.0)
+    x_max = E_minus_U_safe / theta_safe
 
-        allowed = eout_arr <= float(np.asarray(E_minus_U))
-        if not allowed.any():
-            continue
-        x_query = eout_arr[allowed] / th
-        g_query = interp_tab1(
-            x_query, g_tab, 'x', 'g',
-            outside_value=0.0, xp=xp,
-        )
+    # Padded mesh: [0, x_mesh]. When x_mesh[0] == 0 the extra
+    # segment is zero-width and contributes nothing.
+    g_at_0 = interp_tab1(
+        np.array([0.0]), g_tab, 'x', 'g',
+        outside_value=0.0, xp=xp,
+    )
+    x_pad_np = np.concatenate(([0.0], x_mesh_np))
+    g_pad = xp.concatenate([g_at_0, g_mesh])
 
-        # Normalisation: G = integral_{0}^{x_max} g(x) dx on the
-        # tab1 mesh clipped to [0, x_max], with left/right endpoint
-        # slivers evaluated via interp_tab1 so the trapezoid rule
-        # captures them exactly.
-        x_max_c = float(np.asarray(x_max))
-        m_used = (x_mesh >= 0.0) & (x_mesh <= x_max_c)
-        if m_used.any():
-            x_int = x_mesh[m_used].astype(float)
-            g_int = g_mesh[m_used]
-        else:
-            x_int = np.array([0.0])
-            g_int = interp_tab1(
-                np.array([0.0]), g_tab, 'x', 'g',
-                outside_value=0.0, xp=xp,
-            )
-        if x_int[0] > 0.0:
-            g_at_zero = interp_tab1(
-                np.array([0.0]), g_tab, 'x', 'g',
-                outside_value=0.0, xp=xp,
-            )
-            x_int = np.concatenate(([0.0], x_int))
-            g_int = xp.concatenate([g_at_zero, g_int])
-        if x_int[-1] < x_max_c:
-            g_at_xmax = interp_tab1(
-                np.array([x_max_c]), g_tab, 'x', 'g',
-                outside_value=0.0, xp=xp,
-            )
-            x_int = np.concatenate((x_int, [x_max_c]))
-            g_int = xp.concatenate([g_int, g_at_xmax])
-        # trapezoid integrand: use xp so JAX tracers in g_int and
-        # theta survive. x_int is concrete numpy but that's fine
-        # for the sampling grid.
-        G = xp.trapezoid(g_int, xp.asarray(x_int))
-        # G > 0 for physical tabulations; skip the concrete-zero
-        # case to avoid division by zero on the numpy path.
-        if float(np.asarray(G)) <= 0:
-            continue
+    seg_start_np = x_pad_np[:-1]
+    seg_end_np = x_pad_np[1:]
+    seg_dx_np = seg_end_np - seg_start_np
+    seg_dx_safe_np = np.where(seg_dx_np == 0.0, 1.0, seg_dx_np)
 
-        row = g_query / (th * G)
-        # Scatter into the concrete-index positions on the eout
-        # axis. Under numpy this is plain boolean-indexing assign;
-        # under jax we use .at[].set(...).
-        allowed_idx = np.where(allowed)[0]
-        if xp.name == 'jax':
-            f = f.at[i, allowed_idx].set(row)
-        else:
-            f[i, allowed_idx] = row
-    return f
+    seg_start_bc = xp.asarray(seg_start_np)[None, :]
+    seg_end_bc = xp.asarray(seg_end_np)[None, :]
+    seg_dx_safe_bc = xp.asarray(seg_dx_safe_np)[None, :]
+    g_start_bc = g_pad[:-1][None, :]
+    g_end_bc = g_pad[1:][None, :]
+    x_max_col = x_max[:, None]
+
+    active = seg_start_bc < x_max_col
+    seg_end_c = xp.minimum(seg_end_bc, x_max_col)
+    frac = (seg_end_c - seg_start_bc) / seg_dx_safe_bc
+    g_at_end_c = g_start_bc + (g_end_bc - g_start_bc) * frac
+    seg_area = 0.5 * (g_start_bc + g_at_end_c) * (seg_end_c - seg_start_bc)
+    seg_area = xp.where(active, seg_area, 0.0)
+    G_main = xp.sum(seg_area, axis=1)
+
+    # Linear-taper tail beyond x_mesh[-1]: g decays g[-1] -> 0
+    # (interp_tab1 outside_value=0) over (x_mesh[-1], x_max_i).
+    x_end = float(x_pad_np[-1])
+    tail_dx = xp.maximum(x_max - x_end, 0.0)
+    tail_area = 0.5 * g_pad[-1] * tail_dx
+    G = G_main + tail_area
+
+    # g queried at every (Ein, Eout): x_query = Eout / theta(E).
+    x_query = eout_arr[None, :] / theta_safe[:, None]
+    g_query = interp_tab1(
+        x_query.reshape(-1), g_tab, 'x', 'g',
+        outside_value=0.0, xp=xp,
+    ).reshape(n_ein, n_eout)
+
+    allowed = (
+        (eout_arr[None, :] <= E_minus_U_safe[:, None])
+        & (eout_arr[None, :] >= 0.0)
+    )
+    G_safe = xp.where(G > 0, G, 1.0)
+    row_valid = valid_row & (G > 0)
+    denom = theta_safe[:, None] * G_safe[:, None]
+    return xp.where(
+        allowed & row_valid[:, None],
+        g_query / denom,
+        0.0,
+    )
 
 
 def compute_simple_maxwellian_fission_spectrum(
