@@ -137,175 +137,32 @@ def init_trans2yield(elis, qm, qi, maxlevel: int, xp=None):
     return ee, r, a
 
 
-def _match_direct_vectorised(esi, ee_slice, tp, gp, xp):
-    """Vectorised level-matching for every ``k in [0, j0-1]``
-    simultaneously. Same two-branch tolerance semantics as the
-    Fortran but computed with a single ``(j0, nt)`` outer product
-    so the trace graph does not grow with ``j0``.
+def _match_direct(esi, ee_slice, tp, gp, xp):
+    """Vectorised level-matching for every ``k`` simultaneously.
 
-    Parameters
-    ----------
-    esi : (nt,)  lower-level energies.
-    ee_slice : (j0,)  running-state levels ``ee[0:j0]``.
-    tp, gp : (nt,)  direct transition and photon-branching factors.
+    Same two-branch tolerance semantics as the Fortran, computed
+    with a single outer product of shape ``(len(ee_slice), len(esi))``.
+    Under the numpy path ``ee_slice`` has length ``j0`` and ``esi``
+    has the section's natural ``nt``; under the jax path all four
+    inputs are pre-padded to a fixed ``(N, N)``.
 
-    Returns ``(p_direct, a_val)`` of shape ``(j0,)`` each, with
-    zero at positions where no lower level matched.
+    Returns ``(p_direct, a_val)``, each shaped like ``ee_slice``.
     """
-    diffs = xp.abs(esi[None, :] - ee_slice[:, None])         # (j0, nt)
+    diffs = xp.abs(esi[None, :] - ee_slice[:, None])
     # Tolerance rule matches the Fortran two-branch logic:
     #   esi=0 and eek=0  -> diff=0, tol=0, within=True.
     #   esi=0 and eek!=0 -> diff=|eek|, tol=0, within=False.
     #   esi!=0 and eek=0 -> diff=|esi|, tol=1e-4*|esi|, within=False.
     #   esi!=0 and eek!=0-> |esi-eek| <= 1e-4*|esi|.
-    tol_abs = 1e-4 * xp.abs(esi)[None, :]                    # (1, nt)
-    within = diffs <= tol_abs                                # (j0, nt)
-    matched = xp.any(within, axis=1)                         # (j0,)
-    first_idx = xp.argmax(within.astype(xp.int32), axis=1)   # (j0,)
-    tp_at = tp[first_idx]                                    # (j0,)
-    gp_at = gp[first_idx]                                    # (j0,)
-    p_direct = xp.where(matched, tp_at, 0.0)                 # (j0,)
-    a_val = xp.where(matched, tp_at * gp_at, 0.0)            # (j0,)
+    tol_abs = 1e-4 * xp.abs(esi)[None, :]
+    within = diffs <= tol_abs
+    matched = xp.any(within, axis=1)
+    first_idx = xp.argmax(within.astype(xp.int32), axis=1)
+    tp_at = tp[first_idx]
+    gp_at = gp[first_idx]
+    p_direct = xp.where(matched, tp_at, 0.0)
+    a_val = xp.where(matched, tp_at * gp_at, 0.0)
     return p_direct, a_val
-
-
-def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
-                maxnk: int = 5000, xp=None):
-    """Convert one section's transition probabilities into photon
-    yields, and return updated cascade state.
-
-    Dispatch layer: numpy backends take the tight-shape path
-    (:func:`_trans2yield_tight`) which matches the pre-rewrite
-    per-MT arithmetic footprint; jax backends take the fully
-    static-padded path (:func:`_trans2yield_padded`) which fixes
-    every internal shape at ``ee.shape[0]`` so XLA's per-shape
-    first-call compile cost is paid once instead of once per MT.
-
-    Both paths return ``(ee, r, a, result_dict)`` with the same
-    physical content; the padded path emits a longer fixed-length
-    ``result_dict['photon_yield']`` where entries beyond the
-    cascade positions are zero, which the downstream matcher in
-    :mod:`mf12_interpretation` handles transparently.
-
-    ``maxnk`` is kept for API compatibility and unused (both paths
-    emit a fixed-size grid rather than a variable-length list).
-
-    Parameters
-    ----------
-    mt : int. MT number of the discrete inelastic reaction (must be
-        in one of the series listed in :data:`_SERIES_TABLE`).
-    esns : float or 0-d array. Energy of the residual excited-state
-        level populated by reaction ``mt`` (ENDF ``ES``). Tracer-safe.
-    esi : (nt,) array-like. Energies of the lower levels this
-        section describes direct transitions to. ``esi[i] = 0`` is
-        the ground state. Tracer-safe.
-    tp, gp : (nt,) array-like. Direct transition probabilities and
-        photon-vs-internal-conversion factors. Tracer-safe.
-    ee, r, a : running cascade state from :func:`init_trans2yield`.
-    xp : array-namespace adapter; ``None`` defaults to numpy.
-    """
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
-    del maxnk
-    if xp.name == 'numpy':
-        return _trans2yield_tight(mt, esns, esi, tp, gp, ee, r, a, xp)
-    return _trans2yield_padded(mt, esns, esi, tp, gp, ee, r, a, xp)
-
-
-def _trans2yield_tight(mt, esns, esi, tp, gp, ee, r, a, xp):
-    """Numpy path: per-MT arithmetic at tight (j0,) / (j0, j0)
-    shapes. No compile cost applies, so padding would be pure
-    waste (~2x wall time)."""
-    esi = xp.asarray(esi, dtype=xp.float64)
-    tp = xp.asarray(tp, dtype=xp.float64)
-    gp = xp.asarray(gp, dtype=xp.float64)
-    esns = xp.asarray(esns, dtype=xp.float64)
-    nt = int(esi.shape[0])
-
-    mt0 = _series_mt0(int(mt))
-    j0 = int(mt) - mt0
-
-    ee = _set_1d(ee, j0, esns, xp)
-
-    if j0 > 0:
-        # Vectorised match: one (j0, nt) outer product instead of j0
-        # per-k dispatches.
-        ee_slice = ee[0:j0]
-        if nt > 0:
-            p_direct_vec, a_val_vec = _match_direct_vectorised(
-                esi, ee_slice, tp, gp, xp,
-            )
-        else:
-            p_direct_vec = xp.zeros(j0, dtype=xp.float64)
-            a_val_vec = xp.zeros(j0, dtype=xp.float64)
-
-        # Write column j0 of ``a`` in one op.
-        if xp.name == 'jax':
-            a = a.at[0:j0, j0].set(a_val_vec)
-        else:
-            a[0:j0, j0] = a_val_vec
-
-        # Solve column j0 of ``r`` as a triangular back-substitution:
-        #   (I - strict_upper(a[0:j0, 0:j0])) @ r_col = p_direct
-        # The old code did this row-by-row with a sequential
-        # accumulation. A single triangular solve emits ONE XLA
-        # primitive per MT instead of O(j0^2) chained adds, which is
-        # the compile-time bottleneck on deep cascades. Introduces a
-        # ~1-ULP drift vs the pre-rewrite Fortran-parity reference.
-        eye_j0 = xp.eye(j0, dtype=xp.float64)
-        strict_upper_A = xp.triu(a[0:j0, 0:j0], k=1)
-        M = eye_j0 - strict_upper_A
-        if xp.name == 'jax':
-            import jax.scipy.linalg as _jsp_la
-            r_col = _jsp_la.solve_triangular(
-                M, p_direct_vec, lower=False, unit_diagonal=True,
-            )
-            r = r.at[0:j0, j0].set(r_col)
-        else:
-            from scipy.linalg import solve_triangular as _solve_triangular
-            r_col = _solve_triangular(
-                M, p_direct_vec, lower=False, unit_diagonal=True,
-            )
-            r[0:j0, j0] = r_col
-
-    if j0 == 0:
-        empty = xp.zeros(0, dtype=xp.float64)
-        return ee, r, a, {
-            'level_energy': empty,
-            'photon_energy': empty,
-            'photon_yield': empty,
-        }
-
-    # Fixed-shape photon-line grid. Fortran loops:
-    #   i  = 2..j0+1  -> j1 = j0+2-i = j0, j0-1, ..., 1
-    #   ii = 1..j0    -> j2 = j0-ii = j0-1, ..., 0
-    # Both descending; we build with ascending arange and sort at
-    # the end by descending photon energy anyway.
-    j1_arr = np.arange(1, j0 + 1)
-    j2_arr = np.arange(0, j0)
-    j1_bc, j2_bc = np.meshgrid(j1_arr, j2_arr, indexing='ij')
-    yld_grid = a[j2_bc, j1_bc] * r[j1_bc, j0]
-    photon_energy_grid = ee[j1_bc] - ee[j2_bc]
-    level_energy_grid = ee[j1_bc]
-
-    yld_flat = yld_grid.reshape(-1)
-    photon_energy_flat = photon_energy_grid.reshape(-1)
-    level_energy_flat = level_energy_grid.reshape(-1)
-
-    if xp.name == 'numpy':
-        # Legacy output: keep only cascade positions that actually
-        # emit a photon (Fortran-parity tests pin this).
-        keep = yld_flat > 0.0
-        yld_flat = yld_flat[keep]
-        photon_energy_flat = photon_energy_flat[keep]
-        level_energy_flat = level_energy_flat[keep]
-
-    order = xp.argsort(-photon_energy_flat)
-    return ee, r, a, {
-        'level_energy': level_energy_flat[order],
-        'photon_energy': photon_energy_flat[order],
-        'photon_yield': yld_flat[order],
-    }
 
 
 def _pad_to_N(vec, N, fill, xp):
@@ -320,35 +177,44 @@ def _pad_to_N(vec, N, fill, xp):
     return xp.concatenate([v, tail])
 
 
-def _match_direct_padded(esi_padded, ee_full, tp_padded, gp_padded, xp):
-    """Same match-with-tolerance semantics as :func:`_match_direct_vectorised`
-    but at fixed ``(N, N)`` shape.
+def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
+                maxnk: int = 5000, xp=None):
+    """Convert one section's transition probabilities into photon
+    yields, and return updated cascade state.
 
-    ``esi_padded`` unused slots hold ``-1e30`` so no ``k`` can
-    match those columns; ``tp_padded`` / ``gp_padded`` unused
-    slots hold 0. ``ee_full`` is the full state vector of length
-    ``N``. Returns ``p_direct, a_val`` of shape ``(N,)`` each.
+    Single algorithm, two backend-driven parametrisations:
+
+    - ``xp.name == 'numpy'``: the local shape ``N`` is ``j0`` so
+      every matrix / vector op runs at tight per-MT extent. No
+      XLA compile applies, so padding would be pure arithmetic
+      waste. The zero-yield photon lines are filtered out to keep
+      the Fortran-parity output length contract.
+    - jax backends: ``N = ee.shape[0]`` (the state matrix side,
+      currently :data:`mf12_interpretation_helpers.MAX_NUM_LEVEL`
+      = 60). Every internal op runs at fixed shape so XLA pays a
+      first-call compile once per shape and reuses it across all
+      MTs in the cascade series (~29x eager-cold speedup on
+      Pb-208 MT=90 vs the tight per-MT path). Zero-yield lines
+      stay in place with a sentinel ``photon_energy = -1e30`` so
+      the wrapper's tolerance matcher ignores them.
+
+    Both paths return ``(ee, r, a, result_dict)`` with the same
+    physical content. ``maxnk`` is unused (kept for API parity).
+
+    Parameters
+    ----------
+    mt : int. MT number of the discrete inelastic reaction.
+    esns : float or 0-d array. Excited-state energy ``ES``. Tracer-safe.
+    esi : (nt,) lower-level energies. Tracer-safe.
+    tp, gp : (nt,) direct-transition and photon-branching factors.
+        Tracer-safe.
+    ee, r, a : running cascade state from :func:`init_trans2yield`.
+    xp : array-namespace adapter; ``None`` defaults to numpy.
     """
-    diffs = xp.abs(esi_padded[None, :] - ee_full[:, None])
-    tol_abs = 1e-4 * xp.abs(esi_padded)[None, :]
-    within = diffs <= tol_abs
-    matched = xp.any(within, axis=1)
-    first_idx = xp.argmax(within.astype(xp.int32), axis=1)
-    tp_at = tp_padded[first_idx]
-    gp_at = gp_padded[first_idx]
-    p_direct = xp.where(matched, tp_at, 0.0)
-    a_val = xp.where(matched, tp_at * gp_at, 0.0)
-    return p_direct, a_val
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    del maxnk
 
-
-def _trans2yield_padded(mt, esns, esi, tp, gp, ee, r, a, xp):
-    """JAX path: every internal op runs at fixed ``(N, N)`` shape,
-    where ``N = ee.shape[0]`` (the state matrix side, currently
-    :data:`mf12_interpretation_helpers.MAX_NUM_LEVEL` = 60). XLA's
-    per-shape first-call compile is then amortised across all MTs
-    in the cascade series (~22x eager-cold speedup on Pb-208 MT=90
-    vs the tight per-MT path)."""
-    N = int(ee.shape[0])
     esi = xp.asarray(esi, dtype=xp.float64)
     tp = xp.asarray(tp, dtype=xp.float64)
     gp = xp.asarray(gp, dtype=xp.float64)
@@ -356,7 +222,6 @@ def _trans2yield_padded(mt, esns, esi, tp, gp, ee, r, a, xp):
 
     mt0 = _series_mt0(int(mt))
     j0 = int(mt) - mt0
-
     ee = _set_1d(ee, j0, esns, xp)
 
     if j0 == 0:
@@ -367,42 +232,77 @@ def _trans2yield_padded(mt, esns, esi, tp, gp, ee, r, a, xp):
             'photon_yield': empty,
         }
 
-    esi_padded = _pad_to_N(esi, N, -1e30, xp)
-    tp_padded = _pad_to_N(tp, N, 0.0, xp)
-    gp_padded = _pad_to_N(gp, N, 0.0, xp)
+    # Local work extent: tight (j0) for numpy, padded (60) for jax.
+    is_padded = xp.name != 'numpy'
+    N = int(ee.shape[0]) if is_padded else j0
 
-    p_direct_full, a_val_full = _match_direct_padded(
-        esi_padded, ee, tp_padded, gp_padded, xp,
-    )
-    # Only rows k < j0 participate in this MT's cascade; mask the
-    # padded tail to zero contribution.
-    row_mask = xp.arange(N) < j0
-    p_direct_full = xp.where(row_mask, p_direct_full, 0.0)
-    a_val_full = xp.where(row_mask, a_val_full, 0.0)
+    # State views. Under padded ``N`` equals ``ee.shape[0]``, so a
+    # ``[0:N]`` slice is a redundant XLA op that hurts jit steady-
+    # state (measured 3x slower before this shortcut). Bypass it.
+    ee_view = ee if is_padded else ee[0:N]
+    a_view = a if is_padded else a[0:N, 0:N]
 
-    a = a.at[:, j0].set(a_val_full)
+    # Under padded, extend esi/tp/gp to length N so the match op
+    # can run at fixed shape; sentinels ensure no k matches a
+    # padded slot. Under tight (N = j0) the arrays are already the
+    # right length (or shorter, when the section has fewer direct
+    # transitions than levels), so skip the pad to save the
+    # per-MT Python overhead.
+    if is_padded:
+        esi_v = _pad_to_N(esi, N, -1e30, xp)
+        tp_v = _pad_to_N(tp, N, 0.0, xp)
+        gp_v = _pad_to_N(gp, N, 0.0, xp)
+    else:
+        esi_v, tp_v, gp_v = esi, tp, gp
 
-    # Triangular solve at fixed (N, N). ``a`` is strictly upper
-    # triangular by construction; ``xp.triu`` keeps the intent
-    # explicit and lets XLA fuse the mask.
+    p_direct, a_val = _match_direct(esi_v, ee_view, tp_v, gp_v, xp)
+
+    if is_padded:
+        # Only rows k < j0 belong to this MT's cascade.
+        row_mask = xp.arange(N) < j0
+        p_direct = xp.where(row_mask, p_direct, 0.0)
+        a_val = xp.where(row_mask, a_val, 0.0)
+
+    if xp.name == 'jax':
+        a = a.at[:, j0].set(a_val) if is_padded else a.at[0:N, j0].set(a_val)
+    else:
+        a[0:N, j0] = a_val
+
+    # Triangular solve: (I - strict_upper(a_view)) @ r_col = p_direct.
+    # Single XLA primitive per MT (was O(j0^2) chained adds pre
+    # Lever 2) -> the compile-time bottleneck on deep cascades.
+    # Introduces up to ~1 ULP drift vs the Fortran sequential
+    # accumulation. Re-read ``a_view`` after the column write.
+    a_view = a if is_padded else a[0:N, 0:N]
     eye_N = xp.eye(N, dtype=xp.float64)
-    M = eye_N - xp.triu(a, k=1)
-    import jax.scipy.linalg as _jsp_la
-    r_col = _jsp_la.solve_triangular(
-        M, p_direct_full, lower=False, unit_diagonal=True,
-    )
-    # r[j0, j0] must stay 1 (identity structure) for later MTs to
-    # read the correct running state. The solve returns 0 there
-    # because p_direct_full[j0] = 0 and a[j0, i>j0] = 0.
-    r_col = r_col.at[j0].set(1.0)
-    r = r.at[:, j0].set(r_col)
+    M = eye_N - xp.triu(a_view, k=1)
+    if xp.name == 'jax':
+        import jax.scipy.linalg as _jsp_la
+        r_col = _jsp_la.solve_triangular(
+            M, p_direct, lower=False, unit_diagonal=True,
+        )
+        if is_padded:
+            # r[j0, j0] must stay 1 for later MTs to read the identity;
+            # the solve returns 0 there because p_direct[j0] = 0.
+            r_col = r_col.at[j0].set(1.0)
+            r = r.at[:, j0].set(r_col)
+        else:
+            r = r.at[0:N, j0].set(r_col)
+    else:
+        from scipy.linalg import solve_triangular as _solve_triangular
+        r_col = _solve_triangular(
+            M, p_direct, lower=False, unit_diagonal=True,
+        )
+        # Under tight N == j0, r[0:N, j0] never touches r[j0, j0],
+        # so the identity restore is unnecessary.
+        r[0:N, j0] = r_col
 
-    # Photon-line enumeration at fixed (N-1, N-1) shape. Positions
-    # outside this MT's cascade (j1 > j0, or j2 mapped to padded
-    # levels) produce zero yield naturally through the zeros in
-    # ``r[:, j0]`` and ``a[j2, j1]``.
-    j1_arr = np.arange(1, N)
-    j2_arr = np.arange(0, N - 1)
+    # Photon-line enumeration. Tight uses (j0, j0) so j1 covers
+    # 1..j0 inclusive. Padded uses (N-1, N-1) so j1 covers 1..N-1
+    # (avoids the ee[N] out-of-range that j1=N would introduce).
+    N_enum = j0 if not is_padded else N - 1
+    j1_arr = np.arange(1, N_enum + 1)
+    j2_arr = np.arange(0, N_enum)
     j1_bc, j2_bc = np.meshgrid(j1_arr, j2_arr, indexing='ij')
     yld_grid = a[j2_bc, j1_bc] * r[j1_bc, j0]
     photon_energy_grid = ee[j1_bc] - ee[j2_bc]
@@ -412,15 +312,21 @@ def _trans2yield_padded(mt, esns, esi, tp, gp, ee, r, a, xp):
     photon_energy_flat = photon_energy_grid.reshape(-1)
     level_energy_flat = level_energy_grid.reshape(-1)
 
-    # Mask the photon_energy of zero-yield entries to a sentinel
-    # far from any physical query, so the wrapper's tolerance
-    # matcher (find_indices_with_tol under concrete, argmin under
-    # tracer) never routes a user photon-energy query into a
-    # non-emitting cascade position. Zero-yield rows still occupy
-    # the fixed-shape grid, they just do not compete for matches.
-    photon_energy_flat = xp.where(
-        yld_flat > 0.0, photon_energy_flat, -1e30,
-    )
+    if is_padded:
+        # Sentinel-mask zero-yield entries so the wrapper's
+        # tolerance matcher never routes queries to non-emitting
+        # cascade positions. Fixed shape preserved.
+        photon_energy_flat = xp.where(
+            yld_flat > 0.0, photon_energy_flat, -1e30,
+        )
+    else:
+        # Fortran-parity contract: filter zero-yield rows out of
+        # the output. Variable length is fine here (numpy path).
+        keep = yld_flat > 0.0
+        yld_flat = yld_flat[keep]
+        photon_energy_flat = photon_energy_flat[keep]
+        level_energy_flat = level_energy_flat[keep]
+
     order = xp.argsort(-photon_energy_flat)
     return ee, r, a, {
         'level_energy': level_energy_flat[order],
