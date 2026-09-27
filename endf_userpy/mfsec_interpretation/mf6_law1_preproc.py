@@ -217,16 +217,19 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
         b_rows.append(b_padded)
     b_panels = xp.stack(b_rows, axis=0)
 
-    # Under xp=jax, also route the scalar-per-panel arrays and
-    # ep_panels through the backend so the tracer-panel-index kernel
-    # (issue #166) can gather them without materialising numpy. Numpy
-    # backend keeps the arrays as numpy for zero overhead on the
-    # single-panel path.
+    # Under xp=jax, route ``ei_mesh`` and ``ep_panels`` through the
+    # backend so tracer values at those leaves flow through the
+    # kernel. ``nep_arr`` / ``nd_arr`` / ``na_arr`` stay numpy
+    # unconditionally: they are integer descriptors that (i) drive
+    # Python-side control flow in the reconstruction fallback path,
+    # and (ii) still work as-is in the tracer-panel-index kernel,
+    # since ``xp.take(numpy_arr, tracer_index)`` promotes the numpy
+    # array to xp-native on-the-fly. Keeping them numpy means
+    # ``jax.jit(loss)`` and ``jax.jit(jax.grad(loss))``, where the
+    # whole preproc runs inside a JAX trace, do not turn integer
+    # counts into tracers whose ``int(...)`` would raise.
     if xp.name != 'numpy':
         ei_mesh = xp.asarray(ei_mesh)
-        nd_arr = xp.asarray(nd_arr)
-        na_arr = xp.asarray(na_arr)
-        nep_arr = xp.asarray(nep_arr)
         ep_panels = xp.asarray(ep_panels)
 
     return MF6Law1Data(
