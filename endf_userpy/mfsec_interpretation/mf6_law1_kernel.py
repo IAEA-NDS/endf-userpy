@@ -454,18 +454,28 @@ def _f6law1con_panel_pair_bc(data, panel_idx, lei, e_bc, tp_bc, w_bc, xp):
     (endf6.f90:793). All (e, tp, w) are broadcast arrays of the
     query shape. Returns the same-shape amplitude array; zero when
     neither panel has continuum data.
+
+    Mesh-knot autodiff: ``data.ei_mesh`` may be a JAX tracer when
+    the caller has injected a tracer at one of its entries via the
+    xp-aware preproc; ``data.ep_panels`` may similarly be a tracer
+    when the caller perturbs Ep. Both are indexed here with xp-
+    native gathers so the tracer identity propagates into the
+    two-panel unit-base transform and the outer E interpolation.
+    Per-panel INT / NEP / ND arrays stay numpy: they are integer
+    descriptors that drive the Python-side ``has_cont`` /
+    ``has_cont`` control flow, not fitting targets.
     """
     p1 = panel_idx
     p2 = panel_idx + 1
-    # Materialise scalar file-side arrays via numpy (they may be
-    # xp-native under xp=jax from PR #191's multipanel preproc, and
-    # ``float()`` / ``int()`` on jax scalars fails inside ``jit``).
-    ei_mesh_np = np.asarray(data.ei_mesh)
     nep_np = np.asarray(data.nep_arr)
     nd_np = np.asarray(data.nd_arr)
-    ep_panels_np = np.asarray(data.ep_panels)
-    e1 = float(ei_mesh_np[p1])
-    e2 = float(ei_mesh_np[p2])
+    # Panel endpoints ``e1``, ``e2`` and Ep row endpoints
+    # ``x1low`` / ``x1high`` / ``x2low`` / ``x2high`` come from the
+    # (possibly xp-tracer) mesh and per-panel Ep grids; index them
+    # xp-native so mesh-knot autodiff flows through the outer-E and
+    # unit-base arithmetic below.
+    e1 = data.ei_mesh[p1]
+    e2 = data.ei_mesh[p2]
     nep1 = int(nep_np[p1])
     nd1 = int(nd_np[p1])
     nep2 = int(nep_np[p2])
@@ -485,11 +495,11 @@ def _f6law1con_panel_pair_bc(data, panel_idx, lei, e_bc, tp_bc, w_bc, xp):
         f2 = xp.zeros_like(tp_bc)
     else:
         # Both have continuum: unit-base transform on tp
-        x1low = float(ep_panels_np[p1, nd1])
-        x1high = float(ep_panels_np[p1, nep1 - 1])
+        x1low = data.ep_panels[p1, nd1]
+        x1high = data.ep_panels[p1, nep1 - 1]
         x1range = x1high - x1low
-        x2low = float(ep_panels_np[p2, nd2])
-        x2high = float(ep_panels_np[p2, nep2 - 1])
+        x2low = data.ep_panels[p2, nd2]
+        x2high = data.ep_panels[p2, nep2 - 1]
         x2range = x2high - x2low
         e2_minus_e1 = e2 - e1
         yslope = (e_bc - e1) / e2_minus_e1
@@ -503,7 +513,9 @@ def _f6law1con_panel_pair_bc(data, panel_idx, lei, e_bc, tp_bc, w_bc, xp):
         f1 = _f6law1_con_panel_bc(data, p1, e1, tp_at_p1, w_bc, xp) * (x1range / xrange_safe)
         f2 = _f6law1_con_panel_bc(data, p2, e2, tp_at_p2, w_bc, xp) * (x2range / xrange_safe)
 
-    # Outer E interp between the panel results
+    # Outer E interp between the panel results. e1 / e2 may be
+    # xp-native tracer scalars; ``xp.asarray`` on such a value is
+    # a no-op that preserves the tracer.
     e1_arr = xp.asarray(e1, dtype=e_bc.dtype)
     e2_arr = xp.asarray(e2, dtype=e_bc.dtype)
     return _yintp_bc(law, e1_arr, f1, e2_arr, f2, e_bc, xp)
