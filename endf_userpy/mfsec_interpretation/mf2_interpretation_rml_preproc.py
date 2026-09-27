@@ -143,18 +143,25 @@ def rml_data_from_endf_dict(
     naps = int(d_range['NAPS'])
 
     npp = int(d_range['NPP'])
-    pp_ma = dict2array(d_range['MA'], dtype=float, xp=xp)
-    pp_mb = dict2array(d_range['MB'], dtype=float, xp=xp)
-    pp_za = dict2array(d_range['ZA'], dtype=float, xp=xp)
-    pp_zb = dict2array(d_range['ZB'], dtype=float, xp=xp)
-    pp_ia = dict2array(d_range['IA'], dtype=float, xp=xp)
-    pp_ib = dict2array(d_range['IB'], dtype=float, xp=xp)
-    pp_q  = dict2array(d_range['Q'],  dtype=float, xp=xp)
-    pp_pnt = dict2array(d_range['PNT'], dtype=float, xp=xp)
-    pp_shf = dict2array(d_range['SHF'], dtype=float, xp=xp)
-    pp_mt = dict2array(d_range['MT'], dtype=float, xp=xp)
-    pp_pa = dict2array(d_range['PA'], dtype=float, xp=xp)
-    pp_pb = dict2array(d_range['PB'], dtype=float, xp=xp)
+    # ``pp_*`` are structural metadata (particle masses, charges,
+    # spins, flags, MT codes) that ``_channel_kind`` and friends
+    # consume via ``float(...)`` / ``int(...)``. Under xp=jax those
+    # casts fail on abstract tracers (a fitter has no reason to
+    # differentiate through structural metadata anyway), so keep
+    # these numpy regardless of xp. Only ``res_er`` and ``res_gam``
+    # (the resonance parameters a fitter tunes) route through xp.
+    pp_ma = dict2array(d_range['MA'], dtype=float)
+    pp_mb = dict2array(d_range['MB'], dtype=float)
+    pp_za = dict2array(d_range['ZA'], dtype=float)
+    pp_zb = dict2array(d_range['ZB'], dtype=float)
+    pp_ia = dict2array(d_range['IA'], dtype=float)
+    pp_ib = dict2array(d_range['IB'], dtype=float)
+    pp_q  = dict2array(d_range['Q'],  dtype=float)
+    pp_pnt = dict2array(d_range['PNT'], dtype=float)
+    pp_shf = dict2array(d_range['SHF'], dtype=float)
+    pp_mt = dict2array(d_range['MT'], dtype=float)
+    pp_pa = dict2array(d_range['PA'], dtype=float)
+    pp_pb = dict2array(d_range['PB'], dtype=float)
     if int(pp_ma.shape[0]) != npp:
         raise ValueError(
             f'LRF=7 range declares NPP={npp} but MA has '
