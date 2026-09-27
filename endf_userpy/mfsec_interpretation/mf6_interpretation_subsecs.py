@@ -660,8 +660,12 @@ def _get_dist2d_from_subsec_law7_traced_x(
         return _law7_traced_inner_dispatch(
             subsec, ei_mesh, ei_interp, e_in, ep_out, mu_out, xp,
         )
-    ei_mesh_np = np.asarray(ei_mesh, dtype=float)
-    n_mesh = int(ei_mesh_np.shape[0])
+    # Keep ``ei_mesh`` xp-native so a JAX tracer at
+    # ``subsec['E'][idx]`` (mesh-knot autodiff) survives into the
+    # panel-bracket gather below. The shape is static under trace,
+    # so ``int(ei_mesh.shape[0])`` is safe.
+    ei_mesh_xp = xp.asarray(ei_mesh, dtype=xp.float64)
+    n_mesh = int(ei_mesh_xp.shape[0])
     n_panels = n_mesh - 1
 
     # Uniform outer INT law across all panels is the common case
@@ -698,10 +702,10 @@ def _get_dist2d_from_subsec_law7_traced_x(
     f_all = xp.asarray(np.stack(f_per_mesh, axis=0))
     # (n_mesh, n_mu, n_ep)
 
-    # Per-query panel bracket via searchsorted on the concrete mesh
+    # Per-query panel bracket via searchsorted on the mesh
     # (searchsorted accepts a tracer needle and returns a tracer
-    # index cleanly under jax).
-    ei_mesh_xp = xp.asarray(ei_mesh_np)
+    # index cleanly under jax; a tracer mesh also flows through
+    # since searchsorted is xp-native).
     p_idx = xp.searchsorted(ei_mesh_xp, e_in, side='right') - 1
     p_idx = xp.clip(p_idx, 0, n_panels - 1)
 
@@ -834,17 +838,20 @@ def get_dist2d_from_subsec_law7(
     sec = endf_dict[6][mt]
     subsec = sec['subsection'][subsec_num]
 
-    ei_mesh = dict2array(subsec['E'], dtype=float)
+    # Route the outer Ein mesh through xp so a tracer at
+    # ``subsec['E'][idx]`` (mesh-knot autodiff) survives the
+    # traced-x fast path. Under xp=numpy this is bit-identical.
+    ei_mesh = dict2array(subsec['E'], dtype=float, xp=xp)
     int_arr = np.array(subsec['E_interpol']['INT'], dtype=int)
     nbt_arr = np.array(subsec['E_interpol']['NBT'], dtype=int)
     ei_interp = convert_interp_repr(int_arr, nbt_arr)
 
     # Under xp=jax, route through the traced-x fast path so grad
-    # wrt query Ein propagates end-to-end (roadmap #198 Phase 3).
-    # The per-panel inner (mu, Ep) evaluation stays numpy-only (its
-    # unit-base ``interp_tab2`` is not tracer-x aware; it doesn't
-    # need to be, since mu_out and ep_out are query grids not
-    # tracer inputs).
+    # wrt query Ein AND wrt file-side ei_mesh propagates end-to-end
+    # (roadmap #198 Phase 3). The per-panel inner (mu, Ep)
+    # evaluation stays numpy-only (its unit-base ``interp_tab2``
+    # is not tracer-x aware; it doesn't need to be, since mu_out
+    # and ep_out are query grids not tracer inputs).
     if xp.name == 'jax':
         e_in_xp = xp.asarray(energies_in, dtype=xp.float64)
         return _get_dist2d_from_subsec_law7_traced_x(

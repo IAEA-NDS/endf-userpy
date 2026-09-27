@@ -187,6 +187,15 @@ def _filter_energies_in(
 
 
 def _filter_energies_out(energies_out, *args, **kwargs):
+    xp = kwargs.get('xp')
+    if xp is not None and xp.name != 'numpy':
+        # Same rationale as ``_filter_energies_in``: under a non-numpy
+        # backend the eout may be a JAX tracer and the ``np.all(v)``
+        # fast-path check in ``pad_outside_values`` cannot inspect a
+        # tracer bool. Short-circuit to "all inside" (the traced
+        # reconstruction handles physical Eout < 0 via its own
+        # xp.where masks).
+        return np.ones(energies_out.shape, dtype=bool)
     return (energies_out >= 1e-20)
 
 
