@@ -195,3 +195,184 @@ def test_jax_grad_wrt_y0_matches_analytic():
     # area = 0.5 * (y0 + y1) * (x1 - x0) = 0.5 * (y0 + 4) * 2 = y0 + 4
     # d/d y0 = 1.0
     assert grad == pytest.approx(1.0, rel=1e-12)
+
+
+# ----------------------------------------------------------------------
+# Autodiff wrt x-arguments (x0, x1, x_start, x_end).
+#
+# Fundamental-theorem invariant: for a truly panel-exact integrator,
+# d(area)/d(x_end) equals the integrand y(x_end), and
+# d(area)/d(x_start) equals -y(x_start). This holds for every INT code.
+# The x0/x1 gradients are cross-checked against central finite
+# differences.
+# ----------------------------------------------------------------------
+
+
+def _y_at(x, x0, x1, y0, y1, code):
+    """Reference integrand y(x) for each ENDF INT code."""
+    if code == 1:
+        return y0
+    if code == 2:
+        return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    if code == 3:
+        return y0 + (y1 - y0) * np.log(x / x0) / np.log(x1 / x0)
+    if code == 4:
+        return y0 * np.exp((x - x0) / (x1 - x0) * np.log(y1 / y0))
+    if code == 5:
+        return y0 * (x / x0) ** (np.log(y1 / y0) / np.log(x1 / x0))
+    raise ValueError(code)
+
+
+# Panels chosen so log-INT paths are well-defined (x, y strictly
+# positive) and truncated interior slices exercise all four x-args.
+_AUTODIFF_PANELS = [
+    (1, 1.0, 4.0, 3.0, 3.0, 1.5, 3.2),
+    (2, 1.0, 4.0, 2.0, 8.0, 1.5, 3.2),
+    (3, 1.0, 4.0, 2.0, 8.0, 1.5, 3.2),
+    (4, 1.0, 4.0, 2.0, 8.0, 1.5, 3.2),
+    (5, 1.0, 4.0, 2.0, 8.0, 1.5, 3.2),
+]
+
+
+@pytest.mark.skipif(
+    'jax' not in array_ns.available_backends(), reason='jax not installed',
+)
+@pytest.mark.parametrize('code,x0,x1,y0,y1,xs,xe', _AUTODIFF_PANELS)
+def test_jax_grad_wrt_x_end_matches_integrand_all_ints(
+    code, x0, x1, y0, y1, xs, xe,
+):
+    """d(area)/d(x_end) equals the integrand y(x_end) exactly (FTC)."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+
+    def loss(x_end):
+        return integrate_tab1_panels(
+            jnp.array([x0]), jnp.array([x1]),
+            jnp.array([y0]), jnp.array([y1]),
+            jnp.array([xs]), jnp.array([x_end]),
+            np.array([code], dtype=int),
+            xp=xp,
+        )[0]
+
+    grad = float(jax.grad(loss)(jnp.array(xe)))
+    expected = _y_at(xe, x0, x1, y0, y1, code)
+    assert grad == pytest.approx(expected, rel=1e-6), (
+        f'INT={code}: grad={grad} vs y({xe})={expected}'
+    )
+
+
+@pytest.mark.skipif(
+    'jax' not in array_ns.available_backends(), reason='jax not installed',
+)
+@pytest.mark.parametrize('code,x0,x1,y0,y1,xs,xe', _AUTODIFF_PANELS)
+def test_jax_grad_wrt_x_start_matches_integrand_all_ints(
+    code, x0, x1, y0, y1, xs, xe,
+):
+    """d(area)/d(x_start) equals -y(x_start) exactly (FTC)."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+
+    def loss(x_start):
+        return integrate_tab1_panels(
+            jnp.array([x0]), jnp.array([x1]),
+            jnp.array([y0]), jnp.array([y1]),
+            jnp.array([x_start]), jnp.array([xe]),
+            np.array([code], dtype=int),
+            xp=xp,
+        )[0]
+
+    grad = float(jax.grad(loss)(jnp.array(xs)))
+    expected = -_y_at(xs, x0, x1, y0, y1, code)
+    assert grad == pytest.approx(expected, rel=1e-6), (
+        f'INT={code}: grad={grad} vs -y({xs})={expected}'
+    )
+
+
+@pytest.mark.skipif(
+    'jax' not in array_ns.available_backends(), reason='jax not installed',
+)
+@pytest.mark.parametrize('code,x0,x1,y0,y1,xs,xe', _AUTODIFF_PANELS)
+def test_jax_grad_wrt_panel_endpoints_matches_fd(
+    code, x0, x1, y0, y1, xs, xe,
+):
+    """jax.grad wrt x0 and x1 matches central finite differences."""
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+
+    def loss_x0(v):
+        return integrate_tab1_panels(
+            jnp.array([v]), jnp.array([x1]),
+            jnp.array([y0]), jnp.array([y1]),
+            jnp.array([xs]), jnp.array([xe]),
+            np.array([code], dtype=int),
+            xp=xp,
+        )[0]
+
+    def loss_x1(v):
+        return integrate_tab1_panels(
+            jnp.array([x0]), jnp.array([v]),
+            jnp.array([y0]), jnp.array([y1]),
+            jnp.array([xs]), jnp.array([xe]),
+            np.array([code], dtype=int),
+            xp=xp,
+        )[0]
+
+    eps = 1e-5
+    g0 = float(jax.grad(loss_x0)(jnp.array(x0)))
+    fd0 = (float(loss_x0(x0 + eps)) - float(loss_x0(x0 - eps))) / (2 * eps)
+    g1 = float(jax.grad(loss_x1)(jnp.array(x1)))
+    fd1 = (float(loss_x1(x1 + eps)) - float(loss_x1(x1 - eps))) / (2 * eps)
+    # For INT=1 x0/x1 don't enter the area formula; grad and fd are both
+    # exactly zero.
+    tol = 1e-5 if code == 1 else 1e-4
+    assert g0 == pytest.approx(fd0, rel=tol, abs=1e-10), (
+        f'INT={code} d/dx0: grad={g0}, fd={fd0}'
+    )
+    assert g1 == pytest.approx(fd1, rel=tol, abs=1e-10), (
+        f'INT={code} d/dx1: grad={g1}, fd={fd1}'
+    )
+
+
+@pytest.mark.skipif(
+    'jax' not in array_ns.available_backends(), reason='jax not installed',
+)
+def test_jax_grad_wrt_x_args_composes_with_jit():
+    """jax.grad(jax.jit(f)) and jax.jit(jax.grad(f)) both work and agree.
+
+    A mixed batch of INT codes goes through a single call so the
+    xp.where dispatch across formulas is exercised under trace.
+    """
+    import jax
+    import jax.numpy as jnp
+    xp = array_ns.get_backend('jax')
+
+    def f(x_end):
+        return integrate_tab1_panels(
+            jnp.array([1.0, 1.0, 1.0, 1.0, 1.0]),
+            jnp.array([2.0, 2.0, 2.0, 2.0, 2.0]),
+            jnp.array([1.0, 1.0, 1.0, 1.0, 1.0]),
+            jnp.array([2.0, 2.0, 2.0, 2.0, 2.0]),
+            jnp.array([1.2, 1.2, 1.2, 1.2, 1.2]),
+            x_end,
+            np.array([1, 2, 3, 4, 5], dtype=int),
+            xp=xp,
+        ).sum()
+
+    x = jnp.array([1.5, 1.5, 1.5, 1.5, 1.5])
+    g_eager = jax.grad(f)(x)
+    g_jit_of_grad = jax.jit(jax.grad(f))(x)
+    g_grad_of_jit = jax.grad(jax.jit(f))(x)
+    # Fundamental-theorem: d/d x_end[i] equals y_i(x_end).
+    expected = np.array([
+        _y_at(1.5, 1.0, 2.0, 1.0, 2.0, code) for code in (1, 2, 3, 4, 5)
+    ])
+    np.testing.assert_allclose(np.asarray(g_eager), expected, rtol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(g_jit_of_grad), np.asarray(g_eager), rtol=1e-12,
+    )
+    np.testing.assert_allclose(
+        np.asarray(g_grad_of_jit), np.asarray(g_eager), rtol=1e-12,
+    )
