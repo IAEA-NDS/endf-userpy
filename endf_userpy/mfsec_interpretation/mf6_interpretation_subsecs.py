@@ -511,7 +511,34 @@ def get_dist2d_from_subsec_law6(
                         energies_in, energies_out, angle_cosines_out, xp)
 
 
-def _law7_tab1_records_for_e_panel(subsec, e_panel_key):
+def _tables_have_jax_leaf(subsec, xp):
+    """True when any ``f`` or ``Ep`` column of the LAW=7 subsection
+    has been swapped for a jax array (the calibration pattern for
+    ``jax.grad`` wrt file-side amplitudes). Under xp=numpy always
+    False; the numpy shortcut in the traced-x kernel then stays
+    enabled. Sampling one representative cell is enough because
+    the swap-in-place pattern replaces the whole column of every
+    cell the user cares about.
+    """
+    if xp.name != 'jax':
+        return False
+    try:
+        import jax
+    except ImportError:
+        return False
+    tables = subsec.get('table')
+    if not tables:
+        return False
+    for mu_tables in tables.values():
+        for tab in mu_tables.values():
+            if isinstance(tab.get('f'), jax.Array):
+                return True
+            if isinstance(tab.get('Ep'), jax.Array):
+                return True
+    return False
+
+
+def _law7_tab1_records_for_e_panel(subsec, e_panel_key, xp=None):
     """Build the list of per-mu-knot TAB1 records for one incident-
     energy panel of an MF6 LAW=7 subsection. Each record maps an
     outgoing-energy mesh ``Ep`` to the conditional distribution
@@ -521,15 +548,22 @@ def _law7_tab1_records_for_e_panel(subsec, e_panel_key):
     ``e_panel_key`` is the 1-indexed key into ``subsec['table']``
     (matches the ``curidx + 1`` / ``curidx + 2`` convention used by
     the pre-port Fortran wrapper).
+
+    ``Ep`` / ``f`` route through ``xp.asarray`` so a user who has
+    swapped either column in the endf_dict for a jax array (for
+    calibration under ``jax.grad``) keeps that trace intact.
+    ``INT`` / ``NBT`` are integer metadata and stay numpy.
     """
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
     per_mu_tables = subsec['table'][e_panel_key]
     n_mu = len(per_mu_tables)
     records = []
     for mu_i in range(n_mu):
         curtab = per_mu_tables[mu_i + 1]
         records.append({
-            'Ep': np.asarray(curtab['Ep'], dtype=float),
-            'f': np.asarray(curtab['f'], dtype=float),
+            'Ep': xp.asarray(curtab['Ep'], dtype=float),
+            'f': xp.asarray(curtab['f'], dtype=float),
             'INT': np.asarray(curtab['INT'], dtype=int),
             'NBT': np.asarray(curtab['NBT'], dtype=int),
         })
@@ -558,7 +592,7 @@ def _law7_eval_mu_panel(subsec, e_panel_key, mu_out, ep_out, xp):
     mu_nbt = np.asarray(mu_interpol['NBT'], dtype=int)
     # Force unit-base (LAW=7 semantic requirement).
     mu_int = 20 + (mu_int_raw % 10)
-    records = _law7_tab1_records_for_e_panel(subsec, e_panel_key)
+    records = _law7_tab1_records_for_e_panel(subsec, e_panel_key, xp=xp)
     return interp_tab2(
         xp.asarray(mu_out, dtype=xp.float64),
         xp.asarray(ep_out, dtype=xp.float64),
@@ -681,25 +715,32 @@ def _get_dist2d_from_subsec_law7_traced_x(
         )
     lei_law = int(laws.pop())
 
-    # Precompute every mesh point's inner (mu, Ep) amplitude ONCE
-    # (concrete numpy). The panel amplitudes are functions of the
-    # (concrete) subsection tables, mu_out, and ep_out only -- no
-    # tracer dependence -- so we force xp=numpy for the inner work
-    # to keep those ops OUT of the traced graph. Then one final
-    # ``xp.asarray`` on the stacked result imports the concrete
-    # array as a leaf. Cuts jax.grad compile time by an order of
-    # magnitude on large mu meshes (the inner unit-base
-    # ``interp_tab2`` would otherwise become n_mesh * n_mu * n_ep
-    # traced primitive ops).
-    mu_np = np.asarray(mu_out, dtype=float)
-    ep_np = np.asarray(ep_out, dtype=float)
-    xp_np = array_ns.get_backend('numpy')
-    f_per_mesh = []
-    for m_idx in range(n_mesh):
-        f_per_mesh.append(_law7_eval_mu_panel(
-            subsec, m_idx + 1, mu_np, ep_np, xp_np,
-        ))
-    f_all = xp.asarray(np.stack(f_per_mesh, axis=0))
+    # Precompute every mesh point's inner (mu, Ep) amplitude ONCE.
+    # Common case: the subsection tables carry no tracer, so the
+    # amplitudes are concrete and we route the inner work through
+    # numpy (cuts jax.grad compile time by an order of magnitude on
+    # large mu meshes -- the unit-base interp_tab2 would otherwise
+    # become n_mesh * n_mu * n_ep traced primitive ops). If the
+    # user has swapped any table's ``f`` or ``Ep`` column for a jax
+    # array (calibration under ``jax.grad`` wrt file-side leaves),
+    # route the inner work through xp so those tracers survive.
+    if _tables_have_jax_leaf(subsec, xp):
+        f_per_mesh = []
+        for m_idx in range(n_mesh):
+            f_per_mesh.append(_law7_eval_mu_panel(
+                subsec, m_idx + 1, mu_out, ep_out, xp,
+            ))
+        f_all = xp.stack(f_per_mesh, axis=0)
+    else:
+        mu_np = np.asarray(mu_out, dtype=float)
+        ep_np = np.asarray(ep_out, dtype=float)
+        xp_np = array_ns.get_backend('numpy')
+        f_per_mesh = []
+        for m_idx in range(n_mesh):
+            f_per_mesh.append(_law7_eval_mu_panel(
+                subsec, m_idx + 1, mu_np, ep_np, xp_np,
+            ))
+        f_all = xp.asarray(np.stack(f_per_mesh, axis=0))
     # (n_mesh, n_mu, n_ep)
 
     # Per-query panel bracket via searchsorted on the mesh

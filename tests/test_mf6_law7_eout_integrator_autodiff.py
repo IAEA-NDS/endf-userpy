@@ -248,3 +248,96 @@ def test_top_level_helper_returns_xp_array_on_h2():
     np.testing.assert_allclose(
         np.asarray(r_np), np.asarray(r_jax), rtol=1e-12, atol=1e-30,
     )
+
+
+def test_multi_subsec_law7_fast_path_sums_contributions(be9_endf_dict):
+    """Multi-subsection LAW=7 fast path: duplicating the ZAP=1
+    subsection makes ``find_subsec_nums`` return two entries for
+    ZAP=1; the fast path should sum both contributions panel-exactly.
+    """
+    xp_np = array_ns.get_backend('numpy')
+    ein = np.array([2.7e6])
+    mus = np.array([0.0, 0.5])
+    r_single = integrate_mf6_dist2d_over_eout(
+        be9_endf_dict, 16, 1, ein, mus, True, xp=xp_np,
+    )
+    d2 = copy.deepcopy(be9_endf_dict)
+    subs = d2[6][16]['subsection']
+    zap1_sn = next(sn for sn, sub in subs.items() if int(sub['ZAP']) == 1)
+    new_sn = max(subs.keys()) + 1
+    subs[new_sn] = copy.deepcopy(subs[zap1_sn])
+    d2[6][16]['NK'] = len(subs)
+    r_double = integrate_mf6_dist2d_over_eout(
+        d2, 16, 1, ein, mus, True, xp=xp_np,
+    )
+    np.testing.assert_allclose(
+        np.asarray(r_double), 2.0 * np.asarray(r_single),
+        rtol=1e-12, atol=1e-30,
+    )
+
+
+def test_jax_grad_wrt_f_amplitude_through_mu_integrator(be9_endf_dict):
+    """``jax.grad`` wrt one f-entry flows through
+    ``integrate_law7_subsec_over_mu`` (the mu-axis fast path). The
+    ``_get_dist2d_from_subsec_law7_traced_x`` inner numpy shortcut
+    is disabled when any table has been swapped for a jax array.
+    """
+    import jax
+    import jax.numpy as jnp
+    xp_jax = array_ns.get_backend('jax')
+
+    orig_f = float(
+        be9_endf_dict[6][16]['subsection'][1]['table'][_CELL[0]][_CELL[1]][
+            'f'
+        ][_CELL[2]]
+    )
+
+    def loss(theta):
+        d_t = copy.deepcopy(be9_endf_dict)
+        Ein_i, mu_i, idx = _CELL
+        orig = d_t[6][16]['subsection'][1]['table'][Ein_i][mu_i]['f']
+        new_f = jnp.asarray([float(v) for v in orig]).at[idx].set(theta)
+        d_t[6][16]['subsection'][1]['table'][Ein_i][mu_i]['f'] = new_f
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            r = mf6_law7.integrate_law7_subsec_over_mu(
+                d_t, 16, 1, np.array([_EIN]),
+                # Query near Ep[10]=350000 so the perturbation
+                # touches the local reconstructed value.
+                np.array([3.4e5, 3.5e5, 3.6e5]),
+                True, xp=xp_jax,
+            )
+        return jnp.sum(r)
+
+    theta0 = jnp.array(orig_f)
+    grad = float(jax.grad(loss)(theta0))
+    eps = max(abs(orig_f) * 1e-2, 1e-9)
+    fd = (
+        float(loss(jnp.array(orig_f + eps)))
+        - float(loss(jnp.array(orig_f - eps)))
+    ) / (2.0 * eps)
+    assert abs(fd) > 1e-6, (
+        'FD is near-zero: the perturbation does not reach the '
+        'mu-integrated observable at this query.'
+    )
+    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-30)
+
+
+def test_mu_integrator_numpy_jax_parity(be9_endf_dict):
+    """Under concrete inputs, ``integrate_law7_subsec_over_mu`` with
+    ``xp=jax`` matches the numpy path within the docstring-promised
+    few-permille tolerance (jax path skips the Richardson refine
+    branch that np.any(need_refine) would trace-abort on).
+    """
+    ein = np.array([2.7e6])
+    eout = np.array([1e5, 5e5])
+    r_np = mf6_law7.integrate_law7_subsec_over_mu(
+        be9_endf_dict, 16, 1, ein, eout, True,
+    )
+    r_jax = mf6_law7.integrate_law7_subsec_over_mu(
+        be9_endf_dict, 16, 1, ein, eout, True,
+        xp=array_ns.get_backend('jax'),
+    )
+    np.testing.assert_allclose(
+        np.asarray(r_np), np.asarray(r_jax), rtol=1e-3, atol=1e-30,
+    )

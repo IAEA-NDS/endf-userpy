@@ -555,22 +555,25 @@ _LAW7_MU_SEG_N_REFINED = 65
 _LAW7_MU_SEG_RTOL = 5e-5
 
 
-def _simpson_1d(f_samples, h):
+def _simpson_1d(f_samples, h, xp=None):
     """Composite Simpson on samples with uniform spacing ``h``, along
     the last axis. Requires ``f_samples.shape[-1]`` to be odd (i.e.,
-    an even number of sub-intervals).
+    an even number of sub-intervals). The Simpson weights are
+    concrete numpy; ``f_samples`` may be xp-native so tracers
+    propagate through the weighted sum.
     """
+    xp = _resolve_xp(xp)
     n = f_samples.shape[-1]
     assert n % 2 == 1, 'composite Simpson requires odd sample count'
-    # Weights: 1, 4, 2, 4, 2, ..., 4, 1
     w = np.ones(n)
     w[1:-1:2] = 4.0
     w[2:-2:2] = 2.0
-    return (h / 3.0) * (f_samples * w).sum(axis=-1)
+    return (h / 3.0) * xp.sum(f_samples * w, axis=-1)
 
 
 def integrate_law7_subsec_over_mu(
     endf_dict, mt, subsec_num, energies_in, energies_out, to_lab=True,
+    xp=None,
 ):
     """Energy distribution ``de(E_in, E_out)`` from a single MF6
     subsection with ``LAW=7``, integrated over ``mu`` on ``[-1, +1]``.
@@ -593,13 +596,20 @@ def integrate_law7_subsec_over_mu(
       noise of a uniform mesh spanning them.
     * Simpson within a segment resolves the smooth-but-not-polynomial
       integrand (rational in mu, plus tab1 sub-kinks) via mesh
-      density, with a two-level check that upgrades unconverged
-      segments to a finer mesh.
+      density.
 
-    Measured on JEFF-4.0 H-2 (n,2n) MT16, the resulting max rel
-    error vs a converged adaptive-Simpson reference is < 1e-5;
-    the general-purpose adaptive Simpson (initial_n=81 max_iter=3)
-    reaches ~4e-3 on the same integrand.
+    Under ``xp=numpy`` a two-level Richardson-style check upgrades
+    unconverged segments to a finer mesh, giving max rel error
+    <1e-5 vs a converged adaptive-Simpson reference on JEFF-4.0
+    H-2 (n,2n) MT=16 (the general-purpose adaptive Simpson with
+    initial_n=81 max_iter=3 reaches ~4e-3 on the same integrand).
+
+    Under ``xp=jax`` the refine branch is skipped (the tracer
+    ``np.any(need_refine)`` decision would abort the trace); the
+    fine-only integral stays within a few permille of the refined
+    numpy path on the corpus, and gradients flow through the ``f``
+    amplitudes / ``Ep`` knots of the underlying tables via the
+    xp-native reconstruction in ``get_dist2d_from_subsec_law7``.
 
     Parameters
     ----------
@@ -608,11 +618,14 @@ def integrate_law7_subsec_over_mu(
     energies_out : 1D array of outgoing-energy targets (eV).
     to_lab : accepted for signature compatibility; LAW=7 is always
         stored in the LAB frame.
+    xp : optional backend from :mod:`endf_userpy.primitives.array_ns`
+        (default numpy).
 
     Returns
     -------
-    ndarray of shape ``(len(energies_in), len(energies_out))``.
+    array of shape ``(len(energies_in), len(energies_out))``.
     """
+    xp = _resolve_xp(xp)
     sec = endf_dict[6][mt]
     sub = sec['subsection'][subsec_num]
     if sub['LAW'] != 7:
@@ -626,7 +639,11 @@ def integrate_law7_subsec_over_mu(
     ei_mesh = dict2array(sub['E'], dtype=float)
 
     n_eout = len(eouts)
-    out = np.zeros((len(einc), n_eout), dtype=float)
+    # Nested xp-scalar accumulator so tracer results carry through
+    # under xp=jax (same pattern as integrate_law7_subsec_over_eout).
+    zero_row = xp.zeros(n_eout)
+    row_cells = [zero_row for _ in range(len(einc))]
+    use_refine = xp.name == 'numpy'
 
     for i, e in enumerate(einc):
         # Outside the section's Ein range -> zero.
@@ -650,12 +667,8 @@ def integrate_law7_subsec_over_mu(
         n_seg = seg_edges.shape[0] - 1
 
         # Fine per-segment Simpson mesh (n=33 samples, 32 intervals).
-        # Also grab the coarse (n=17) mesh implicitly via decimation
-        # for the Richardson-style convergence check.
         n_fine = _LAW7_MU_SEG_N_FINE
         theta_fine = np.linspace(0.0, 1.0, n_fine)
-        # sample_pts shape (n_seg, n_fine): each row is one segment's
-        # uniform mesh.
         sample_pts_fine = (
             seg_lo[:, None] + (seg_hi - seg_lo)[:, None] * theta_fine[None, :]
         )
@@ -667,50 +680,51 @@ def integrate_law7_subsec_over_mu(
             eouts,
             mus_flat,
             True,
+            xp=xp,
         )
         # dist shape (1, n_eout, n_seg * n_fine).
         f_fine = dist[0].reshape(n_eout, n_seg, n_fine)
 
         # Composite Simpson per segment.
-        h_fine = (seg_hi - seg_lo) / (n_fine - 1)   # (n_seg,)
-        integ_fine = _simpson_1d(f_fine, 1.0) * h_fine[None, :]
-        # Coarse check: decimate to every second sample (n_coarse=17).
-        f_coarse = f_fine[:, :, ::2]
-        h_coarse = 2 * h_fine
-        integ_coarse = _simpson_1d(f_coarse, 1.0) * h_coarse[None, :]
+        h_fine = (seg_hi - seg_lo) / (n_fine - 1)   # (n_seg,) numpy
+        integ_fine = _simpson_1d(f_fine, 1.0, xp=xp) * h_fine[None, :]
 
-        # Per-segment convergence: refine segments where the two
-        # levels disagree by more than RTOL relative to the max fine
-        # integral over eout for that segment.
-        seg_max = np.abs(integ_fine).max(axis=0)   # (n_seg,)
-        seg_scale = np.maximum(seg_max, 1e-30)
-        seg_diff = np.abs(integ_fine - integ_coarse).max(axis=0)
-        need_refine = seg_diff > _LAW7_MU_SEG_RTOL * seg_scale
+        if use_refine:
+            # Coarse check: decimate to every second sample.
+            f_coarse = f_fine[:, :, ::2]
+            h_coarse = 2 * h_fine
+            integ_coarse = _simpson_1d(f_coarse, 1.0, xp=xp) * h_coarse[None, :]
+            seg_max = np.abs(integ_fine).max(axis=0)
+            seg_scale = np.maximum(seg_max, 1e-30)
+            seg_diff = np.abs(integ_fine - integ_coarse).max(axis=0)
+            need_refine = seg_diff > _LAW7_MU_SEG_RTOL * seg_scale
+            if np.any(need_refine):
+                refine_idcs = np.where(need_refine)[0]
+                n_ref = _LAW7_MU_SEG_N_REFINED
+                theta_ref = np.linspace(0.0, 1.0, n_ref)
+                ref_lo = seg_lo[refine_idcs]
+                ref_hi = seg_hi[refine_idcs]
+                sample_pts_ref = (
+                    ref_lo[:, None] + (ref_hi - ref_lo)[:, None] * theta_ref[None, :]
+                )
+                mus_ref = sample_pts_ref.reshape(-1)
+                dist_ref = _subsec.get_dist2d_from_subsec_law7(
+                    endf_dict, mt, subsec_num,
+                    np.array([e], dtype=float),
+                    eouts,
+                    mus_ref,
+                    True,
+                    xp=xp,
+                )
+                f_ref = dist_ref[0].reshape(
+                    n_eout, len(refine_idcs), n_ref,
+                )
+                h_ref = (ref_hi - ref_lo) / (n_ref - 1)
+                integ_ref = _simpson_1d(f_ref, 1.0, xp=xp) * h_ref[None, :]
+                integ_fine[:, refine_idcs] = integ_ref
 
-        if np.any(need_refine):
-            refine_idcs = np.where(need_refine)[0]
-            n_ref = _LAW7_MU_SEG_N_REFINED
-            theta_ref = np.linspace(0.0, 1.0, n_ref)
-            ref_lo = seg_lo[refine_idcs]
-            ref_hi = seg_hi[refine_idcs]
-            sample_pts_ref = (
-                ref_lo[:, None] + (ref_hi - ref_lo)[:, None] * theta_ref[None, :]
-            )
-            mus_ref = sample_pts_ref.reshape(-1)
-            dist_ref = _subsec.get_dist2d_from_subsec_law7(
-                endf_dict, mt, subsec_num,
-                np.array([e], dtype=float),
-                eouts,
-                mus_ref,
-                True,
-            )
-            f_ref = dist_ref[0].reshape(
-                n_eout, len(refine_idcs), n_ref,
-            )
-            h_ref = (ref_hi - ref_lo) / (n_ref - 1)
-            integ_ref = _simpson_1d(f_ref, 1.0) * h_ref[None, :]
-            integ_fine[:, refine_idcs] = integ_ref
+        row_cells[i] = integ_fine.sum(axis=1)
 
-        out[i, :] = integ_fine.sum(axis=1)
-
-    return out
+    if len(einc) == 0 or n_eout == 0:
+        return xp.zeros((len(einc), n_eout))
+    return xp.stack(row_cells)
