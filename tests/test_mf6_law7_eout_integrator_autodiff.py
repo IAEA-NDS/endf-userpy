@@ -170,6 +170,57 @@ def test_jax_grad_jit_composability(be9_endf_dict):
         )
 
 
+def test_jax_grad_wrt_ep_flows_via_panel_endpoint_gather():
+    """``jax.grad`` wrt an interior Ep knot flows through the
+    ``xp.take(ep_arr, panels)`` gather that feeds the ``x0`` /
+    ``x1`` panel-edge arguments of ``integrate_tab1_panels``.
+
+    For INT=1 (histogram) the panel integral is ``y0 * dx`` and
+    the endpoint knots do not enter, so the panel-endpoint
+    gradient is trivially zero. For INT >= 2 the endpoint knots
+    do enter and the gradient is non-zero. This test pins the
+    non-zero INT=2 case directly at the primitive layer since
+    the small committed corpus files only carry INT=1 LAW=7
+    (Be-9 (n,2n)).
+
+    Same dual-view pattern as
+    :func:`~primitives.interpolation._endf_interp1d_traced_x`:
+    concrete panel index (from ``searchsorted``), value gather
+    through ``xp.take`` on the xp-native knot array so tracers
+    on the knot positions propagate through the integrator
+    arithmetic.
+    """
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.mfsec_interpretation import (
+        mf6_law7_integrals as mf6_law7,
+    )
+    xp = array_ns.get_backend('jax')
+
+    ep_np = np.linspace(0.0, 14.0, 15)
+    f_np = 0.5 * ep_np  # y = 0.5 x so panel integrals depend on x0/x1
+    int_per_panel = np.array([2] * 14, dtype=int)  # INT=2 lin-lin
+    xi_a = np.array([10.3, 12.0])
+    xi_b = np.array([10.7, 12.5])
+
+    def loss(theta):
+        ep_xp = jnp.asarray(ep_np).at[10].set(theta)
+        r = mf6_law7._table_segment_areas_vec(
+            ep_xp, jnp.asarray(f_np), int_per_panel, xi_a, xi_b, xp=xp,
+        )
+        return jnp.sum(r)
+
+    theta0 = 10.0
+    grad = float(jax.grad(loss)(theta0))
+    eps = 1e-4
+    fd = (float(loss(theta0 + eps)) - float(loss(theta0 - eps))) / (2 * eps)
+    assert abs(fd) > 1e-6, (
+        'FD is near-zero on the INT=2 synthetic case; the panel '
+        'setup does not exercise the endpoint dependence.'
+    )
+    np.testing.assert_allclose(grad, fd, rtol=1e-5, atol=1e-30)
+
+
 def test_top_level_helper_returns_xp_array_on_h2():
     """``integrate_mf6_dist2d_over_eout`` on the single-subsection
     LAW=7 fast path (JEFF-4.0 H-2 (n,2n)) now returns an xp-native
