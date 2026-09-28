@@ -4,26 +4,19 @@ Follow-up to the LF=5 rewrite. The normalisation integral
 
     G(E) = integral_{0}^{x_max} g(x) dx
 
-is now computed per-panel exactly for the two INT codes that
-appear on real corpus LF=5 files:
-
-- INT=1 (histogram): ``area_i = g_i * (x_end_c - x_i)``
-- INT=2 (lin-lin): trapezoid on the tabulated g values
-
-INT=3 / 4 / 5 fall back to lin-lin with a UserWarning; no
-corpus LF=5 file has been observed to use them, but the
-fallback keeps the reconstruction well-defined.
+is now computed per-panel exactly for all five ENDF INT codes
+(histogram, lin-lin, lin-log, log-lin, log-log) via the shared
+``primitives.interpolation.integrate_tab1_panels`` helper.
 
 Pinned here:
 
-- Synthetic INT=1 integrates to 1 to machine precision (was
+- Synthetic INT=1 integrates to 1 to trapezoid precision (was
   ~1e-1 off with the pre-fix lin-lin trapezoid on histogram
   data).
-- INT=2 continues to integrate to 1 within trapezoid error.
-- INT=3 emits the fallback UserWarning.
+- INT=2, INT=3, INT=4, INT=5 each integrate to 1 within
+  trapezoid error, verifying the panel-exact formulas.
 - Corpus U-235 MT=455 LF=5 (all-INT=1) normalisation drops
-  from ~1e-3 to ~1e-4, well inside the pre-existing 1e-3
-  tolerance.
+  from ~1e-3 to ~1e-4.
 """
 from __future__ import annotations
 
@@ -103,23 +96,25 @@ def test_lf5_int2_lin_lin_still_normalises_to_one():
 
 
 @pytest.mark.parametrize('int_code', [3, 4, 5])
-def test_lf5_int_3_4_5_emits_fallback_warning(int_code):
-    """INT=3 / 4 / 5 aren't yet panel-exact; the kernel falls back
-    to lin-lin trapezoid on those panels and emits a UserWarning."""
-    x = [0.1, 1.0, 10.0]           # positive, log-safe
-    g = [1.0, 0.5, 0.1]
-    g_tab = {'x': x, 'g': g, 'INT': [int_code], 'NBT': [3]}
+def test_lf5_log_int_integrates_to_one(int_code):
+    """INT=3 / 4 / 5 now use panel-exact closed-form integration
+    (was fallback-to-lin-lin with a UserWarning). Each integrates
+    to 1 within the trapezoid error of the query grid."""
+    # Log-safe positive values (all > 0) with a smooth
+    # monotone-decreasing shape so all three log INTs produce
+    # well-defined interpolants.
+    x = np.linspace(0.1, 5.0, 41).tolist()
+    g = [np.exp(-0.5 * v) for v in x]
+    g_tab = {'x': x, 'g': g, 'INT': [int_code], 'NBT': [len(x)]}
     c = _make_contrib(theta=1e6, U=0.0, g_table=g_tab)
-    E = np.array([5e6])
-    Eout = np.linspace(0.0, 5e6, 51)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter('always')
-        _ = mf5.compute_general_evaporation_spectrum(c, E, Eout)
-    matching = [w for w in caught
-                if 'not yet panel-exact' in str(w.message)]
-    assert len(matching) >= 1, (
-        f'Expected fallback UserWarning for INT={int_code}, '
-        f'got warnings: {[str(w.message) for w in caught]}'
+    E = np.array([5e6])                            # x_max = 5.0
+    Eout = np.linspace(0.0, 5e6, 5001)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')             # promote to error
+        f = mf5.compute_general_evaporation_spectrum(c, E, Eout)
+    integ = float(np.trapezoid(f[0], Eout))
+    assert abs(integ - 1.0) < 5e-3, (
+        f'INT={int_code}: integral {integ:.6f} deviates from 1'
     )
 
 

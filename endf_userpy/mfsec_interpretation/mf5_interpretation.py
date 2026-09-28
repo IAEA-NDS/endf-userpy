@@ -23,8 +23,6 @@ When called with concrete ``ein`` values and ``xp=jax``, the loop
 body still traces cleanly and grads flow through ``theta`` and
 ``g_table`` values.
 """
-import warnings
-
 import numpy as np
 
 from ..primitives import array_ns
@@ -36,6 +34,7 @@ from ..primitives.helpers import (
     gammainc,
 )
 from ..primitives.interpolation import (
+    integrate_tab1_panels,
     interp_tab1,
     interp_tab2,
 )
@@ -161,18 +160,14 @@ def compute_general_evaporation_spectrum(
 
         G(E) = integral from 0 to (E - U)/theta(E) of g(x) dx
 
-    provides the normalisation. Integration is per-panel exact for
-    the two INT codes that appear on real corpus LF=5 files:
-
-    - **INT=1** (histogram): ``area_i = g_i * (x_end_c - x_i)``.
-    - **INT=2** (lin-lin): trapezoid on the tabulated g values.
-
-    Under either INT the panel is truncated at ``x_max_i`` per
-    incident energy. INT=3 / 4 / 5 (the three log-based laws) are
-    not yet panel-exact and fall back to lin-lin with a
-    UserWarning; no corpus LF=5 file has been observed to use
-    them, but the fallback keeps the reconstruction well-defined
-    if one appears.
+    provides the normalisation. Integration is per-panel exact
+    for all five ENDF INT codes via
+    :func:`~primitives.interpolation.integrate_tab1_panels` -
+    histogram (INT=1), lin-lin (INT=2), lin-log (INT=3), log-lin
+    (INT=4) and log-log (INT=5). Under any INT the panel is
+    truncated at ``x_max_i`` per incident energy, so partial
+    last-panel integrals stay exact rather than falling back to
+    a discretisation error.
 
     A final linear taper to zero for the region above the
     tabulated ``x[-1]`` covers query energies whose ``x_max``
@@ -224,15 +219,13 @@ def compute_general_evaporation_spectrum(
 
     seg_start_np = x_pad_np[:-1]
     seg_end_np = x_pad_np[1:]
-    seg_dx_np = seg_end_np - seg_start_np
-    seg_dx_safe_np = np.where(seg_dx_np == 0.0, 1.0, seg_dx_np)
 
-    # Per-panel INT codes. Panel i (between mesh point i-1 and i in
-    # the tabulated g_table) uses INT applicable at breakpoint i;
-    # ``convert_interp_repr`` returns a per-point array whose value
-    # at index k is the INT of the segment ENDING at point k. The
-    # leading zero-pad panel inherits the first tabulated panel's
-    # INT (its width is typically zero anyway).
+    # Per-panel INT codes. Panel i (between mesh point i-1 and i
+    # of the tabulated g_table) uses INT applicable at breakpoint
+    # i; ``convert_interp_repr`` returns a per-point array whose
+    # value at index k is the INT of the segment ENDING at point
+    # k. The leading zero-pad panel inherits the first tabulated
+    # panel's INT (its width is typically zero anyway).
     int_arr_np = np.asarray(g_tab.get('INT', [2]), dtype=int)
     nbt_arr_np = np.asarray(g_tab.get('NBT', [x_mesh_np.shape[0]]), dtype=int)
     int_per_point_np = convert_interp_repr(int_arr_np, nbt_arr_np)
@@ -240,41 +233,34 @@ def compute_general_evaporation_spectrum(
         int_per_point_np[1:] if int_per_point_np.shape[0] > 1
         else int_per_point_np
     )
-    first_int = int(int_per_panel_mesh_np[0]) if int_per_panel_mesh_np.shape[0] else 2
+    # Leading pad panel [0, x_mesh[0]] is always histogram at
+    # ``g_at_0``: for x_mesh[0] > 0 the interpolant is 0 outside
+    # the tabulated support (matching interp_tab1's outside_value=
+    # 0 convention), and the panel contributes 0; for x_mesh[0] ==
+    # 0 the pad panel has zero width. Using INT=1 here avoids the
+    # lin-lin / log-based interpolants from ramping from
+    # ``g_at_0 = 0`` up to ``g_mesh[0]``, which would add a
+    # spurious area outside the g_table support.
     int_per_panel_pad_np = np.concatenate(
-        [[first_int], int_per_panel_mesh_np]
+        [[1], int_per_panel_mesh_np]
     )
-    unsupported = set(int_per_panel_pad_np.tolist()) - {1, 2}
-    if unsupported:
-        warnings.warn(
-            f"MF5 LF=5 g_table has INT codes {sorted(unsupported)} that "
-            f"are not yet panel-exact; falling back to LIN-LIN "
-            f"trapezoid on those panels. Real-corpus LF=5 files use "
-            f"INT=1 (histogram) exclusively, so this only affects "
-            f"synthetic / future files.",
-            UserWarning, stacklevel=2,
-        )
-    is_int1_np = (int_per_panel_pad_np == 1)
-    is_int1_bc = xp.asarray(is_int1_np)[None, :]
 
     seg_start_bc = xp.asarray(seg_start_np)[None, :]
     seg_end_bc = xp.asarray(seg_end_np)[None, :]
-    seg_dx_safe_bc = xp.asarray(seg_dx_safe_np)[None, :]
     g_start_bc = g_pad[:-1][None, :]
     g_end_bc = g_pad[1:][None, :]
     x_max_col = x_max[:, None]
 
     active = seg_start_bc < x_max_col
     seg_end_c = xp.minimum(seg_end_bc, x_max_col)
-    seg_width = seg_end_c - seg_start_bc
-    # INT=1: histogram - constant g_start over the panel.
-    area_int1 = g_start_bc * seg_width
-    # INT=2 (and INT=3/4/5 fallback): lin-lin trapezoid with g
-    # interpolated at seg_end_c.
-    frac = seg_width / seg_dx_safe_bc
-    g_at_end_c = g_start_bc + (g_end_bc - g_start_bc) * frac
-    area_int2 = 0.5 * (g_start_bc + g_at_end_c) * seg_width
-    seg_area = xp.where(is_int1_bc, area_int1, area_int2)
+    # Panel-exact integration per INT code (see
+    # ``integrate_tab1_panels``); the panel gets truncated at
+    # ``seg_end_c`` when ``x_max`` cuts through it.
+    seg_area = integrate_tab1_panels(
+        seg_start_bc, seg_end_bc, g_start_bc, g_end_bc,
+        seg_end_c, int_per_panel_pad_np[None, :],
+        xp=xp,
+    )
     seg_area = xp.where(active, seg_area, 0.0)
     G_main = xp.sum(seg_area, axis=1)
 
