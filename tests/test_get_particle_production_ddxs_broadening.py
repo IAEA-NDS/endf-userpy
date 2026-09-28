@@ -313,12 +313,13 @@ def test_broadening_tuple_uses_provided_kernel_and_width(stub_quantities):
 
 def test_broadening_rejects_invalid_specs():
     """Bad values for broadening raise ValueError before any compute
-    runs."""
+    runs. Note: sigma=0 is now a valid "explicit no-kernel /
+    silence-the-drop-warning" sentinel per issue #266 and stays
+    accepted; only negative sigma and malformed tuples are rejected.
+    """
     einc, eouts, mus = _einc_eouts_mus()
 
-    with pytest.raises(ValueError, match="positive"):
-        quantities._normalize_broadening(0.0)
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="non-negative"):
         quantities._normalize_broadening(-1.0)
     with pytest.raises(ValueError, match="callable"):
         quantities._normalize_broadening(("not a callable", 1e5))
@@ -330,6 +331,18 @@ def test_broadening_rejects_invalid_specs():
 
 def test_normalize_broadening_none_is_identity():
     assert quantities._normalize_broadening(None) == (None, None)
+
+
+def test_normalize_broadening_zero_is_no_kernel():
+    """`broadening=0` maps to (None, None): the numeric result matches
+    `broadening=None` (deltas dropped). The dispatchers use a
+    separate check via `_broadening_explicit_no_kernel` to decide
+    whether to warn (issue #266)."""
+    assert quantities._normalize_broadening(0) == (None, None)
+    assert quantities._normalize_broadening(0.0) == (None, None)
+    assert not quantities._broadening_explicit_no_kernel(None)
+    assert quantities._broadening_explicit_no_kernel(0)
+    assert quantities._broadening_explicit_no_kernel(0.0)
 
 
 def test_normalize_broadening_gaussian_is_unit_norm():

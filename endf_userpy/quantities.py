@@ -565,11 +565,18 @@ def get_particle_production_dxs_dE(
     broadening : None or float or (callable, float), optional
         If None (default), behaviour is unchanged: discrete-level
         channels appear as the kinematic-box shape produced by the
-        Jacobian transformation in `compute_dexs`. If broadening is
-        supplied, the same kernel is applied to every admitted MT
-        along E_out, including discrete and continuum channels alike,
-        which smooths the box-edge singularities and lets the
-        spectrum be compared with finite-resolution measurements.
+        Jacobian transformation in `compute_dexs`, and MF6/LAW=1
+        ND>0 / MF12 / MF13 discrete gamma lines are dropped from
+        the output (their Dirac deltas integrate to zero on any
+        finite E_out grid). A UserWarning names the dropped MTs.
+        If broadening is supplied, the same kernel is applied to
+        every admitted MT along E_out, including discrete and
+        continuum channels alike, which smooths the box-edge
+        singularities and lets the spectrum be compared with
+        finite-resolution measurements. Pass `broadening=0` to
+        explicitly acknowledge the drop and suppress the warnings
+        (same numeric result as `broadening=None`; different only
+        in whether the warnings fire).
 
         Same accepted forms as `get_particle_production_ddxs`.
     above_range : str, default ``'warn_nan'``
@@ -610,9 +617,14 @@ def _get_particle_production_dxs_dE_impl(
         )
 
     if kernel is None:
-        _warn_law1_discrete_dropped_from_unbroadened_dxs_dE(
-            endf_dict, zap, user_mts,
-        )
+        if not _broadening_explicit_no_kernel(broadening):
+            _warn_law1_discrete_dropped_from_unbroadened_dxs_dE(
+                endf_dict, zap, user_mts,
+            )
+            _warn_mf12_mf13_discrete_dropped(
+                endf_dict, zap, user_mts,
+                'get_particle_production_dxs_dE',
+            )
         # Only forward ``xp`` when the caller explicitly set it, so
         # downstream ``func`` stubs written against the pre-port
         # signature (no ``xp`` kwarg) still work on the default
@@ -759,9 +771,11 @@ def get_particle_production_ddxs(
         elastic, MT 51..90 discrete inelastic) carry their outgoing
         energy as a kinematic delta at ``E' = E'_kin(mu, E_in)``
         which cannot be represented on the caller's finite E_out
-        grid; those MTs are silently excluded from the sum and a
-        UserWarning names them (issue #21). Pass a `broadening=`
-        to include their peaks.
+        grid; those MTs are excluded from the sum and a UserWarning
+        names them (issue #21). MF12 / MF13 discrete gamma-line
+        content is excluded on the same grounds and gets its own
+        UserWarning (issue #266). Pass a `broadening=` to include
+        their peaks.
 
         If broadening is provided, the result sums (i) the continuous
         DDX folded with the kernel along E_out, and (ii) the discrete
@@ -770,6 +784,11 @@ def get_particle_production_ddxs(
         (iv) the MF12 discrete-line gamma channels.
 
         Accepted forms:
+          - `None` (default) -> drop discrete deltas, emit
+            UserWarnings naming the affected MTs.
+          - `0` -> same numeric result as None (drop the deltas),
+            but suppress the UserWarnings. Use this once you have
+            deliberately chosen the continuum-only view.
           - scalar `sigma` (eV) -> Gaussian kernel of that width.
           - tuple `(kernel_callable, width)` -> custom kernel; the
             callable is `kernel(delta_E)` and `width` is its
@@ -806,9 +825,14 @@ def _get_particle_production_ddxs_impl(
 
     kernel, kernel_width = _normalize_broadening(broadening)
     if kernel is None:
-        _warn_discrete_dropped_from_unbroadened_ddx(
-            endf_dict, zap, user_mts,
-        )
+        if not _broadening_explicit_no_kernel(broadening):
+            _warn_discrete_dropped_from_unbroadened_ddx(
+                endf_dict, zap, user_mts,
+            )
+            _warn_mf12_mf13_discrete_dropped(
+                endf_dict, zap, user_mts,
+                'get_particle_production_ddxs',
+            )
         # Unbroadened gamma DDX from MF15 continuum + MF14 angular
         # (issue #125). The general compute_ddxs path goes through
         # compute_dist2d_values which handles MF6 XOR MF4+MF5 but
@@ -1025,7 +1049,9 @@ def _warn_discrete_dropped_from_unbroadened_ddx(endf_dict, zap, user_mts):
         f"E' = E'_kin(mu, E_in): MT={mt_str}. To include their peaks "
         f'in the DDX, pass a `broadening=sigma_eV` (or a custom '
         f'(kernel, width) tuple) so the deltas are folded into a '
-        f'finite kernel that plots on the E_out grid.',
+        f'finite kernel that plots on the E_out grid. Pass '
+        f'`broadening=0` to silence this warning while keeping the '
+        f'drop.',
         UserWarning, stacklevel=3,
     )
 
@@ -1079,20 +1105,86 @@ def _warn_law1_discrete_dropped_from_unbroadened_dxs_dE(
         f'The continuum part of these MTs IS included. To include '
         f'the discrete lines too, pass a `broadening=sigma_eV` (or '
         f'a custom (kernel, width) tuple) so the deltas are folded '
-        f'into a finite kernel that plots on the E\' grid.',
+        f'into a finite kernel that plots on the E\' grid. Pass '
+        f'`broadening=0` to silence this warning while keeping the '
+        f'drop.',
+        UserWarning, stacklevel=3,
+    )
+
+
+def _warn_mf12_mf13_discrete_dropped(endf_dict, zap, user_mts, context):
+    """Emit a UserWarning when the unbroadened dispatcher drops
+    MF12 discrete gamma lines or MF13 per-line photon-production
+    entries for a gamma-emission call (issue #266). Fires only for
+    gamma ZAP; other ZAPs cannot carry MF12/MF13 discrete-line
+    content by construction.
+
+    ``context`` is the caller-facing function name that appears in
+    the warning body (e.g. ``'get_particle_production_dxs_dE'`` or
+    ``'get_particle_production_ddxs'``). The suppression hatch is
+    ``broadening=0``, which the dispatcher detects via
+    :func:`_broadening_explicit_no_kernel` before calling this
+    helper.
+    """
+    if zap != physconst.get_zap_for_particle('g'):
+        return
+    dropped = []
+    for mt in quant_mt_zap.get_reaction_mt_numbers(endf_dict):
+        if not selectors.contains_zap(endf_dict, mt, zap):
+            continue
+        if not selectors.satisfies_particle_production_select(
+            endf_dict, mt, user_mts, zap,
+        ):
+            continue
+        if (
+            selectors.has_mf12_discrete_lines(endf_dict, mt, zap)
+            or selectors.has_mf13_discrete_lines(endf_dict, mt, zap)
+        ):
+            dropped.append(mt)
+    if not dropped:
+        return
+    if len(dropped) > 12:
+        mt_str = (
+            ', '.join(str(m) for m in dropped[:12])
+            + f', ... ({len(dropped)} total)'
+        )
+    else:
+        mt_str = ', '.join(str(m) for m in dropped)
+    warnings.warn(
+        f'{context} (unbroadened) dropped MF12/MF13 discrete '
+        f"gamma-line content whose outgoing energy is a Dirac "
+        f"delta on the E' axis: MT={mt_str}. The continuum part of "
+        f'these MTs IS included. To include the discrete lines too, '
+        f'pass a `broadening=sigma_eV` (or a custom (kernel, width) '
+        f'tuple) so the deltas are folded into a finite kernel that '
+        f"plots on the E' grid. Pass `broadening=0` to silence this "
+        f'warning while keeping the drop.',
         UserWarning, stacklevel=3,
     )
 
 
 def _normalize_broadening(broadening):
-    """Translate a user broadening spec into (kernel, width) for the
-    low-level folders. None propagates as (None, None)."""
+    """Translate a user broadening spec into ``(kernel, width)`` for
+    the low-level folders.
+
+    ``None`` (the default) and ``0`` both propagate as
+    ``(None, None)``: no kernel is folded and any Dirac-delta
+    content (discrete gamma lines, kinematic two-body deltas)
+    integrates to zero on the caller's finite grid. The two forms
+    differ only in whether the caller has explicitly acknowledged
+    that drop; the dispatcher checks via
+    :func:`_broadening_explicit_no_kernel` and suppresses the
+    "discrete content dropped" UserWarnings in the ``broadening=0``
+    case.
+    """
     if broadening is None:
         return None, None
     if isinstance(broadening, (int, float, np.integer, np.floating)):
         sigma = float(broadening)
-        if sigma <= 0:
-            raise ValueError("broadening sigma must be positive")
+        if sigma < 0:
+            raise ValueError("broadening sigma must be non-negative")
+        if sigma == 0.0:
+            return None, None
         norm = 1.0 / (sigma * np.sqrt(2 * np.pi))
 
         def gaussian_kernel(d):
@@ -1102,7 +1194,7 @@ def _normalize_broadening(broadening):
         kernel, width = broadening
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            "broadening must be None, a positive scalar sigma, or a "
+            "broadening must be None, 0, a positive scalar sigma, or a "
             "(kernel_callable, width) tuple"
         ) from exc
     if not callable(kernel):
@@ -1111,5 +1203,17 @@ def _normalize_broadening(broadening):
     if width <= 0:
         raise ValueError("broadening tuple element 1 (width) must be positive")
     return kernel, width
+
+
+def _broadening_explicit_no_kernel(broadening):
+    """True iff the caller explicitly asked for no kernel by passing
+    ``broadening=0``, as opposed to leaving the default
+    ``broadening=None``. Both drop discrete-delta content from the
+    output, but the explicit form silences the accompanying
+    UserWarnings.
+    """
+    if isinstance(broadening, (int, float, np.integer, np.floating)):
+        return float(broadening) == 0.0
+    return False
 
 
