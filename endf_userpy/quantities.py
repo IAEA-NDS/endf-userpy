@@ -9,6 +9,7 @@ from .primitives.helpers import unpack_za
 from .quantities_mt_zap import quantities as quant_mt_zap
 from .quantities_mt_zap import selectors
 from .quantities_mt_zap import ddx_broadening as ddxb
+from .quantities_mt_zap import discrete_gamma_lines as discrete_gamma
 import logging
 # TODO: Remove direct use of mf6_interpretation module in this module
 from .mfsec_interpretation import mf3_interpretation as mf3interp
@@ -811,6 +812,62 @@ def get_particle_production_ddxs(
         return _get_particle_production_ddxs_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             angle_cosines_out, broadening, xp=xp,
+        )
+
+
+def get_particle_production_discrete_gamma_lines(
+    endf_dict, reaction, energies_in, *,
+    angle_cosines_out=None, xp=None,
+    above_range='warn_nan', resonance_range='warn',
+):
+    """Return the discrete photon-line content for ``reaction``
+    that the unbroadened DDX / dxs_dE paths drop.
+
+    The gamma paths of :func:`get_particle_production_ddxs` and
+    :func:`get_particle_production_dxs_dE` exclude MF12 and MF13
+    discrete photon lines (their Dirac deltas integrate to zero on
+    a finite E_out grid) and emit a UserWarning naming the
+    affected MTs. This function exposes those lines directly so
+    callers can render them as stems on top of the continuum
+    spectrum, apply a custom broadening kernel, or fit their
+    per-Ein yields.
+
+    Parameters
+    ----------
+    endf_dict : the parsed ENDF-6 dict from ``endf_parserpy``.
+    reaction : str
+        Reaction shorthand (e.g. ``'(n,g)'``, ``'(n,inl)'``); the
+        widened-MT selector picks every underlying MT that matches.
+    energies_in : 1D array-like of incident energies (eV).
+    angle_cosines_out : optional 1D array-like of mu targets.
+        When passed, each record's ``angdist`` field is populated
+        from MF14 (or the isotropic fallback). When ``None``, the
+        angular column is left as ``None`` and no MF14 lookup runs.
+    xp : optional backend adapter (:mod:`array_ns`). Under
+        ``xp=jax`` each record's ``weight`` (and ``angdist``, when
+        requested) carry tracers so ``jax.grad`` reaches through
+        the MF12 yield tables, the MF3 cross section, the MF13
+        per-line production XS, and any MF14 Legendre coefficients.
+    above_range, resonance_range : passed through to the MF3
+        cross-section lookup used by the MF12 branch. Same
+        semantics as :func:`get_reaction_xs`.
+
+    Returns
+    -------
+    list of :class:`endf_userpy.quantities_mt_zap.discrete_gamma_lines.DiscreteGammaLine`
+        Sorted by ``Eg`` ascending. Empty list if the reaction has
+        no discrete gamma-line content. The per-line extraction
+        and physics-composition live in
+        :mod:`endf_userpy.quantities_mt_zap.discrete_gamma_lines`;
+        this wrapper handles reaction-string resolution and the
+        ``above_range`` / ``resonance_range`` policy contexts.
+    """
+    user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    mts = mf3interp.get_reaction_mts_widened(endf_dict)
+    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
+        return discrete_gamma.extract_discrete_gamma_lines(
+            endf_dict, mts, user_mts, energies_in,
+            angle_cosines_out=angle_cosines_out, xp=xp,
         )
 
 
