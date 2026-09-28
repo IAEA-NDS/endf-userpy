@@ -694,6 +694,21 @@ def _get_dist2d_from_subsec_law7_traced_x(
         return _law7_traced_inner_dispatch(
             subsec, ei_mesh, ei_interp, e_in, ep_out, mu_out, xp,
         )
+    if _tables_have_jax_leaf(subsec, xp):
+        # Concrete e_in, mu, ep with a tracer file-side amplitude
+        # column (calibration under jax.grad wrt f / Ep leaves).
+        # The gather path below would precompute all n_mesh panels'
+        # inner amplitudes and let jax.grad retain every
+        # intermediate primitive from all of them for the reverse
+        # pass -- on Be-9 MT=16 with a ~1320-point Simpson mu
+        # sample this inflates the trace to ~1.5 GB peak RSS.
+        # The two-panel-per-Ein dispatch used for the tracer-mu/ep
+        # path only visits 2 mesh panels per query and cuts the
+        # traced-graph memory by roughly 12x, which is what we
+        # actually need here.
+        return _law7_traced_inner_dispatch(
+            subsec, ei_mesh, ei_interp, e_in, ep_out, mu_out, xp,
+        )
     # Keep ``ei_mesh`` xp-native so a JAX tracer at
     # ``subsec['E'][idx]`` (mesh-knot autodiff) survives into the
     # panel-bracket gather below. The shape is static under trace,
