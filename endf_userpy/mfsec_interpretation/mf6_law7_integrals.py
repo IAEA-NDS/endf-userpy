@@ -79,6 +79,7 @@ adaptive Simpson integrator.
 """
 import numpy as np
 
+from ..primitives import array_ns
 from ..primitives.helpers import (
     convert_interp_repr, dict2array, find_interval,
 )
@@ -87,15 +88,42 @@ from ..primitives.properties import get_QM, get_QI
 from . import mf6_interpretation_subsecs as _subsec  # noqa: F401
 
 
+def _resolve_xp(xp):
+    return xp if xp is not None else array_ns.get_backend('numpy')
+
+
+def _to_numpy(x, xp):
+    """Materialise ``x`` to a numpy float array for a discrete
+    (non-differentiable) use downstream. A tracer input under
+    jax.grad is stopped-gradient first so its concrete value can
+    be read into numpy; a plain list or numpy array bypasses jax
+    entirely so it works under jit too (where lifting a list into
+    jax would turn it into a DynamicJaxprTracer). Jit-composability
+    with a tracer Ep is not supported by construction, since the
+    mesh-union permutation has data-dependent output shape.
+    """
+    if xp.name == 'jax':
+        try:
+            import jax
+            if isinstance(x, jax.Array):
+                x = jax.lax.stop_gradient(x)
+        except Exception:
+            pass
+    return np.asarray(x, dtype=float)
+
+
 def _project_ub_knots(y0, y1, y2, x1_knots, x2_knots):
     """Map the raw `x` knots of two tables (at `y1` and `y2`) to
     the effective `x`-axis at target `y0` in `[y1, y2]` via the
     LAW=7 unit-base transform.
 
-    Returns the sorted union of the two projected knot sets. If
-    either table has zero-width (`x*range == 0`, degenerate), its
-    knots collapse to the effective `xlow`; the other set is
-    returned unchanged plus that single point.
+    Returns the sorted union of the two projected knot sets. The
+    mesh-union step has data-dependent output shape (`np.unique`
+    with a variable-length result) so this stays numpy: it feeds
+    the discrete effective-knot list that the outer integrator
+    uses to segment the E' axis. Value-level tracers on the
+    per-cell Ep arrays flow through the panel-endpoint gather in
+    :func:`_table_segment_areas_vec`, not through this permutation.
     """
     x1_knots = np.asarray(x1_knots, dtype=float)
     x2_knots = np.asarray(x2_knots, dtype=float)
@@ -128,8 +156,13 @@ def _ub_slice_geometry(mu, mu1, mu2, ep1, ep2):
 
     Given target mu and the mu-bracket (mu1, mu2), plus the two
     tables' E' knot arrays (ep1, ep2), return
-    ``(yslope, xlow, xrange, x1low, x1range, x2low, x2range)`` for
-    the LAW=7 unit-base transform. All are per-cell scalars.
+    ``(yslope, xlow, xrange, x1low, x1range, x2low, x2range)`` as
+    per-cell numpy scalars. These feed the concrete segment-
+    bracket construction that has to run on numpy so the outer
+    mesh-union permutation is well-defined; the traced values
+    routed through the per-panel gather in
+    :func:`_table_segment_areas_vec` are what carries the gradient
+    chain wrt file-side Ep and f amplitudes.
     """
     if mu2 == mu1:
         yslope = 0.0
@@ -146,7 +179,11 @@ def _ub_slice_geometry(mu, mu1, mu2, ep1, ep2):
 
 
 def _tab_panel_int(int_arr, nbt_arr, n_pts):
-    """Per-panel INT code for a tab1 record. Length ``n_pts - 1``."""
+    """Per-panel INT code for a tab1 record. Length ``n_pts - 1``.
+
+    Kept numpy: INT codes are integer metadata, never
+    differentiable.
+    """
     int_per_point = convert_interp_repr(
         np.asarray(int_arr, dtype=int),
         np.asarray(nbt_arr, dtype=int),
@@ -157,7 +194,9 @@ def _tab_panel_int(int_arr, nbt_arr, n_pts):
     return int_per_point[1:]
 
 
-def _table_segment_areas_vec(ep_arr, f_arr, int_per_panel, xi_a_arr, xi_b_arr):
+def _table_segment_areas_vec(
+    ep_arr, f_arr, int_per_panel, xi_a_arr, xi_b_arr, xp=None,
+):
     """Vectorised panel-exact integrals of one table's tab1
     interpolant from ``xi_a`` to ``xi_b`` for a batch of segments.
 
@@ -166,38 +205,56 @@ def _table_segment_areas_vec(ep_arr, f_arr, int_per_panel, xi_a_arr, xi_b_arr):
     Segments outside the table's domain or with non-positive
     width contribute 0.
 
-    Panel indexing uses the segment midpoint - the segment
-    endpoints ``xi_a`` come from a linear projection that can
-    drift by a few ULP from an exact table knot, and would
-    otherwise land on the wrong panel under ``searchsorted``.
+    Panel indexing uses the segment midpoint. Endpoint values come
+    from a linear projection that can drift by a few ULP from an
+    exact table knot; picking the panel by midpoint dodges that.
+    The panel-index computation itself is a numpy op on concrete
+    knot values because the index is a discrete function that
+    would be zero-gradient anyway. The VALUES gathered at that
+    index route through ``xp.take`` on the xp-native ``ep_arr``
+    and ``f_arr``, so tracers on either the knot positions or the
+    amplitudes flow through the ``integrate_tab1_panels``
+    arithmetic (grad wrt panel-edge x0/x1 and grad wrt panel
+    amplitudes y0/y1). Same pattern as
+    :func:`~primitives.interpolation._endf_interp1d_traced_x`.
     """
-    xi_a_arr = np.asarray(xi_a_arr, dtype=float)
-    xi_b_arr = np.asarray(xi_b_arr, dtype=float)
+    xp = _resolve_xp(xp)
+    ep_arr = xp.asarray(ep_arr)
+    f_arr = xp.asarray(f_arr)
+    xi_a_arr = xp.asarray(xi_a_arr)
+    xi_b_arr = xp.asarray(xi_b_arr)
     n = xi_a_arr.shape[0]
+    n_ep = ep_arr.shape[0]
     if n == 0:
-        return np.zeros(0, dtype=float)
-    # Clip to the table's own domain.
-    lo, hi = float(ep_arr[0]), float(ep_arr[-1])
-    xa = np.clip(xi_a_arr, lo, hi)
-    xb = np.clip(xi_b_arr, lo, hi)
+        return xp.zeros(0)
+    lo = ep_arr[0]
+    hi = ep_arr[-1]
+    xa = xp.clip(xi_a_arr, lo, hi)
+    xb = xp.clip(xi_b_arr, lo, hi)
     active = (xi_b_arr > xi_a_arr) & (xi_a_arr < hi) & (xi_b_arr > lo)
-    # Panel index by midpoint, clamped to a valid range.
     mid = 0.5 * (xa + xb)
-    panels = np.clip(
-        np.searchsorted(ep_arr, mid, side='right') - 1,
-        0, ep_arr.shape[0] - 2,
+    # xp.searchsorted handles tracer haystack + tracer needle
+    # (jnp.searchsorted is a jax-native op). The result is an int
+    # index; grad wrt the knot positions or the midpoints does
+    # not flow through the discrete index itself (correct: an
+    # infinitesimal perturbation does not cross a panel boundary
+    # for interior midpoints), but xp.take on ep_arr / f_arr
+    # gathers the panel endpoint values as tracers so grad flows
+    # through the integrate_tab1_panels arithmetic.
+    panels = xp.clip(
+        xp.searchsorted(ep_arr, mid, side='right') - 1,
+        0, n_ep - 2,
     )
-    x0 = ep_arr[panels]
-    x1 = ep_arr[panels + 1]
-    y0 = f_arr[panels]
-    y1 = f_arr[panels + 1]
-    codes = (
-        int_per_panel[panels]
-        if int_per_panel.shape[0]
-        else np.full(n, 2, dtype=int)
-    )
-    areas = integrate_tab1_panels(x0, x1, y0, y1, xa, xb, codes)
-    return np.where(active, areas, 0.0)
+    x0 = xp.take(ep_arr, panels)
+    x1 = xp.take(ep_arr, panels + 1)
+    y0 = xp.take(f_arr, panels)
+    y1 = xp.take(f_arr, panels + 1)
+    if int_per_panel.shape[0]:
+        codes = xp.take(xp.asarray(int_per_panel), panels)
+    else:
+        codes = xp.full((n,), 2)
+    areas = integrate_tab1_panels(x0, x1, y0, y1, xa, xb, codes, xp=xp)
+    return xp.where(active, areas, xp.asarray(0.0))
 
 
 def _check_supported_int(int_arr, nbt_arr, axis_name):
@@ -220,7 +277,8 @@ def _check_supported_int(int_arr, nbt_arr, axis_name):
 
 
 def integrate_law7_subsec_over_eout(
-    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab=True,
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out,
+    to_lab=True, xp=None,
 ):
     """Angular distribution ``da(E_in, mu)`` from a single MF6
     subsection with ``LAW=7``, integrated over outgoing energy on
@@ -233,6 +291,39 @@ def integrate_law7_subsec_over_eout(
     all five ENDF INT codes on the E' axis; requires INT=1/2 on
     the outer Ein and mu axes (all corpus files satisfy this).
 
+    Autodiff
+    --------
+    ``xp=None`` (default) is numpy. Under ``xp=jax`` two kinds of
+    file-side leaves are differentiable:
+
+    * ``f`` amplitudes of each bracketing table. Grad flows
+      through the panel amplitudes ``y0`` / ``y1`` inside
+      ``integrate_tab1_panels``.
+    * ``Ep`` knot positions of each bracketing table, through
+      the ``xp.take`` gather that feeds the panel endpoints
+      ``x0`` / ``x1`` inside ``integrate_tab1_panels``. This is
+      the same dual-view pattern as
+      ``primitives.interpolation._endf_interp1d_traced_x``: the
+      concrete knot array indexes into the discrete panel
+      lookup while the xp-native view carries tracers through
+      the value gather. For a pure-INT=1 (histogram) panel the
+      endpoint gradient is trivially zero (the histogram
+      integral does not depend on the endpoints); INT>=2 panels
+      carry a non-zero endpoint gradient. Jit-composability with
+      a tracer Ep is not supported by construction, because the
+      mesh-union permutation between the two bracketing tables
+      has data-dependent output shape.
+
+    Not covered by construction:
+
+    * Query points (``energies_in``, ``angle_cosines_out``) stay
+      concrete: those enter Python-level gating (``e < ei_mesh[0]``,
+      ``mu2 == mu1``) and integer indexing (``find_interval``,
+      ``searchsorted``) that would break tracers. Query-side
+      autodiff for LAW=7 is tracked in the roadmap issue #198.
+    * Mu-mesh values and Ein-mesh values stay concrete: those
+      feed the same Python-level branching.
+
     Parameters
     ----------
     endf_dict, mt, subsec_num : the endf dict and section pointers.
@@ -240,11 +331,16 @@ def integrate_law7_subsec_over_eout(
     angle_cosines_out : 1D array of mu targets.
     to_lab : accepted for signature compatibility; LAW=7 is always
         stored in the LAB frame.
+    xp : optional backend from :mod:`endf_userpy.primitives.array_ns`
+        (default numpy). Under ``xp=jax`` the result is an xp array
+        with gradients flowing through the ``f`` amplitudes of the
+        underlying tables.
 
     Returns
     -------
-    ndarray of shape ``(len(energies_in), len(angle_cosines_out))``.
+    array of shape ``(len(energies_in), len(angle_cosines_out))``.
     """
+    xp = _resolve_xp(xp)
     sec = endf_dict[6][mt]
     sub = sec['subsection'][subsec_num]
     if sub['LAW'] != 7:
@@ -267,7 +363,14 @@ def integrate_law7_subsec_over_eout(
         np.asarray(sub['E_interpol']['NBT'], dtype=int),
     )
 
-    out = np.zeros((len(einc), len(mus)), dtype=float)
+    # Under xp=jax with tracer f-columns the cell result is a
+    # tracer, so we cannot assign into a preallocated array; build a
+    # nested list of xp scalars and stack at the end. Under
+    # xp=numpy this reduces to the original zero-filled matrix.
+    zero_scalar = xp.asarray(0.0)
+    row_cells: list[list] = [
+        [zero_scalar for _ in range(len(mus))] for _ in range(len(einc))
+    ]
 
     for i, e in enumerate(einc):
         # Kinematic bounds: outside the section's E_in range -> zero.
@@ -328,20 +431,36 @@ def integrate_law7_subsec_over_eout(
             t_e2_1 = tables_e2[j2 + 1]
             t_e2_2 = tables_e2[j2 + 2]
 
-            ep11 = np.asarray(t_e1_1['Ep'], dtype=float)
-            ep12 = np.asarray(t_e1_2['Ep'], dtype=float)
-            ep21 = np.asarray(t_e2_1['Ep'], dtype=float)
-            ep22 = np.asarray(t_e2_2['Ep'], dtype=float)
-            f11 = np.asarray(t_e1_1['f'], dtype=float)
-            f12 = np.asarray(t_e1_2['f'], dtype=float)
-            f21 = np.asarray(t_e2_1['f'], dtype=float)
-            f22 = np.asarray(t_e2_2['f'], dtype=float)
+            # Two views on the per-cell Ep arrays. Same dual-view
+            # pattern as _endf_interp1d_traced_x in primitives:
+            # concrete for the discrete permutation (mesh union,
+            # panel-index searchsorted); xp for the value gather
+            # (xp.take on ep_xp inside _table_segment_areas_vec).
+            # The concrete view uses _to_numpy so it accepts a
+            # jax leaf or a jax.grad tracer (via stop_gradient);
+            # jit-composability with a tracer Ep is intentionally
+            # not supported (mesh construction has data-dependent
+            # output shape, breaking jit).
+            ep11 = _to_numpy(t_e1_1['Ep'], xp)
+            ep12 = _to_numpy(t_e1_2['Ep'], xp)
+            ep21 = _to_numpy(t_e2_1['Ep'], xp)
+            ep22 = _to_numpy(t_e2_2['Ep'], xp)
+            ep11_xp = xp.asarray(t_e1_1['Ep'], dtype=float)
+            ep12_xp = xp.asarray(t_e1_2['Ep'], dtype=float)
+            ep21_xp = xp.asarray(t_e2_1['Ep'], dtype=float)
+            ep22_xp = xp.asarray(t_e2_2['Ep'], dtype=float)
+            f11 = xp.asarray(t_e1_1['f'], dtype=float)
+            f12 = xp.asarray(t_e1_2['f'], dtype=float)
+            f21 = xp.asarray(t_e2_1['f'], dtype=float)
+            f22 = xp.asarray(t_e2_2['f'], dtype=float)
             int11 = _tab_panel_int(t_e1_1['INT'], t_e1_1['NBT'], ep11.shape[0])
             int12 = _tab_panel_int(t_e1_2['INT'], t_e1_2['NBT'], ep12.shape[0])
             int21 = _tab_panel_int(t_e2_1['INT'], t_e2_1['NBT'], ep21.shape[0])
             int22 = _tab_panel_int(t_e2_2['INT'], t_e2_2['NBT'], ep22.shape[0])
 
-            # Per-slice unit-base geometry.
+            # Per-slice unit-base geometry (concrete numpy: this
+            # feeds the discrete effective-knot mesh construction
+            # below).
             yslope_e1, xlow_e1, xrange_e1, x1low_e1, x1range_e1, x2low_e1, x2range_e1 = (
                 _ub_slice_geometry(u, mu_mesh_e1[j1], mu_mesh_e1[j1 + 1], ep11, ep12)
             )
@@ -357,6 +476,11 @@ def integrate_law7_subsec_over_eout(
                 yslope_e2 = 0.0
 
             # Effective-knot mesh, clipped to physical support.
+            # Stays numpy: mesh construction is a discrete union
+            # with data-dependent output length. Grad wrt Ep flows
+            # not through these segment endpoints but through the
+            # panel-endpoint gather in _table_segment_areas_vec
+            # (xp.take on the xp-native ep_arr).
             knots_e1 = _project_ub_knots(
                 u, mu_mesh_e1[j1], mu_mesh_e1[j1 + 1], ep11, ep12,
             )
@@ -396,26 +520,28 @@ def integrate_law7_subsec_over_eout(
                 xi_b_a = x2low + (a_c - xlow) / xrange_ * x2range
                 xi_b_b = x2low + (b_c - xlow) / xrange_ * x2range
                 area_a = _table_segment_areas_vec(
-                    ep_a, f_a, int_a, xi_a_a, xi_a_b,
+                    ep_a, f_a, int_a, xi_a_a, xi_a_b, xp=xp,
                 )
                 area_b = _table_segment_areas_vec(
-                    ep_b_, f_b_, int_b_, xi_b_a, xi_b_b,
+                    ep_b_, f_b_, int_b_, xi_b_a, xi_b_b, xp=xp,
                 )
                 return (1.0 - yslope) * area_a + yslope * area_b
 
             s1 = _slice_areas(
                 seg_a, seg_b, xlow_e1, xrange_e1,
                 x1low_e1, x1range_e1, x2low_e1, x2range_e1,
-                ep11, f11, int11, ep12, f12, int12, yslope_e1,
+                ep11_xp, f11, int11, ep12_xp, f12, int12, yslope_e1,
             )
             s2 = _slice_areas(
                 seg_a, seg_b, xlow_e2, xrange_e2,
                 x1low_e2, x1range_e2, x2low_e2, x2range_e2,
-                ep21, f21, int21, ep22, f22, int22, yslope_e2,
+                ep21_xp, f21, int21, ep22_xp, f22, int22, yslope_e2,
             )
-            out[i, j] = float(np.sum(eslope_1 * s1 + eslope_2 * s2))
+            row_cells[i][j] = xp.sum(eslope_1 * s1 + eslope_2 * s2)
 
-    return out
+    if len(einc) == 0 or len(mus) == 0:
+        return xp.zeros((len(einc), len(mus)))
+    return xp.stack([xp.stack(row) for row in row_cells])
 
 
 # Composite-Simpson node count per LAW=7 mu segment: 33 samples per
