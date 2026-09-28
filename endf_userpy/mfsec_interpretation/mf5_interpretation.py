@@ -258,7 +258,7 @@ def compute_general_evaporation_spectrum(
     # ``seg_end_c`` when ``x_max`` cuts through it.
     seg_area = integrate_tab1_panels(
         seg_start_bc, seg_end_bc, g_start_bc, g_end_bc,
-        seg_end_c, int_per_panel_pad_np[None, :],
+        seg_start_bc, seg_end_c, int_per_panel_pad_np[None, :],
         xp=xp,
     )
     seg_area = xp.where(active, seg_area, 0.0)

@@ -12,13 +12,16 @@ from endf_userpy.primitives import array_ns
 from endf_userpy.primitives.interpolation import integrate_tab1_panels
 
 
-def _run(x0, x1, y0, y1, x_end, code, backend='numpy'):
+def _run(x0, x1, y0, y1, x_end, code, backend='numpy', x_start=None):
     xp = array_ns.get_backend(backend)
+    if x_start is None:
+        x_start = x0
     return float(integrate_tab1_panels(
         np.array([x0], dtype=float),
         np.array([x1], dtype=float),
         np.array([y0], dtype=float),
         np.array([y1], dtype=float),
+        np.array([x_start], dtype=float),
         np.array([x_end], dtype=float),
         np.array([code], dtype=int),
         xp=xp,
@@ -114,6 +117,61 @@ def test_zero_width_panel_returns_zero():
         assert _run(1.0, 1.0, 5.0, 5.0, 1.0, code=code) == 0.0
 
 
+def test_int2_lin_lin_interior_slice():
+    """Both endpoints strictly interior: linear from (0, 0) to
+    (2, 4). Integral of y=2x from x=0.5 to x=1.5 is [x^2] = 2.
+    """
+    assert _run(0.0, 2.0, 0.0, 4.0, x_start=0.5, x_end=1.5, code=2) == pytest.approx(
+        2.0, rel=1e-12,
+    )
+
+
+def test_int1_histogram_interior_slice():
+    """INT=1 histogram sliced in the interior: constant y0."""
+    got = _run(1.0, 5.0, 3.0, 999.0, x_start=2.0, x_end=4.0, code=1)
+    assert got == pytest.approx(6.0, rel=1e-12)
+
+
+def test_int3_lin_log_interior_slice():
+    """INT=3: y=1+log(x). Integrate from sqrt(e) to e:
+    ``[x*log(x)]_{sqrt(e)}^{e} = e - sqrt(e)/2``."""
+    got = _run(1.0, np.e, 1.0, 2.0, x_start=np.sqrt(np.e), x_end=np.e, code=3)
+    expected = np.e - 0.5 * np.sqrt(np.e)
+    assert got == pytest.approx(expected, rel=1e-12)
+
+
+def test_int4_log_lin_interior_slice():
+    """INT=4: y=exp(x-1). Integrate from x=1.25 to x=1.75:
+    e^{0.75} - e^{0.25}."""
+    got = _run(1.0, 2.0, 1.0, np.e, x_start=1.25, x_end=1.75, code=4)
+    expected = np.exp(0.75) - np.exp(0.25)
+    assert got == pytest.approx(expected, rel=1e-12)
+
+
+def test_int5_log_log_interior_slice():
+    """INT=5: y=x^2. Integrate from x=1.25 to x=1.75:
+    (1.75^3 - 1.25^3) / 3."""
+    got = _run(1.0, 2.0, 1.0, 4.0, x_start=1.25, x_end=1.75, code=5)
+    expected = (1.75**3 - 1.25**3) / 3.0
+    assert got == pytest.approx(expected, rel=1e-12)
+
+
+def test_full_panel_equals_sum_of_two_halves_all_ints():
+    """Panel-additivity: integrating [x0, x1] equals the sum of
+    integrating [x0, x_mid] and [x_mid, x1] for every INT.
+    """
+    x0, x1 = 1.0, 4.0
+    y0, y1 = 2.0, 8.0
+    x_mid = 2.5
+    for code in (1, 2, 3, 4, 5):
+        full = _run(x0, x1, y0, y1, x1, code, x_start=x0)
+        left = _run(x0, x1, y0, y1, x_mid, code, x_start=x0)
+        right = _run(x0, x1, y0, y1, x1, code, x_start=x_mid)
+        assert full == pytest.approx(left + right, rel=1e-12), (
+            f'INT={code}: full={full}, split={left+right}'
+        )
+
+
 @pytest.mark.skipif(
     'jax' not in array_ns.available_backends(), reason='jax not installed',
 )
@@ -128,7 +186,7 @@ def test_jax_grad_wrt_y0_matches_analytic():
         return integrate_tab1_panels(
             jnp.array([0.0]), jnp.array([2.0]),
             jnp.array([y0]), jnp.array([4.0]),
-            jnp.array([2.0]),
+            jnp.array([0.0]), jnp.array([2.0]),
             np.array([2], dtype=int),
             xp=xp,
         ).sum()
