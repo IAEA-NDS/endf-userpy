@@ -618,11 +618,56 @@ def _get_particle_production_dxs_dE_impl(
         # signature (no ``xp`` kwarg) still work on the default
         # numpy path.
         extra = {'xp': xp} if xp is not None else {}
-        return quant_mt_zap.compute_cumulative_quantity(
+        cont_unbroad = quant_mt_zap.compute_cumulative_quantity(
             quant_mt_zap.compute_dexs, select,
             endf_dict, zap, energies_in, energies_out,
             mts=mts, **extra,
         )
+        # Unbroadened discrete gamma lines (issue #266): MF12 and
+        # MF13 nearest-bin scatter onto the E_out grid.
+        n_zap_g = physconst.get_zap_for_particle('g')
+        if zap == n_zap_g:
+            def mf12_unbroad_compute(endf_dict, mt, zap, einc, eouts):
+                return ddxb.compute_dxs_dE_mf12_discrete_unbroadened(
+                    endf_dict, mt, zap, einc, eouts, xp=xp,
+                )
+            def mf13_unbroad_compute(endf_dict, mt, zap, einc, eouts):
+                return ddxb.compute_dxs_dE_mf13_discrete_unbroadened(
+                    endf_dict, mt, zap, einc, eouts, xp=xp,
+                )
+            mf12_unbroad = quant_mt_zap.compute_cumulative_quantity(
+                mf12_unbroad_compute,
+                lambda endf_dict, mt, zap, einc, eouts: (
+                    selectors.contains_zap(endf_dict, mt, zap) and
+                    selectors.has_mf12_discrete_lines(endf_dict, mt, zap) and
+                    selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
+                ),
+                endf_dict, zap, energies_in, energies_out,
+                mts=mts,
+            )
+            mf13_unbroad = quant_mt_zap.compute_cumulative_quantity(
+                mf13_unbroad_compute,
+                lambda endf_dict, mt, zap, einc, eouts: (
+                    selectors.contains_zap(endf_dict, mt, zap) and
+                    selectors.has_mf13_discrete_lines(endf_dict, mt, zap) and
+                    selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
+                ),
+                endf_dict, zap, energies_in, energies_out,
+                mts=mts,
+            )
+        else:
+            mf12_unbroad = None
+            mf13_unbroad = None
+        parts = [
+            p for p in (cont_unbroad, mf12_unbroad, mf13_unbroad)
+            if p is not None
+        ]
+        if not parts:
+            return None
+        total = parts[0]
+        for p in parts[1:]:
+            total = total + p
+        return total
 
     def cont_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_broadened(
@@ -838,7 +883,49 @@ def _get_particle_production_ddxs_impl(
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
             mts=mts, **cont_extra,
         )
-        parts = [p for p in (cont_unbroad, mf15_unbroad) if p is not None]
+        # Unbroadened discrete gamma lines (issue #266): MF12 and
+        # MF13 discrete peaks placed on the E_out grid at the
+        # nearest bin, normalised so a midpoint-rule quadrature
+        # over E_out recovers the yield-weighted amplitude.
+        # Restricted to gamma ZAP; other ZAPs return zero from
+        # these functions.
+        n_zap_g = physconst.get_zap_for_particle('g')
+        if zap == n_zap_g:
+            def mf12_unbroad_compute(endf_dict, mt, zap, einc, eouts, mus):
+                return ddxb.compute_ddx_mf12_discrete_unbroadened(
+                    endf_dict, mt, zap, einc, eouts, mus, xp=xp,
+                )
+            def mf13_unbroad_compute(endf_dict, mt, zap, einc, eouts, mus):
+                return ddxb.compute_ddx_mf13_discrete_unbroadened(
+                    endf_dict, mt, zap, einc, eouts, mus, xp=xp,
+                )
+            mf12_unbroad = quant_mt_zap.compute_cumulative_quantity(
+                mf12_unbroad_compute,
+                lambda endf_dict, mt, zap, einc, eouts, mus: (
+                    selectors.contains_zap(endf_dict, mt, zap) and
+                    selectors.has_mf12_discrete_lines(endf_dict, mt, zap) and
+                    selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
+                ),
+                endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+                mts=mts,
+            )
+            mf13_unbroad = quant_mt_zap.compute_cumulative_quantity(
+                mf13_unbroad_compute,
+                lambda endf_dict, mt, zap, einc, eouts, mus: (
+                    selectors.contains_zap(endf_dict, mt, zap) and
+                    selectors.has_mf13_discrete_lines(endf_dict, mt, zap) and
+                    selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
+                ),
+                endf_dict, zap, energies_in, energies_out, angle_cosines_out,
+                mts=mts,
+            )
+        else:
+            mf12_unbroad = None
+            mf13_unbroad = None
+        parts = [
+            p for p in (cont_unbroad, mf15_unbroad, mf12_unbroad, mf13_unbroad)
+            if p is not None
+        ]
         if not parts:
             return None
         total = parts[0]

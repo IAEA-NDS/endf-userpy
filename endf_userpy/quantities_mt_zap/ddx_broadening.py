@@ -1118,3 +1118,330 @@ def _compute_discrete_yields(endf_dict, mt, zap, energies_in):
             f"ZAP={zap}; cannot compute discrete yield."
         )
     return np.full(len(energies_in), float(mult))
+
+
+# ------------------------------------------------------------------
+# Unbroadened discrete-line accumulators (issue #266).
+#
+# For each discrete gamma line at Eg_i with amplitude a_i, the
+# ideal contribution to the DDX is ``a_i * delta(Eout - Eg_i) *
+# f_i(mu | Ein) / (2 pi)``. On the caller's finite E_out grid the
+# delta is approximated by a spike at the nearest grid point with
+# height ``a_i / bin_width[nearest]`` so that a midpoint-rule
+# quadrature over Eout recovers ``a_i * f_i(mu) / (2 pi)``. The
+# scatter matrix is concrete numpy (Eg_i positions are file-side
+# metadata, not tracer-valued in typical autodiff use); the
+# amplitudes and per-line angular distributions route through xp
+# so grad flows through yields and per-line multiplicities.
+# ------------------------------------------------------------------
+
+
+def _grid_local_widths(energies_out):
+    """Midpoint-rule bin widths for a 1D E_out grid.
+
+    Returns an array of same length as ``energies_out``. Interior
+    points get ``0.5 * (E[k+1] - E[k-1])``; edge points use the
+    single adjacent full-cell width so a spike at either edge
+    still integrates to its amplitude via a rectangle rule.
+    """
+    n = len(energies_out)
+    if n < 2:
+        return np.ones(n, dtype=float)
+    widths = np.empty(n, dtype=float)
+    widths[0] = energies_out[1] - energies_out[0]
+    widths[-1] = energies_out[-1] - energies_out[-2]
+    widths[1:-1] = 0.5 * (energies_out[2:] - energies_out[:-2])
+    return widths
+
+
+def _nearest_bin_scatter(energies_out, Eg_disc):
+    """Nearest-bin scatter matrix for placing discrete lines on
+    the E_out grid.
+
+    Returns ``M`` of shape ``(n_lines, n_eouts)``, where
+    ``M[i, k] = 1 / bin_width[k]`` if ``k`` is the nearest E_out
+    grid index to ``Eg_disc[i]``, else 0. Concrete numpy: the
+    scatter mapping is determined by file-side metadata that stays
+    tracer-free in the intended autodiff scope.
+    """
+    n_lines = len(Eg_disc)
+    n_eouts = len(energies_out)
+    if n_lines == 0 or n_eouts == 0:
+        return np.zeros((n_lines, n_eouts), dtype=float)
+    widths = _grid_local_widths(energies_out)
+    nearest = np.abs(
+        energies_out[None, :] - Eg_disc[:, None]
+    ).argmin(axis=1)
+    m = np.zeros((n_lines, n_eouts), dtype=float)
+    for i, k in enumerate(nearest):
+        m[i, k] += 1.0 / widths[k]
+    return m
+
+
+def _accumulate_discrete_lines_ddx(
+    energies_out, Eg_disc, per_line_weight, per_line_angdist,
+    n_einc, n_eouts, n_mus, xp,
+):
+    """Assemble the unbroadened DDX contribution from a set of
+    discrete lines.
+
+    ``per_line_weight`` has shape ``(n_einc, n_lines)`` and
+    ``per_line_angdist`` has shape ``(n_einc, n_lines, n_mus)``.
+    Both may be xp-native tracers; the scatter matrix is concrete
+    numpy. Returns an xp array of shape ``(n_einc, n_eouts, n_mus)``
+    with the ``1 / (2 pi)`` factor already applied.
+    """
+    if len(Eg_disc) == 0:
+        return xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
+    scatter_np = _nearest_bin_scatter(energies_out, Eg_disc)
+    scatter_xp = xp.asarray(scatter_np)
+    # einsum: sum_i weight[e, i] * scatter[i, k] * angdist[e, i, m]
+    contrib = xp.einsum(
+        'ei,ik,eim->ekm',
+        per_line_weight, scatter_xp, per_line_angdist,
+    )
+    return xp.clip(contrib / (2 * np.pi), 0.0, None)
+
+
+def _accumulate_discrete_lines_1d(
+    energies_out, Eg_disc, per_line_weight, n_einc, n_eouts, xp,
+):
+    """Assemble the unbroadened dxs/dE contribution from a set of
+    discrete lines. ``per_line_weight`` has shape
+    ``(n_einc, n_lines)``. Returns shape ``(n_einc, n_eouts)`` with
+    NO ``1 / (2 pi)`` factor (matching the broadened 1D sibling's
+    units of barn / eV).
+    """
+    if len(Eg_disc) == 0:
+        return xp.zeros((n_einc, n_eouts), dtype=xp.float64)
+    scatter_np = _nearest_bin_scatter(energies_out, Eg_disc)
+    scatter_xp = xp.asarray(scatter_np)
+    contrib = xp.einsum('ei,ik->ek', per_line_weight, scatter_xp)
+    return xp.clip(contrib, 0.0, None)
+
+
+def _mf12_discrete_setup(endf_dict, mt, energies_in, xp):
+    """Fetch Eg_disc, weight_E=(sigma*y)_disc, per_line_angdist for
+    the MF12 discrete-gamma path. Returns None if the section has
+    no discrete lines.
+    """
+    if not has_mf12_mt(endf_dict, mt):
+        return None
+    photon_energies = mf12_interp.get_photon_energies(endf_dict, mt)
+    if photon_energies is None:
+        return None
+    photon_energies = np.asarray(photon_energies, dtype=float)
+    disc_mask = photon_energies > 0.0
+    if not np.any(disc_mask):
+        return None
+    Eg_disc = photon_energies[disc_mask]
+    disc_idcs = np.where(disc_mask)[0]
+
+    yields_all = mf12_interp.compute_photon_yields(
+        endf_dict, mt, energies_in, photon_energies, xp=xp,
+    )
+    yields_disc = yields_all[:, disc_idcs]
+
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+    )
+    weight_E = yields_disc * xp.asarray(xs[:, None])
+    return Eg_disc, weight_E
+
+
+def _mf13_discrete_setup(endf_dict, mt, energies_in, xp):
+    """Fetch Eg_disc, weight_E=prod_xs for the MF13 discrete-gamma
+    path. Returns None if the section has no discrete lines.
+    """
+    if not has_mf13_mt(endf_dict, mt):
+        return None
+    photon_energies = mf13_interp.get_photon_energies(endf_dict, mt)
+    if photon_energies is None or len(photon_energies) == 0:
+        return None
+    photon_energies = np.asarray(photon_energies, dtype=float)
+    disc_mask = photon_energies > 0.0
+    if not np.any(disc_mask):
+        return None
+    Eg_disc = photon_energies[disc_mask]
+
+    prod_xs = mf13_interp.compute_photon_production_xs(
+        endf_dict, mt, energies_in, Eg_disc, xp=xp,
+    )
+    return Eg_disc, prod_xs
+
+
+def _per_line_angdist(endf_dict, mt, energies_in, Eg_disc,
+                      angle_cosines_out, n_einc, n_mus, xp):
+    """MF14 lookup for the per-line angular distribution used by
+    the MF12/MF13 discrete DDX folders (broadened and unbroadened
+    both).
+    """
+    if has_mf14_mt(endf_dict, mt):
+        mtsec14 = endf_dict[14][mt]
+        if mtsec14['LI'] == 1:
+            return xp.full(
+                (n_einc, len(Eg_disc), n_mus), 0.5, dtype=xp.float64,
+            )
+        return mf14_interp.compute_angdist_values(
+            endf_dict, mt, energies_in, Eg_disc, angle_cosines_out,
+            xp=xp,
+        )
+    return xp.full(
+        (n_einc, len(Eg_disc), n_mus), 0.5, dtype=xp.float64,
+    )
+
+
+def compute_ddx_mf12_discrete_unbroadened(
+    endf_dict, mt, zap,
+    energies_in, energies_out, angle_cosines_out,
+    xp=None,
+):
+    """Unbroadened DDX contribution from MF12 discrete photon lines.
+
+    Sibling of :func:`compute_ddx_mf12_discrete_broadened`: instead
+    of folding each Dirac peak with a smoothing kernel, place it on
+    the caller's E_out grid at the nearest bin with height ``1 /
+    bin_width`` so a midpoint-rule integral over E_out recovers
+    the yield-weighted amplitude ``sigma(Ein) * y_i(Ein) *
+    f_i(mu | Ein) / (2 pi)`` for each line ``i``.
+
+    Under ``xp=jax`` reverse-mode gradients flow through the per-
+    line yields (from MF12), the MF3 cross section, and the per-
+    line angular distribution (from MF14 when LI=0 with LTT=1).
+    The scatter mapping onto E_out is a concrete numpy matrix
+    since Eg positions are file-side metadata; the amplitudes and
+    angular distributions do carry tracers.
+
+    Returns
+    -------
+    ddx : array of shape ``(n_einc, n_eouts, n_mus)``.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF12 discrete-line accumulation is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    n_mus = len(angle_cosines_out)
+    result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
+
+    setup = _mf12_discrete_setup(endf_dict, mt, energies_in, xp)
+    if setup is None:
+        return result_zero
+    Eg_disc, weight_E = setup
+    per_line_angdist = _per_line_angdist(
+        endf_dict, mt, energies_in, Eg_disc, angle_cosines_out,
+        n_einc, n_mus, xp,
+    )
+    return _accumulate_discrete_lines_ddx(
+        energies_out, Eg_disc, weight_E, per_line_angdist,
+        n_einc, n_eouts, n_mus, xp,
+    )
+
+
+def compute_ddx_mf13_discrete_unbroadened(
+    endf_dict, mt, zap,
+    energies_in, energies_out, angle_cosines_out,
+    xp=None,
+):
+    """Unbroadened DDX contribution from MF13 discrete photon lines.
+
+    Sibling of :func:`compute_ddx_mf13_discrete_broadened` /
+    :func:`compute_ddx_mf12_discrete_unbroadened`. Uses the MF13
+    per-line photon-production cross section in place of
+    ``sigma * y_i``; MF14 angular lookup and the nearest-bin
+    scatter are identical.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF13 discrete-line accumulation is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    n_mus = len(angle_cosines_out)
+    result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
+
+    setup = _mf13_discrete_setup(endf_dict, mt, energies_in, xp)
+    if setup is None:
+        return result_zero
+    Eg_disc, weight_E = setup
+    per_line_angdist = _per_line_angdist(
+        endf_dict, mt, energies_in, Eg_disc, angle_cosines_out,
+        n_einc, n_mus, xp,
+    )
+    return _accumulate_discrete_lines_ddx(
+        energies_out, Eg_disc, weight_E, per_line_angdist,
+        n_einc, n_eouts, n_mus, xp,
+    )
+
+
+def compute_dxs_dE_mf12_discrete_unbroadened(
+    endf_dict, mt, zap, energies_in, energies_out, xp=None,
+):
+    """Unbroadened dxs/dE contribution from MF12 discrete photon
+    lines. Sibling of :func:`compute_dxs_dE_mf12_discrete_broadened`.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF12 discrete-line accumulation is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    result_zero = xp.zeros((n_einc, n_eouts), dtype=xp.float64)
+
+    setup = _mf12_discrete_setup(endf_dict, mt, energies_in, xp)
+    if setup is None:
+        return result_zero
+    Eg_disc, weight_E = setup
+    return _accumulate_discrete_lines_1d(
+        energies_out, Eg_disc, weight_E, n_einc, n_eouts, xp,
+    )
+
+
+def compute_dxs_dE_mf13_discrete_unbroadened(
+    endf_dict, mt, zap, energies_in, energies_out, xp=None,
+):
+    """Unbroadened dxs/dE contribution from MF13 discrete photon
+    lines. Sibling of :func:`compute_dxs_dE_mf13_discrete_broadened`.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    if zap != get_zap_for_particle('g'):
+        raise ValueError(
+            'MF13 discrete-line accumulation is gamma-only; got '
+            f'ZAP={zap}'
+        )
+    energies_in = np.asarray(energies_in, dtype=float)
+    energies_out = np.asarray(energies_out, dtype=float)
+    n_einc = len(energies_in)
+    n_eouts = len(energies_out)
+    result_zero = xp.zeros((n_einc, n_eouts), dtype=xp.float64)
+
+    setup = _mf13_discrete_setup(endf_dict, mt, energies_in, xp)
+    if setup is None:
+        return result_zero
+    Eg_disc, weight_E = setup
+    return _accumulate_discrete_lines_1d(
+        energies_out, Eg_disc, weight_E, n_einc, n_eouts, xp,
+    )
