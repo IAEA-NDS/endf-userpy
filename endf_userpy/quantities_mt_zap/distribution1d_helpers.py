@@ -166,12 +166,20 @@ def integrate_mf6_dist2d_over_eout(
 
     ``xp=None`` (default) is numpy. Under ``xp=jax`` the LAW=7
     fast path is end-to-end xp-native and reverse-mode gradients
-    flow through the ``f`` amplitudes of the underlying tables
-    (issue #220). The adaptive-Simpson fallback still runs on
-    numpy internally and materialises the result to xp-native at
-    the return boundary. The complementary
+    flow through the ``f`` amplitudes and ``Ep`` knot positions
+    of the underlying tables (issue #220). The adaptive-Simpson
+    fallback still runs on numpy internally and materialises the
+    result to xp-native at the return boundary. The complementary
     ``integrate_mf6_dist2d_over_mu`` path IS end-to-end xp-native
     for LAW=1 (fast path).
+
+    The LAW=7 fast path fires whenever every MF6 subsection
+    matching ``zap`` is LAW=7 (a common pattern for files that
+    carry more than one channel contributing to the same
+    ejectile, e.g. multiple reaction paths summed on one ZAP).
+    Contributions from all matching subsections are summed
+    panel-exactly. Mixed-LAW cases (LAW=7 alongside LAW=1/2/6)
+    still route through the adaptive-Simpson fallback.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -181,16 +189,23 @@ def integrate_mf6_dist2d_over_eout(
     )
     mtsec = endf_dict[6][mt]
     subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
-    if len(subsec_nums) == 1:
-        law = mtsec['subsection'][subsec_nums[0]]['LAW']
-        if law == 7:
-            module_logger.debug(
-                f'use knot-aware LAW=7 integrator for MT={mt}',
-            )
-            return mf6_law7.integrate_law7_subsec_over_eout(
-                endf_dict, mt, subsec_nums[0],
+    if subsec_nums and all(
+        mtsec['subsection'][sn]['LAW'] == 7 for sn in subsec_nums
+    ):
+        module_logger.debug(
+            f'use knot-aware LAW=7 integrator for MT={mt} '
+            f'({len(subsec_nums)} subsection(s))',
+        )
+        total = mf6_law7.integrate_law7_subsec_over_eout(
+            endf_dict, mt, subsec_nums[0],
+            energies_in, angle_cosines_out, to_lab, xp=xp,
+        )
+        for sn in subsec_nums[1:]:
+            total = total + mf6_law7.integrate_law7_subsec_over_eout(
+                endf_dict, mt, sn,
                 energies_in, angle_cosines_out, to_lab, xp=xp,
             )
+        return total
     result = _integrate_mf6_over_eout_adaptive_simpson(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
     )
@@ -322,16 +337,17 @@ def integrate_mf6_dist2d_over_mu(
                 module_logger.debug(
                     f'use knot-aware LAW=7 mu-integrator for MT={mt}',
                 )
-                result = mf6_law7.integrate_law7_subsec_over_mu(
+                return mf6_law7.integrate_law7_subsec_over_mu(
                     endf_dict, mt, subsec_nums[0],
-                    energies_in, energies_out, to_lab,
+                    energies_in, energies_out, to_lab, xp=xp,
                 )
-                return xp.asarray(result) if xp.name != 'numpy' else result
-            # Tracer Ein OR tracer Ep: fall through to the xp-native
-            # fixed-mesh Simpson path so grad reaches file-side and
-            # query-side leaves. Tracer Ep is now supported via the
-            # LAW=7 kernel's unit-base traced-x branch (issue #220
-            # PR 4).
+            # Tracer Ein OR tracer Eout on the query side: fall
+            # through to the xp-native fixed-mesh Simpson path so
+            # grad reaches query-side leaves. The kink-aware
+            # integrator above stays on the file-side-only tracer
+            # path (grad wrt f/Ep amplitudes) since its Simpson
+            # mesh construction is data-dependent on the mu-knot
+            # union, which is not jit-safe (issue #220 PR 4).
             module_logger.debug(
                 f'use xp-native mu-Simpson fallback for MT={mt} '
                 f'LAW=7 (tracer Ein/Ep)',
