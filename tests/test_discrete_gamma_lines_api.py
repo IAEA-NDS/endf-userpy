@@ -19,9 +19,11 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import (
-    DiscreteGammaLine,
     get_particle_production_discrete_gamma_lines,
     get_particle_production_dxs_dE,
+)
+from endf_userpy.quantities_mt_zap.discrete_gamma_lines import (
+    DiscreteGammaLine,
 )
 
 
