@@ -27,12 +27,14 @@ import numpy as np
 
 from ..primitives import array_ns
 from ..primitives.helpers import (
+    convert_interp_repr,
     dict2array,
     erf,
     exp1,
     gammainc,
 )
 from ..primitives.interpolation import (
+    integrate_tab1_panels,
     interp_tab1,
     interp_tab2,
 )
@@ -158,15 +160,19 @@ def compute_general_evaporation_spectrum(
 
         G(E) = integral from 0 to (E - U)/theta(E) of g(x) dx
 
-    provides the normalisation. The normalisation integral is
-    evaluated by a fully vectorised trapezoid on the ``g_table``
-    mesh: the mesh is padded with a leading ``x=0`` (adding a
-    zero-width segment when the mesh already starts at 0) and each
-    segment is clipped to ``[0, x_max_i]`` for every incident
-    energy, with a final linear taper to zero for the region above
-    the tabulated ``x[-1]``. Exact for the common LIN-LIN (INT=2)
-    interpolation; panel-exact integration for the four
-    log/histogram INT values is a follow-up.
+    provides the normalisation. Integration is per-panel exact
+    for all five ENDF INT codes via
+    :func:`~primitives.interpolation.integrate_tab1_panels` -
+    histogram (INT=1), lin-lin (INT=2), lin-log (INT=3), log-lin
+    (INT=4) and log-log (INT=5). Under any INT the panel is
+    truncated at ``x_max_i`` per incident energy, so partial
+    last-panel integrals stay exact rather than falling back to
+    a discretisation error.
+
+    A final linear taper to zero for the region above the
+    tabulated ``x[-1]`` covers query energies whose ``x_max``
+    exceeds the g_table support; in practice real evaluations
+    tabulate g out to zero at the endpoint so this contributes 0.
 
     Backend-agnostic: ``xp=None`` runs on numpy. The reconstruction
     is xp-native over the incident-energy axis (no per-Ein Python
@@ -213,21 +219,48 @@ def compute_general_evaporation_spectrum(
 
     seg_start_np = x_pad_np[:-1]
     seg_end_np = x_pad_np[1:]
-    seg_dx_np = seg_end_np - seg_start_np
-    seg_dx_safe_np = np.where(seg_dx_np == 0.0, 1.0, seg_dx_np)
+
+    # Per-panel INT codes. Panel i (between mesh point i-1 and i
+    # of the tabulated g_table) uses INT applicable at breakpoint
+    # i; ``convert_interp_repr`` returns a per-point array whose
+    # value at index k is the INT of the segment ENDING at point
+    # k. The leading zero-pad panel inherits the first tabulated
+    # panel's INT (its width is typically zero anyway).
+    int_arr_np = np.asarray(g_tab.get('INT', [2]), dtype=int)
+    nbt_arr_np = np.asarray(g_tab.get('NBT', [x_mesh_np.shape[0]]), dtype=int)
+    int_per_point_np = convert_interp_repr(int_arr_np, nbt_arr_np)
+    int_per_panel_mesh_np = (
+        int_per_point_np[1:] if int_per_point_np.shape[0] > 1
+        else int_per_point_np
+    )
+    # Leading pad panel [0, x_mesh[0]] is always histogram at
+    # ``g_at_0``: for x_mesh[0] > 0 the interpolant is 0 outside
+    # the tabulated support (matching interp_tab1's outside_value=
+    # 0 convention), and the panel contributes 0; for x_mesh[0] ==
+    # 0 the pad panel has zero width. Using INT=1 here avoids the
+    # lin-lin / log-based interpolants from ramping from
+    # ``g_at_0 = 0`` up to ``g_mesh[0]``, which would add a
+    # spurious area outside the g_table support.
+    int_per_panel_pad_np = np.concatenate(
+        [[1], int_per_panel_mesh_np]
+    )
 
     seg_start_bc = xp.asarray(seg_start_np)[None, :]
     seg_end_bc = xp.asarray(seg_end_np)[None, :]
-    seg_dx_safe_bc = xp.asarray(seg_dx_safe_np)[None, :]
     g_start_bc = g_pad[:-1][None, :]
     g_end_bc = g_pad[1:][None, :]
     x_max_col = x_max[:, None]
 
     active = seg_start_bc < x_max_col
     seg_end_c = xp.minimum(seg_end_bc, x_max_col)
-    frac = (seg_end_c - seg_start_bc) / seg_dx_safe_bc
-    g_at_end_c = g_start_bc + (g_end_bc - g_start_bc) * frac
-    seg_area = 0.5 * (g_start_bc + g_at_end_c) * (seg_end_c - seg_start_bc)
+    # Panel-exact integration per INT code (see
+    # ``integrate_tab1_panels``); the panel gets truncated at
+    # ``seg_end_c`` when ``x_max`` cuts through it.
+    seg_area = integrate_tab1_panels(
+        seg_start_bc, seg_end_bc, g_start_bc, g_end_bc,
+        seg_start_bc, seg_end_c, int_per_panel_pad_np[None, :],
+        xp=xp,
+    )
     seg_area = xp.where(active, seg_area, 0.0)
     G_main = xp.sum(seg_area, axis=1)
 

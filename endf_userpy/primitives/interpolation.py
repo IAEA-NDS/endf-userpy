@@ -160,6 +160,151 @@ _INTERP_DISPATCH = {
 }
 
 
+def integrate_tab1_panels(
+    x0, x1, y0, y1, x_start, x_end, int_codes, xp=None,
+):
+    """Panel-exact integrals of ENDF tab1 records, vectorised.
+
+    For each panel ``i`` with endpoints ``(x0[i], x1[i])`` and
+    values ``(y0[i], y1[i])`` interpolated under ``int_codes[i]``,
+    return the exact integral of the interpolant from
+    ``x_start[i]`` to ``x_end[i]``, where both bounds may cut
+    through the interior of the panel:
+
+        ``x0[i] <= x_start[i] <= x_end[i] <= x1[i]``.
+
+    A caller who only needs the standard "integrate over the
+    whole panel or up to a query cut-off" pattern passes
+    ``x_start = x0``.
+
+    Backend-agnostic. ``x0`` / ``x1`` are treated as numpy (mesh
+    axes are typically concrete); ``y0`` / ``y1`` may carry
+    tracers under xp=jax so autodiff wrt tab1 y-values reaches
+    through the integral. ``int_codes`` is a concrete numpy int
+    array. All broadcast together.
+
+    Panel-exact closed forms (with ``dx = x_end - x_start`` and
+    ``y_at_x`` the panel's INT-specific interpolant at ``x``):
+
+    - INT=1 (histogram):  ``y0 * dx``
+    - INT=2 (lin-lin):    ``0.5 * (y_at_x_start + y_at_x_end) * dx``
+    - INT=3 (lin-log):    ``y0*dx + m*(x_end*log(x_end/x0) -
+                          x_start*log(x_start/x0) - dx)``,
+                          ``m = (y1-y0)/log(x1/x0)``
+    - INT=4 (log-lin):    ``(y_at_x_end - y_at_x_start) / alpha``,
+                          ``alpha = log(y1/y0)/(x1-x0)``;
+                          ``alpha=0`` limit -> ``y0 * dx``
+    - INT=5 (log-log):    ``(y_at_x_end*x_end - y_at_x_start*x_start)
+                          / (alpha+1)``,
+                          ``alpha = log(y1/y0)/log(x1/x0)``;
+                          ``alpha=-1`` limit -> ``y0*x0*log(x_end/x_start)``
+
+    Panels where the log-based INT laws would take ``log(0)``
+    (``x0 == 0`` for INT=3/5, ``y0`` or ``y1`` non-positive for
+    INT=4/5) fall back to the lin-lin trapezoid on ``[x_start,
+    x_end]`` for that panel; the fallback keeps the integrator
+    well-defined on files with a zero at a knot. A zero-width
+    panel (``x0 == x1``) returns 0 regardless of INT.
+    """
+    xp = _resolve_xp(xp)
+    x0 = xp.asarray(x0)
+    x1 = xp.asarray(x1)
+    y0 = xp.asarray(y0)
+    y1 = xp.asarray(y1)
+    x_start = xp.asarray(x_start)
+    x_end = xp.asarray(x_end)
+    codes = xp.asarray(int_codes)
+
+    dx = x_end - x_start
+    dx_full = x1 - x0
+    dx_full_safe = xp.where(dx_full == 0.0, 1.0, dx_full)
+
+    # Lin-lin interpolant at the two integration bounds (used by
+    # INT=2 and by all log-based INT fallbacks).
+    frac_start = (x_start - x0) / dx_full_safe
+    frac_end = (x_end - x0) / dx_full_safe
+    y_at_start_lin = y0 + (y1 - y0) * frac_start
+    y_at_end_lin = y0 + (y1 - y0) * frac_end
+
+    # ---- INT=1 (histogram)
+    area1 = y0 * dx
+
+    # ---- INT=2 (lin-lin)
+    area2 = 0.5 * (y_at_start_lin + y_at_end_lin) * dx
+
+    # ---- INT=3 (lin-log): y(x) = y0 + m log(x/x0),
+    # m = (y1 - y0) / log(x1/x0).
+    # Antiderivative F(x) = y0*x + m*(x*log(x/x0) - x); definite:
+    # y0*dx + m*(x_end*log(x_end/x0) - x_start*log(x_start/x0) - dx).
+    # Requires x0 > 0.
+    x0_pos = x0 > 0.0
+    x0_safe = xp.where(x0_pos, x0, _INTERP_LOG_SMALL)
+    xs_safe = xp.where(x_start > 0.0, x_start, x0_safe)
+    xe_safe = xp.where(x_end > 0.0, x_end, x0_safe)
+    x1_log_safe = xp.where(x1 > 0.0, x1, _INTERP_LOG_SMALL)
+    log_x1_x0 = xp.log(x1_log_safe / x0_safe)
+    log_x1_x0_safe = xp.where(log_x1_x0 == 0.0, 1.0, log_x1_x0)
+    m3 = (y1 - y0) / log_x1_x0_safe
+    area3 = y0 * dx + m3 * (
+        xe_safe * xp.log(xe_safe / x0_safe)
+        - xs_safe * xp.log(xs_safe / x0_safe)
+        - dx
+    )
+    area3 = xp.where(x0_pos, area3, area2)
+
+    # ---- INT=4 (log-lin): y(x) = y0 * exp(alpha (x - x0)),
+    # alpha = log(y1/y0)/(x1-x0). Integral:
+    # (y_at_x_end - y_at_x_start) / alpha, or y0*dx if alpha=0.
+    y_pos = (y0 > 0.0) & (y1 > 0.0)
+    y0_safe = xp.where(y_pos, y0, _INTERP_LOG_SMALL)
+    y1_safe = xp.where(y_pos, y1, _INTERP_LOG_SMALL)
+    log_yr = xp.log(y1_safe / y0_safe)
+    alpha4 = log_yr / dx_full_safe
+    alpha4_safe = xp.where(alpha4 == 0.0, 1.0, alpha4)
+    y_start_log = y0_safe * xp.exp(alpha4 * (x_start - x0))
+    y_end_log = y0_safe * xp.exp(alpha4 * (x_end - x0))
+    area4_general = (y_end_log - y_start_log) / alpha4_safe
+    area4_limit = y0_safe * dx
+    area4 = xp.where(alpha4 == 0.0, area4_limit, area4_general)
+    area4 = xp.where(y_pos, area4, area2)
+
+    # ---- INT=5 (log-log): y(x) = y0 * (x/x0)^alpha,
+    # alpha = log(y1/y0)/log(x1/x0). Antiderivative
+    # F(x) = y0 * x0^(-alpha) * x^(alpha+1) / (alpha+1)
+    #      = y_at_x * x / (alpha+1) for alpha != -1;
+    # for alpha=-1: F(x) = y0*x0*log(x). Definite:
+    # (y_at_x_end*x_end - y_at_x_start*x_start) / (alpha+1),
+    # or y0*x0*log(x_end/x_start) for alpha=-1.
+    valid_5 = x0_pos & y_pos
+    alpha5 = log_yr / log_x1_x0_safe
+    alpha5_plus1 = alpha5 + 1.0
+    alpha5_plus1_safe = xp.where(alpha5_plus1 == 0.0, 1.0, alpha5_plus1)
+    ratio_s = xs_safe / x0_safe
+    ratio_e = xe_safe / x0_safe
+    y_start_pow = y0_safe * ratio_s ** alpha5
+    y_end_pow = y0_safe * ratio_e ** alpha5
+    area5_general = (
+        y_end_pow * xe_safe - y_start_pow * xs_safe
+    ) / alpha5_plus1_safe
+    area5_limit = y0_safe * x0_safe * xp.log(ratio_e / ratio_s)
+    area5 = xp.where(alpha5_plus1 == 0.0, area5_limit, area5_general)
+    area5 = xp.where(valid_5, area5, area2)
+
+    # ---- Selection by INT code
+    area = xp.where(
+        codes == 1, area1,
+        xp.where(
+            codes == 2, area2,
+            xp.where(
+                codes == 3, area3,
+                xp.where(codes == 4, area4, area5),
+            ),
+        ),
+    )
+    # Zero-width panel: integral is 0 regardless of INT.
+    return xp.where(dx_full == 0.0, 0.0, area)
+
+
 def interp(x, xp_mesh, fp, interp_type, outside_value=None, xp=None):
     """Interpolation using various schemes.
 
