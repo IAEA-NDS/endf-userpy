@@ -164,11 +164,12 @@ def integrate_mf6_dist2d_over_eout(
     adaptive Simpson path only resolves to ~1 %). Everything else
     routes through `_integrate_mf6_over_eout_adaptive_simpson`.
 
-    ``xp=None`` (default) is numpy. Under ``xp=jax`` the LAW=7 fast
-    path and the adaptive-Simpson fallback both currently run on
-    numpy internally and materialise the result to xp-native at the
-    return boundary (autodiff through this integrator is not
-    supported yet -- tracked as issue #220). The complementary
+    ``xp=None`` (default) is numpy. Under ``xp=jax`` the LAW=7
+    fast path is end-to-end xp-native and reverse-mode gradients
+    flow through the ``f`` amplitudes of the underlying tables
+    (issue #220). The adaptive-Simpson fallback still runs on
+    numpy internally and materialises the result to xp-native at
+    the return boundary. The complementary
     ``integrate_mf6_dist2d_over_mu`` path IS end-to-end xp-native
     for LAW=1 (fast path).
     """
@@ -186,11 +187,10 @@ def integrate_mf6_dist2d_over_eout(
             module_logger.debug(
                 f'use knot-aware LAW=7 integrator for MT={mt}',
             )
-            result = mf6_law7.integrate_law7_subsec_over_eout(
+            return mf6_law7.integrate_law7_subsec_over_eout(
                 endf_dict, mt, subsec_nums[0],
-                energies_in, angle_cosines_out, to_lab,
+                energies_in, angle_cosines_out, to_lab, xp=xp,
             )
-            return xp.asarray(result) if xp.name != 'numpy' else result
     result = _integrate_mf6_over_eout_adaptive_simpson(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
     )

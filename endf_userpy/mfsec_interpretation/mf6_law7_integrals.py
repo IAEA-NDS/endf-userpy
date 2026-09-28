@@ -79,12 +79,17 @@ adaptive Simpson integrator.
 """
 import numpy as np
 
+from ..primitives import array_ns
 from ..primitives.helpers import (
     convert_interp_repr, dict2array, find_interval,
 )
 from ..primitives.interpolation import integrate_tab1_panels
 from ..primitives.properties import get_QM, get_QI
 from . import mf6_interpretation_subsecs as _subsec  # noqa: F401
+
+
+def _resolve_xp(xp):
+    return xp if xp is not None else array_ns.get_backend('numpy')
 
 
 def _project_ub_knots(y0, y1, y2, x1_knots, x2_knots):
@@ -96,6 +101,10 @@ def _project_ub_knots(y0, y1, y2, x1_knots, x2_knots):
     either table has zero-width (`x*range == 0`, degenerate), its
     knots collapse to the effective `xlow`; the other set is
     returned unchanged plus that single point.
+
+    Kept numpy: E' knot positions are geometric metadata, not
+    tracers under the autodiff scope of this module (see docstring
+    of :func:`integrate_law7_subsec_over_eout`).
     """
     x1_knots = np.asarray(x1_knots, dtype=float)
     x2_knots = np.asarray(x2_knots, dtype=float)
@@ -129,7 +138,9 @@ def _ub_slice_geometry(mu, mu1, mu2, ep1, ep2):
     Given target mu and the mu-bracket (mu1, mu2), plus the two
     tables' E' knot arrays (ep1, ep2), return
     ``(yslope, xlow, xrange, x1low, x1range, x2low, x2range)`` for
-    the LAW=7 unit-base transform. All are per-cell scalars.
+    the LAW=7 unit-base transform. All are per-cell scalars, and
+    all are geometric metadata (never tracers in the scope of this
+    module).
     """
     if mu2 == mu1:
         yslope = 0.0
@@ -146,7 +157,11 @@ def _ub_slice_geometry(mu, mu1, mu2, ep1, ep2):
 
 
 def _tab_panel_int(int_arr, nbt_arr, n_pts):
-    """Per-panel INT code for a tab1 record. Length ``n_pts - 1``."""
+    """Per-panel INT code for a tab1 record. Length ``n_pts - 1``.
+
+    Kept numpy: INT codes are integer metadata, never
+    differentiable.
+    """
     int_per_point = convert_interp_repr(
         np.asarray(int_arr, dtype=int),
         np.asarray(nbt_arr, dtype=int),
@@ -157,7 +172,9 @@ def _tab_panel_int(int_arr, nbt_arr, n_pts):
     return int_per_point[1:]
 
 
-def _table_segment_areas_vec(ep_arr, f_arr, int_per_panel, xi_a_arr, xi_b_arr):
+def _table_segment_areas_vec(
+    ep_arr, f_arr, int_per_panel, xi_a_arr, xi_b_arr, xp=None,
+):
     """Vectorised panel-exact integrals of one table's tab1
     interpolant from ``xi_a`` to ``xi_b`` for a batch of segments.
 
@@ -166,38 +183,44 @@ def _table_segment_areas_vec(ep_arr, f_arr, int_per_panel, xi_a_arr, xi_b_arr):
     Segments outside the table's domain or with non-positive
     width contribute 0.
 
-    Panel indexing uses the segment midpoint - the segment
-    endpoints ``xi_a`` come from a linear projection that can
-    drift by a few ULP from an exact table knot, and would
-    otherwise land on the wrong panel under ``searchsorted``.
+    Panel indexing uses the segment midpoint. Endpoint values come
+    from a linear projection that can drift by a few ULP from an
+    exact table knot; picking the panel by midpoint dodges that.
+    The panel-index lookup itself is a numpy op on concrete E'
+    knots because ``ep_arr`` positions are ENDF-file data, not
+    tracer-valued in typical autodiff use.
     """
-    xi_a_arr = np.asarray(xi_a_arr, dtype=float)
-    xi_b_arr = np.asarray(xi_b_arr, dtype=float)
-    n = xi_a_arr.shape[0]
+    xp = _resolve_xp(xp)
+    # Knot positions (ep_arr) and segment endpoints (xi_*_arr) are
+    # concrete file/geometry data; f_arr is the differentiable
+    # amplitude column.
+    ep_np = np.asarray(ep_arr, dtype=float)
+    xi_a_np = np.asarray(xi_a_arr, dtype=float)
+    xi_b_np = np.asarray(xi_b_arr, dtype=float)
+    n = xi_a_np.shape[0]
     if n == 0:
-        return np.zeros(0, dtype=float)
-    # Clip to the table's own domain.
-    lo, hi = float(ep_arr[0]), float(ep_arr[-1])
-    xa = np.clip(xi_a_arr, lo, hi)
-    xb = np.clip(xi_b_arr, lo, hi)
-    active = (xi_b_arr > xi_a_arr) & (xi_a_arr < hi) & (xi_b_arr > lo)
-    # Panel index by midpoint, clamped to a valid range.
+        return xp.zeros(0)
+    lo, hi = float(ep_np[0]), float(ep_np[-1])
+    xa = np.clip(xi_a_np, lo, hi)
+    xb = np.clip(xi_b_np, lo, hi)
+    active = (xi_b_np > xi_a_np) & (xi_a_np < hi) & (xi_b_np > lo)
     mid = 0.5 * (xa + xb)
     panels = np.clip(
-        np.searchsorted(ep_arr, mid, side='right') - 1,
-        0, ep_arr.shape[0] - 2,
+        np.searchsorted(ep_np, mid, side='right') - 1,
+        0, ep_np.shape[0] - 2,
     )
-    x0 = ep_arr[panels]
-    x1 = ep_arr[panels + 1]
-    y0 = f_arr[panels]
-    y1 = f_arr[panels + 1]
+    x0 = ep_np[panels]
+    x1 = ep_np[panels + 1]
     codes = (
         int_per_panel[panels]
         if int_per_panel.shape[0]
         else np.full(n, 2, dtype=int)
     )
-    areas = integrate_tab1_panels(x0, x1, y0, y1, xa, xb, codes)
-    return np.where(active, areas, 0.0)
+    f_arr = xp.asarray(f_arr)
+    y0 = f_arr[panels]
+    y1 = f_arr[panels + 1]
+    areas = integrate_tab1_panels(x0, x1, y0, y1, xa, xb, codes, xp=xp)
+    return xp.where(active, areas, xp.asarray(0.0))
 
 
 def _check_supported_int(int_arr, nbt_arr, axis_name):
@@ -220,7 +243,8 @@ def _check_supported_int(int_arr, nbt_arr, axis_name):
 
 
 def integrate_law7_subsec_over_eout(
-    endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab=True,
+    endf_dict, mt, subsec_num, energies_in, angle_cosines_out,
+    to_lab=True, xp=None,
 ):
     """Angular distribution ``da(E_in, mu)`` from a single MF6
     subsection with ``LAW=7``, integrated over outgoing energy on
@@ -233,6 +257,19 @@ def integrate_law7_subsec_over_eout(
     all five ENDF INT codes on the E' axis; requires INT=1/2 on
     the outer Ein and mu axes (all corpus files satisfy this).
 
+    Autodiff
+    --------
+    ``xp=None`` (default) is numpy. Under ``xp=jax`` the E'
+    amplitudes ``f`` of each bracketing table flow through the
+    backend, and reverse-mode gradients wrt those amplitudes are
+    available. Query points (``energies_in``, ``angle_cosines_out``)
+    and geometric metadata (E' and mu knot positions, Ein mesh)
+    stay concrete: those enter Python-level gating (``e < ei_mesh[0]``,
+    ``mu2 == mu1``) and integer indexing (``find_interval``,
+    ``searchsorted``) that would break tracers. That is the
+    intended calibration scenario: fit the tabulated amplitudes
+    while the file's geometry stays fixed.
+
     Parameters
     ----------
     endf_dict, mt, subsec_num : the endf dict and section pointers.
@@ -240,11 +277,16 @@ def integrate_law7_subsec_over_eout(
     angle_cosines_out : 1D array of mu targets.
     to_lab : accepted for signature compatibility; LAW=7 is always
         stored in the LAB frame.
+    xp : optional backend from :mod:`endf_userpy.primitives.array_ns`
+        (default numpy). Under ``xp=jax`` the result is an xp array
+        with gradients flowing through the ``f`` amplitudes of the
+        underlying tables.
 
     Returns
     -------
-    ndarray of shape ``(len(energies_in), len(angle_cosines_out))``.
+    array of shape ``(len(energies_in), len(angle_cosines_out))``.
     """
+    xp = _resolve_xp(xp)
     sec = endf_dict[6][mt]
     sub = sec['subsection'][subsec_num]
     if sub['LAW'] != 7:
@@ -267,7 +309,14 @@ def integrate_law7_subsec_over_eout(
         np.asarray(sub['E_interpol']['NBT'], dtype=int),
     )
 
-    out = np.zeros((len(einc), len(mus)), dtype=float)
+    # Under xp=jax with tracer f-columns the cell result is a
+    # tracer, so we cannot assign into a preallocated array; build a
+    # nested list of xp scalars and stack at the end. Under
+    # xp=numpy this reduces to the original zero-filled matrix.
+    zero_scalar = xp.asarray(0.0)
+    row_cells: list[list] = [
+        [zero_scalar for _ in range(len(mus))] for _ in range(len(einc))
+    ]
 
     for i, e in enumerate(einc):
         # Kinematic bounds: outside the section's E_in range -> zero.
@@ -332,10 +381,13 @@ def integrate_law7_subsec_over_eout(
             ep12 = np.asarray(t_e1_2['Ep'], dtype=float)
             ep21 = np.asarray(t_e2_1['Ep'], dtype=float)
             ep22 = np.asarray(t_e2_2['Ep'], dtype=float)
-            f11 = np.asarray(t_e1_1['f'], dtype=float)
-            f12 = np.asarray(t_e1_2['f'], dtype=float)
-            f21 = np.asarray(t_e2_1['f'], dtype=float)
-            f22 = np.asarray(t_e2_2['f'], dtype=float)
+            # xp.asarray preserves a tracer f-column if the user has
+            # replaced it in the endf_dict for calibration; a plain
+            # list is materialised on the requested backend.
+            f11 = xp.asarray(t_e1_1['f'], dtype=float)
+            f12 = xp.asarray(t_e1_2['f'], dtype=float)
+            f21 = xp.asarray(t_e2_1['f'], dtype=float)
+            f22 = xp.asarray(t_e2_2['f'], dtype=float)
             int11 = _tab_panel_int(t_e1_1['INT'], t_e1_1['NBT'], ep11.shape[0])
             int12 = _tab_panel_int(t_e1_2['INT'], t_e1_2['NBT'], ep12.shape[0])
             int21 = _tab_panel_int(t_e2_1['INT'], t_e2_1['NBT'], ep21.shape[0])
@@ -396,10 +448,10 @@ def integrate_law7_subsec_over_eout(
                 xi_b_a = x2low + (a_c - xlow) / xrange_ * x2range
                 xi_b_b = x2low + (b_c - xlow) / xrange_ * x2range
                 area_a = _table_segment_areas_vec(
-                    ep_a, f_a, int_a, xi_a_a, xi_a_b,
+                    ep_a, f_a, int_a, xi_a_a, xi_a_b, xp=xp,
                 )
                 area_b = _table_segment_areas_vec(
-                    ep_b_, f_b_, int_b_, xi_b_a, xi_b_b,
+                    ep_b_, f_b_, int_b_, xi_b_a, xi_b_b, xp=xp,
                 )
                 return (1.0 - yslope) * area_a + yslope * area_b
 
@@ -413,9 +465,11 @@ def integrate_law7_subsec_over_eout(
                 x1low_e2, x1range_e2, x2low_e2, x2range_e2,
                 ep21, f21, int21, ep22, f22, int22, yslope_e2,
             )
-            out[i, j] = float(np.sum(eslope_1 * s1 + eslope_2 * s2))
+            row_cells[i][j] = xp.sum(eslope_1 * s1 + eslope_2 * s2)
 
-    return out
+    if len(einc) == 0 or len(mus) == 0:
+        return xp.zeros((len(einc), len(mus)))
+    return xp.stack([xp.stack(row) for row in row_cells])
 
 
 # Composite-Simpson node count per LAW=7 mu segment: 33 samples per
