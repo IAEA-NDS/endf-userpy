@@ -23,9 +23,6 @@ from .mfsec_interpretation.mf3_interpretation import (
     above_range_ctx,
     resonance_range_ctx,
 )
-from .mfsec_interpretation.mf6_law7_integrals import (
-    collect_law7_log_errors,
-)
 
 
 # Cache of (id(endf_dict), mt, zap, lfs) tuples we have already warned
@@ -720,7 +717,6 @@ def get_particle_production_dxs_dmu(
     with (
         above_range_ctx(above_range),
         resonance_range_ctx(resonance_range),
-        collect_law7_log_errors(),
     ):
         return _get_particle_production_dxs_dmu_impl(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,

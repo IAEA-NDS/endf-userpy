@@ -1,6 +1,5 @@
-"""Knot-aware integration of MF6 LAW=7 (double-tabulated
-angle-energy distributions) over the outgoing energy axis
-(issue #69, follow-up to #46).
+"""Panel-exact integration of MF6 LAW=7 (double-tabulated
+angle-energy distributions).
 
 Background
 ----------
@@ -16,164 +15,76 @@ via **unit-base interpolation** between the four bracketing slices
     xhigh     = x1high + yslope * (x2high - x1high)
     xrange    = xhigh - xlow
     xslope    = (E' - xlow) / xrange
-    f1x       = tab1intp(x1, f1, x1low + xslope * x1range)
-    f2x       = tab1intp(x2, f2, x2low + xslope * x2range)
-    f(mu, E') = yintp(u_j, f1x*x1range/xrange, u_{j+1}, f2x*x2range/xrange, ...)
+    f1x       = tab1intp(x1_knots, f1_vals, x1low + xslope * x1range)
+    f2x       = tab1intp(x2_knots, f2_vals, x2low + xslope * x2range)
+    f_slice   = yintp(u_j, f1x*x1range/xrange, u_{j+1}, f2x*x2range/xrange, ...)
 
-This transform is **nonlinear in E'** at the interpolated point,
-so the tabulated E' knots do not describe the effective interpolant's
-kinks. Trapezoid on the raw union of tabulated knots gives ~30 %
-error (issue #46 measured this). Uniform-mesh Simpson (what
-`distribution1d_helpers._adaptive_simpson_along_axis` uses today)
-converges slowly because the reconstructed function has kinks that
-don't align with the mesh: measured 0.5-1 % of peak on the Be-9
-MT16 (n,2n) boundary case.
+Then the outer E_in-axis blends two adjacent-Ein-slice values via
+:func:`_law7_outer_e_interp_row` (typically INT=2 lin-lin).
 
-Approach
---------
-For each target `(E_in, mu)` cell:
+Panel-exact integration over E'
+-------------------------------
+For INT=2 uniformly on the outer E_in axis and INT=2 (base) on
+each mu axis, the reconstruction reduces to
 
-1. Locate bracketing indices in the section's `E` and per-`E_in`
-   `mu` meshes.
-2. For each of the two bracketing `E_in` slices, project the raw
-   tabulated `Ep[k]` knots of the two bracketing mu tables through
-   the unit-base transform at target `mu` (`_project_ub_knots`) --
-   this gives the effective knot mesh contribution from that
-   slice. Union with the other slice's contribution.
-3. Clip the effective-knot set to `[0, (E_in + q) * 1.1]`.
-4. Evaluate `f` at the midpoint of every segment defined by
-   consecutive effective knots (plus the integration endpoints).
-5. Sum `width * f(midpoint)` per segment.
+    f(E_in, mu, E') = (1 - eslope) * f_slice_e1(E')
+                   +      eslope  * f_slice_e2(E')
+    f_slice_ek(E') = (1 - yslope_ek) * f1x_ek(E') · x1range_ek/xrange_ek
+                   +      yslope_ek  * f2x_ek(E') · x2range_ek/xrange_ek
 
-The midpoint rule is exact for piecewise-constant (`INT=1`) and
-piecewise-linear (`INT=2`) E' interpolants -- the two schemes that
-appear in the corpus (Be-9: `INT=1` only, Cu-63 JENDL-5: `INT=2`
-only, surveyed in issue #69). For `INT=3/4/5` (log-based) the rule
-has `O(h^3 * f'')` error per segment, which stays well under the
-uniform-Simpson error at the same mesh size.
+The **four tab1 interpolants** f1x_e1, f2x_e1, f1x_e2, f2x_e2 are
+each an INT-native interp of one table evaluated at a
+linear-in-E' shifted position. Between consecutive **effective
+knots** (the union of all four tables' projected knot sets) each
+of the four sits inside a single panel, so each is a pure INT=k
+expression on that segment.
+
+The full E' integral is therefore
+
+    integral_a^b f dE' = (1 - eslope) * [
+        (1 - yslope_e1) * integrate_tab1_panels(table_1_e1_panel, xi_1_e1(a), xi_1_e1(b))
+      +      yslope_e1  * integrate_tab1_panels(table_2_e1_panel, xi_2_e1(a), xi_2_e1(b))
+    ] + eslope * [same for e2 slice]
+
+where each xi_k(t) = x_low_k + (t - xlow_slice)/xrange_slice · x_range_k
+is the linear map from the effective-E' axis to table k's own E' axis.
+Jacobian (dE'/dxi_k = xrange_slice / x_range_k) exactly cancels the
+per-slice unit-base weight x_range_k / xrange_slice, so the formula is
+clean.
+
+**This is exact for every INT code** (histogram, lin-lin, and all
+three log laws) on the E' axis of every underlying table. It
+replaces the pre-refactor midpoint rule, which was exact for INT=1
+and INT=2 on real corpus files but only O(h^3 * f'') per segment
+for INT=3/4/5 hypothetical files, and required a runtime
+error-estimator warning (`Law7LogErrorAccumulator`, dropped in
+this refactor).
+
+Scope
+-----
+- Outer E_in-axis: only ``INT=1 / INT=2`` supported. Real corpus
+  LAW=7 files use INT=2 exclusively.
+- Mu axes (both slices): only base ``INT=1 / INT=2`` supported.
+- E' axis of any underlying table: all five INT codes (1..5)
+  handled panel-exact by :func:`~primitives.interpolation.integrate_tab1_panels`.
+
+Files with unsupported outer or mu-axis INT raise
+``NotImplementedError`` with a clear diagnostic.
 
 Only single-subsection LAW=7 currently routes here (matching the
 existing single-subsection LAW=1 Fortran shortcut in
-`distribution1d_helpers.integrate_mf6_dist2d_over_mu`).
+``distribution1d_helpers.integrate_mf6_dist2d_over_mu``).
 Multi-subsection LAW=7 continues to use the general-purpose
 adaptive Simpson integrator.
-
-INT>=3 warning (issue #71)
---------------------------
-When any bracketing table's E' interpolation law is `INT>=3`
-(log-based) and a caller has opened `collect_law7_log_errors()`,
-the integrator adds a per-segment error estimate on top of the
-midpoint integral (two extra evaluations per segment at
-`mid +- w/4`, second-difference `f''` estimate, `w^3/24 * |f''|`
-per segment) and records it into the context-scoped accumulator.
-The top-level API (`get_particle_production_dxs_dmu` in
-`endf_userpy.quantities`) opens the context around its dispatch
-and emits one summary `UserWarning` at the end of the call. On
-INT=1/2 sections (100 % of the corpus surveyed to date) the code
-path is inactive and no extra evaluations happen.
 """
-import contextlib
-import contextvars
-import warnings
 import numpy as np
 
-from ..primitives.helpers import dict2array, find_interval
-from ..primitives.properties import get_QM, get_QI
-from . import mf6_interpretation_subsecs as _subsec
-
-
-# Per-query accumulator for LAW=7 INT>=3 integration errors. Set
-# by `collect_law7_log_errors()`; read by `integrate_law7_subsec_
-# over_eout` to decide whether to do the extra work of estimating
-# `f''` on each segment. Value is either None (no active context;
-# skip the estimate) or an `Law7LogErrorAccumulator` instance.
-_law7_log_error_accum = contextvars.ContextVar(
-    '_law7_log_error_accum', default=None,
+from ..primitives.helpers import (
+    convert_interp_repr, dict2array, find_interval,
 )
-
-
-class Law7LogErrorAccumulator:
-    """Per-query record of LAW=7 sections that hit log-based
-    `INT>=3` E' interpolation, together with the computed
-    integration-error estimate. Consumed by
-    `collect_law7_log_errors()` on exit to emit one summary
-    UserWarning for the query. Filled by
-    `integrate_law7_subsec_over_eout`.
-    """
-
-    __slots__ = ('records',)
-
-    def __init__(self):
-        # {(mt, subsec_num): (int_laws_seen_set, max_abs_err, peak_val)}
-        self.records = {}
-
-    def record(self, mt, subsec_num, int_laws, max_abs_err, peak_val):
-        key = (mt, subsec_num)
-        prev = self.records.get(key)
-        if prev is None:
-            self.records[key] = (set(int_laws), max_abs_err, peak_val)
-        else:
-            prev_laws, prev_err, prev_peak = prev
-            prev_laws.update(int_laws)
-            self.records[key] = (
-                prev_laws,
-                max(prev_err, max_abs_err),
-                max(prev_peak, peak_val),
-            )
-
-    def has_records(self):
-        return bool(self.records)
-
-    def format_summary(self):
-        parts = []
-        max_abs = 0.0
-        max_rel = 0.0
-        for (mt, subsec), (laws, err, peak) in sorted(self.records.items()):
-            laws_str = ','.join(str(x) for x in sorted(laws))
-            rel = err / peak if peak > 0 else 0.0
-            parts.append(
-                f'MT={mt} subsec={subsec} INT={{{laws_str}}} '
-                f'|err|<={err:.3e} ({rel*100:.3f}% of peak)'
-            )
-            max_abs = max(max_abs, err)
-            max_rel = max(max_rel, rel)
-        return (
-            f'MF6 LAW=7 knot-aware integrator saw log-based E\' '
-            f'interpolation on {len(self.records)} subsection(s). The '
-            f'midpoint rule is exact for INT=1/2 but has O(h^3) '
-            f'per-segment error on log-based interpolants. '
-            f'Estimated max absolute integration error this call: '
-            f'{max_abs:.3e} ({max_rel*100:.3f}% of peak). Details: '
-            + '; '.join(parts) + '. '
-            'For sub-permille accuracy, pass explicit E\' grids or '
-            'use scipy.integrate.quad(points=knots, ...) with the '
-            'section\'s tabulated E\' knots as breakpoints. See '
-            'issue #71.'
-        )
-
-
-@contextlib.contextmanager
-def collect_law7_log_errors():
-    """Context manager that turns on the per-segment error estimate
-    inside the knot-aware LAW=7 integrator for any `INT>=3` cell it
-    encounters, aggregates the estimates across every `(mt, subsec)`
-    hit during the block, and emits one summary `UserWarning` on
-    exit if anything was recorded.
-
-    Opened by the top-level `get_particle_production_dxs_dmu` in
-    `endf_userpy.quantities`. Also usable directly when calling the
-    knot-aware integrator outside the top-level API. On INT=1/2
-    sections (100 % of the corpus surveyed to date) the block is
-    entered and exited with zero records; no warning is emitted.
-    """
-    accum = Law7LogErrorAccumulator()
-    token = _law7_log_error_accum.set(accum)
-    try:
-        yield accum
-    finally:
-        _law7_log_error_accum.reset(token)
-        if accum.has_records():
-            warnings.warn(accum.format_summary(), UserWarning, stacklevel=2)
+from ..primitives.interpolation import integrate_tab1_panels
+from ..primitives.properties import get_QM, get_QI
+from . import mf6_interpretation_subsecs as _subsec  # noqa: F401
 
 
 def _project_ub_knots(y0, y1, y2, x1_knots, x2_knots):
@@ -212,16 +123,115 @@ def _project_ub_knots(y0, y1, y2, x1_knots, x2_knots):
     return np.unique(np.concatenate([eff_from_1, eff_from_2]))
 
 
+def _ub_slice_geometry(mu, mu1, mu2, ep1, ep2):
+    """Unit-base geometry for one Ein-slice's mu-bracket.
+
+    Given target mu and the mu-bracket (mu1, mu2), plus the two
+    tables' E' knot arrays (ep1, ep2), return
+    ``(yslope, xlow, xrange, x1low, x1range, x2low, x2range)`` for
+    the LAW=7 unit-base transform. All are per-cell scalars.
+    """
+    if mu2 == mu1:
+        yslope = 0.0
+    else:
+        yslope = (mu - mu1) / (mu2 - mu1)
+    x1low, x1high = float(ep1[0]), float(ep1[-1])
+    x2low, x2high = float(ep2[0]), float(ep2[-1])
+    x1range = x1high - x1low
+    x2range = x2high - x2low
+    xlow = x1low + yslope * (x2low - x1low)
+    xhigh = x1high + yslope * (x2high - x1high)
+    xrange = xhigh - xlow
+    return yslope, xlow, xrange, x1low, x1range, x2low, x2range
+
+
+def _tab_panel_int(int_arr, nbt_arr, n_pts):
+    """Per-panel INT code for a tab1 record. Length ``n_pts - 1``."""
+    int_per_point = convert_interp_repr(
+        np.asarray(int_arr, dtype=int),
+        np.asarray(nbt_arr, dtype=int),
+    )
+    if int_per_point.shape[0] <= 1:
+        return int_per_point
+    # Panel between point i and i+1 uses INT at breakpoint i+1.
+    return int_per_point[1:]
+
+
+def _table_segment_areas_vec(ep_arr, f_arr, int_per_panel, xi_a_arr, xi_b_arr):
+    """Vectorised panel-exact integrals of one table's tab1
+    interpolant from ``xi_a`` to ``xi_b`` for a batch of segments.
+
+    Each segment is assumed to lie inside a single panel of the
+    table (guaranteed by the effective-knot mesh construction).
+    Segments outside the table's domain or with non-positive
+    width contribute 0.
+
+    Panel indexing uses the segment midpoint - the segment
+    endpoints ``xi_a`` come from a linear projection that can
+    drift by a few ULP from an exact table knot, and would
+    otherwise land on the wrong panel under ``searchsorted``.
+    """
+    xi_a_arr = np.asarray(xi_a_arr, dtype=float)
+    xi_b_arr = np.asarray(xi_b_arr, dtype=float)
+    n = xi_a_arr.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    # Clip to the table's own domain.
+    lo, hi = float(ep_arr[0]), float(ep_arr[-1])
+    xa = np.clip(xi_a_arr, lo, hi)
+    xb = np.clip(xi_b_arr, lo, hi)
+    active = (xi_b_arr > xi_a_arr) & (xi_a_arr < hi) & (xi_b_arr > lo)
+    # Panel index by midpoint, clamped to a valid range.
+    mid = 0.5 * (xa + xb)
+    panels = np.clip(
+        np.searchsorted(ep_arr, mid, side='right') - 1,
+        0, ep_arr.shape[0] - 2,
+    )
+    x0 = ep_arr[panels]
+    x1 = ep_arr[panels + 1]
+    y0 = f_arr[panels]
+    y1 = f_arr[panels + 1]
+    codes = (
+        int_per_panel[panels]
+        if int_per_panel.shape[0]
+        else np.full(n, 2, dtype=int)
+    )
+    areas = integrate_tab1_panels(x0, x1, y0, y1, xa, xb, codes)
+    return np.where(active, areas, 0.0)
+
+
+def _check_supported_int(int_arr, nbt_arr, axis_name):
+    """Guard: this integrator supports only INT=1/2 on the outer
+    Ein and mu axes (they blend the four table amplitudes; higher
+    INT codes make the blend non-linear so the four-integral
+    decomposition doesn't apply). Raises with a clear message.
+    """
+    codes = set(int(v) for v in np.asarray(int_arr, dtype=int))
+    unsupported = codes - {1, 2}
+    if unsupported:
+        raise NotImplementedError(
+            f'MF6 LAW=7 panel-exact integration requires '
+            f'INT=1 or INT=2 on the {axis_name} axis; got '
+            f'INT codes {sorted(unsupported)}. Real corpus files '
+            f'use INT=2 exclusively on this axis; file this if a '
+            f'real file hits it.'
+        )
+    del nbt_arr
+
+
 def integrate_law7_subsec_over_eout(
     endf_dict, mt, subsec_num, energies_in, angle_cosines_out, to_lab=True,
 ):
-    """Angular distribution `da(E_in, mu)` from a single MF6
-    subsection with `LAW=7`, integrated over outgoing energy on
-    `[0, (E_in + q) * 1.1]`.
+    """Angular distribution ``da(E_in, mu)`` from a single MF6
+    subsection with ``LAW=7``, integrated over outgoing energy on
+    ``[0, (E_in + q) * 1.1]`` panel-exactly.
 
-    Uses knot-aware midpoint integration on the effective E' mesh
-    derived from the section's tabulated knots and the LAW=7
-    unit-base transform. See module docstring for the derivation.
+    Sums the analytic per-effective-segment integral of the
+    LAW=7 unit-base reconstruction using
+    :func:`~primitives.interpolation.integrate_tab1_panels` for
+    each of the four bracketing tables' contributions. Exact for
+    all five ENDF INT codes on the E' axis; requires INT=1/2 on
+    the outer Ein and mu axes (all corpus files satisfy this).
 
     Parameters
     ----------
@@ -233,7 +243,7 @@ def integrate_law7_subsec_over_eout(
 
     Returns
     -------
-    ndarray of shape `(len(energies_in), len(angle_cosines_out))`.
+    ndarray of shape ``(len(energies_in), len(angle_cosines_out))``.
     """
     sec = endf_dict[6][mt]
     sub = sec['subsection'][subsec_num]
@@ -247,17 +257,17 @@ def integrate_law7_subsec_over_eout(
     q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
     ei_mesh = dict2array(sub['E'], dtype=float)
 
-    out = np.zeros((len(einc), len(mus)), dtype=float)
+    # Guard on outer Ein-axis INT.
+    _check_supported_int(
+        sub['E_interpol']['INT'], sub['E_interpol']['NBT'],
+        axis_name='outer Ein',
+    )
+    e_int_per_point = convert_interp_repr(
+        np.asarray(sub['E_interpol']['INT'], dtype=int),
+        np.asarray(sub['E_interpol']['NBT'], dtype=int),
+    )
 
-    # Optional per-segment integration-error estimate for cells with
-    # log-based (INT>=3) E' interpolation on any bracketing table
-    # (issue #71). Only fires when a caller has opened
-    # `collect_law7_log_errors()`; on INT=1/2 sections the code path
-    # never triggers because `_check_log_int` returns False.
-    err_accum = _law7_log_error_accum.get()
-    total_max_abs_err = 0.0
-    total_peak_val = 0.0
-    log_int_laws_seen = set()
+    out = np.zeros((len(einc), len(mus)), dtype=float)
 
     for i, e in enumerate(einc):
         # Kinematic bounds: outside the section's E_in range -> zero.
@@ -267,13 +277,41 @@ def integrate_law7_subsec_over_eout(
         if eout_max <= 0.0:
             continue
         curidx = int(find_interval(ei_mesh, np.array([e]))[0])
+        e1 = float(ei_mesh[curidx])
+        e2 = float(ei_mesh[curidx + 1])
+        # Outer Ein-blend base law (mod 10; unit-base 20+k unused here).
+        lei_law = int(e_int_per_point[curidx + 1]) % 10
+        if lei_law == 1:
+            eslope_1 = 1.0
+            eslope_2 = 0.0
+        else:  # INT=2
+            eslope_2 = (e - e1) / (e2 - e1) if e2 != e1 else 0.0
+            eslope_1 = 1.0 - eslope_2
+
+        # Per-Ein-slice: mu meshes, tables, mu-axis INT.
         mu_mesh_e1 = dict2array(sub['mu'][curidx + 1], dtype=float)
         mu_mesh_e2 = dict2array(sub['mu'][curidx + 2], dtype=float)
         tables_e1 = sub['table'][curidx + 1]
         tables_e2 = sub['table'][curidx + 2]
+        _check_supported_int(
+            sub['mu_interpol'][curidx + 1]['INT'],
+            sub['mu_interpol'][curidx + 1]['NBT'],
+            axis_name='mu (Ein slice 1)',
+        )
+        _check_supported_int(
+            sub['mu_interpol'][curidx + 2]['INT'],
+            sub['mu_interpol'][curidx + 2]['NBT'],
+            axis_name='mu (Ein slice 2)',
+        )
+        mu_int_e1 = convert_interp_repr(
+            np.asarray(sub['mu_interpol'][curidx + 1]['INT'], dtype=int),
+            np.asarray(sub['mu_interpol'][curidx + 1]['NBT'], dtype=int),
+        )
+        mu_int_e2 = convert_interp_repr(
+            np.asarray(sub['mu_interpol'][curidx + 2]['INT'], dtype=int),
+            np.asarray(sub['mu_interpol'][curidx + 2]['NBT'], dtype=int),
+        )
 
-        # Precompute per-mu-slot knot arrays for the two bracketing
-        # E_in slices; per-cell projection then does one 1D union.
         for j, u in enumerate(mus):
             # Outside the section's mu range at either bracketing
             # E_in slice -> zero (matches `mf6_get_law7`).
@@ -284,11 +322,41 @@ def integrate_law7_subsec_over_eout(
             j1 = int(find_interval(mu_mesh_e1, np.array([u]))[0])
             j2 = int(find_interval(mu_mesh_e2, np.array([u]))[0])
 
-            ep11 = np.asarray(tables_e1[j1 + 1]['Ep'], dtype=float)
-            ep12 = np.asarray(tables_e1[j1 + 2]['Ep'], dtype=float)
-            ep21 = np.asarray(tables_e2[j2 + 1]['Ep'], dtype=float)
-            ep22 = np.asarray(tables_e2[j2 + 2]['Ep'], dtype=float)
+            # Four bracketing tables (E_in-slice x mu-slot).
+            t_e1_1 = tables_e1[j1 + 1]
+            t_e1_2 = tables_e1[j1 + 2]
+            t_e2_1 = tables_e2[j2 + 1]
+            t_e2_2 = tables_e2[j2 + 2]
 
+            ep11 = np.asarray(t_e1_1['Ep'], dtype=float)
+            ep12 = np.asarray(t_e1_2['Ep'], dtype=float)
+            ep21 = np.asarray(t_e2_1['Ep'], dtype=float)
+            ep22 = np.asarray(t_e2_2['Ep'], dtype=float)
+            f11 = np.asarray(t_e1_1['f'], dtype=float)
+            f12 = np.asarray(t_e1_2['f'], dtype=float)
+            f21 = np.asarray(t_e2_1['f'], dtype=float)
+            f22 = np.asarray(t_e2_2['f'], dtype=float)
+            int11 = _tab_panel_int(t_e1_1['INT'], t_e1_1['NBT'], ep11.shape[0])
+            int12 = _tab_panel_int(t_e1_2['INT'], t_e1_2['NBT'], ep12.shape[0])
+            int21 = _tab_panel_int(t_e2_1['INT'], t_e2_1['NBT'], ep21.shape[0])
+            int22 = _tab_panel_int(t_e2_2['INT'], t_e2_2['NBT'], ep22.shape[0])
+
+            # Per-slice unit-base geometry.
+            yslope_e1, xlow_e1, xrange_e1, x1low_e1, x1range_e1, x2low_e1, x2range_e1 = (
+                _ub_slice_geometry(u, mu_mesh_e1[j1], mu_mesh_e1[j1 + 1], ep11, ep12)
+            )
+            yslope_e2, xlow_e2, xrange_e2, x1low_e2, x1range_e2, x2low_e2, x2range_e2 = (
+                _ub_slice_geometry(u, mu_mesh_e2[j2], mu_mesh_e2[j2 + 1], ep21, ep22)
+            )
+            # Mu-blend base law (mod 10). INT=1 -> use left value only.
+            mu_int_e1_base = int(mu_int_e1[j1 + 1]) % 10
+            mu_int_e2_base = int(mu_int_e2[j2 + 1]) % 10
+            if mu_int_e1_base == 1:
+                yslope_e1 = 0.0
+            if mu_int_e2_base == 1:
+                yslope_e2 = 0.0
+
+            # Effective-knot mesh, clipped to physical support.
             knots_e1 = _project_ub_knots(
                 u, mu_mesh_e1[j1], mu_mesh_e1[j1 + 1], ep11, ep12,
             )
@@ -296,91 +364,56 @@ def integrate_law7_subsec_over_eout(
                 u, mu_mesh_e2[j2], mu_mesh_e2[j2 + 1], ep21, ep22,
             )
             knots = np.unique(np.concatenate([knots_e1, knots_e2]))
-
-            # Clip to the physical integration range and pad the
-            # endpoints. The reconstructed f is zero outside the
-            # effective [xlow, xhigh] envelopes, so the segments
-            # before the first knot and after the last knot
-            # naturally contribute zero (midpoint samples fall
-            # outside the tabulation and return 0).
             knots = knots[(knots > 0.0) & (knots < eout_max)]
             mesh = np.concatenate([[0.0], knots, [eout_max]])
 
-            # Midpoint rule per segment: exact for INT=1 and INT=2
-            # (piecewise-constant / piecewise-linear reconstructed
-            # f between effective knots), O(h^3 * f'') for INT>=3.
-            mids = 0.5 * (mesh[:-1] + mesh[1:])
-            widths = mesh[1:] - mesh[:-1]
+            # Vectorised per-segment integration: build one (n_seg,)
+            # array of clipped bounds per slice, project to each
+            # table's own xi axis, and call the panel-exact
+            # integrator once per table.
+            seg_a = mesh[:-1]
+            seg_b = mesh[1:]
 
-            # Cell-level INT>=3 detection: only kick in the error
-            # estimator when a table on this cell has a log-based
-            # E' interpolation AND the caller is inside
-            # `collect_law7_log_errors()`. Records the actual INT
-            # values seen so the summary warning can name them.
-            cell_log_laws = ()
-            if err_accum is not None:
-                cell_log_laws = tuple(sorted(
-                    int(v) for v in set().union(
-                        (int(x) for x in tables_e1[j1 + 1]['INT']),
-                        (int(x) for x in tables_e1[j1 + 2]['INT']),
-                        (int(x) for x in tables_e2[j2 + 1]['INT']),
-                        (int(x) for x in tables_e2[j2 + 2]['INT']),
-                    ) if int(v) >= 3
-                ))
-
-            if cell_log_laws:
-                # Estimate per-segment error via second-difference of
-                # `f` at `mid`, `mid +- w/4`. Midpoint rule error on
-                # a smooth per-segment integrand is `(w^3/24)*f''(xi)`;
-                # substituting `f''(mid) ~ (f(mid - h) - 2 f(mid) +
-                # f(mid + h)) / h^2` with `h = w/4` gives per-segment
-                # bound `(2 w / 3) * |Delta^2 f|`. Skip zero-width
-                # segments defensively.
-                h = widths / 4.0
-                # Pack the three sample sets into one dist2d call to
-                # keep the dispatch cost proportional to (n_seg * 3)
-                # rather than three separate section walks.
-                lo_pts = mids - h
-                hi_pts = mids + h
-                all_pts = np.concatenate([mids, lo_pts, hi_pts])
-                dist = _subsec.get_dist2d_from_subsec_law7(
-                    endf_dict, mt, subsec_num,
-                    np.array([e], dtype=float),
-                    all_pts,
-                    np.array([u], dtype=float),
-                    True,
+            def _slice_areas(
+                a_bnd, b_bnd, xlow, xrange_, x1low, x1range,
+                x2low, x2range, ep_a, f_a, int_a, ep_b_, f_b_, int_b_,
+                yslope,
+            ):
+                if xrange_ <= 0.0:
+                    return np.zeros(seg_a.shape[0], dtype=float)
+                # Clip each segment to the slice's effective E' range.
+                a_c = np.maximum(a_bnd, xlow)
+                b_c = np.minimum(b_bnd, xlow + xrange_)
+                active = b_c > a_c
+                # Wherever inactive, set widths to 0 so integrate_tab1_
+                # panels returns 0 anyway; keep the array shape stable.
+                a_c = np.where(active, a_c, xlow)
+                b_c = np.where(active, b_c, xlow)
+                # Shifted x for table_a.
+                xi_a_a = x1low + (a_c - xlow) / xrange_ * x1range
+                xi_a_b = x1low + (b_c - xlow) / xrange_ * x1range
+                # Shifted x for table_b.
+                xi_b_a = x2low + (a_c - xlow) / xrange_ * x2range
+                xi_b_b = x2low + (b_c - xlow) / xrange_ * x2range
+                area_a = _table_segment_areas_vec(
+                    ep_a, f_a, int_a, xi_a_a, xi_a_b,
                 )
-                fv = dist[0, :, 0]
-                n = len(mids)
-                f_mid = fv[:n]
-                f_lo = fv[n:2 * n]
-                f_hi = fv[2 * n:]
-                out[i, j] = float(np.sum(widths * f_mid))
-                d2 = np.abs(f_lo - 2.0 * f_mid + f_hi)
-                seg_err = (2.0 * widths / 3.0) * d2
-                cell_err = float(np.sum(seg_err))
-                if cell_err > total_max_abs_err:
-                    total_max_abs_err = cell_err
-                log_int_laws_seen.update(cell_log_laws)
-            else:
-                dist = _subsec.get_dist2d_from_subsec_law7(
-                    endf_dict, mt, subsec_num,
-                    np.array([e], dtype=float),
-                    mids,
-                    np.array([u], dtype=float),
-                    True,
+                area_b = _table_segment_areas_vec(
+                    ep_b_, f_b_, int_b_, xi_b_a, xi_b_b,
                 )
-                # dist shape: (1, len(mids), 1)
-                fvals = dist[0, :, 0]
-                out[i, j] = float(np.sum(widths * fvals))
-            if abs(out[i, j]) > total_peak_val:
-                total_peak_val = abs(out[i, j])
+                return (1.0 - yslope) * area_a + yslope * area_b
 
-    if err_accum is not None and log_int_laws_seen:
-        err_accum.record(
-            mt, subsec_num, log_int_laws_seen,
-            total_max_abs_err, total_peak_val,
-        )
+            s1 = _slice_areas(
+                seg_a, seg_b, xlow_e1, xrange_e1,
+                x1low_e1, x1range_e1, x2low_e1, x2range_e1,
+                ep11, f11, int11, ep12, f12, int12, yslope_e1,
+            )
+            s2 = _slice_areas(
+                seg_a, seg_b, xlow_e2, xrange_e2,
+                x1low_e2, x1range_e2, x2low_e2, x2range_e2,
+                ep21, f21, int21, ep22, f22, int22, yslope_e2,
+            )
+            out[i, j] = float(np.sum(eslope_1 * s1 + eslope_2 * s2))
 
     return out
 
