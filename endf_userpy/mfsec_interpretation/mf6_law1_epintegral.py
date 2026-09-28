@@ -150,16 +150,41 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
     idcs = find_interval(ei_mesh_np, e_inside_np)
     inside_positions = np.where(inside_mask_np)[0]
 
+    # Chunk the E' query axis to keep intermediates bounded (issue
+    # #275). The per-panel-pair kernel builds several (nE, nEp,
+    # n_sub, n_gl) and (nE, nEp, n_sub, n_gl, nt) tensors; on a
+    # broadened-convolution internal mesh with ~10^5 Ep points that
+    # inflates to tens of GB per MT without chunking. Peak RSS
+    # scales linearly with the chunk size on the widest corpus
+    # file (U-233 (n,g), ~86 continuum knots per panel after the
+    # discrete-line exclusion above): 800 MB per 1024 Ep points
+    # measured. 1024 gives ~1 GB per-MT peak, ~27x below the
+    # unchunked 27 GB baseline, with no measurable runtime cost
+    # (load noise dominates the 5-7 min band across chunk sizes
+    # 512..8192; issue #275).
+    ep_chunk_size = 1024
     for panel_idx_iter in np.unique(idcs):
         row_mask = (idcs == panel_idx_iter)
         rows_np = inside_positions[row_mask]
         e_sub_np = e_inside_np[row_mask]
         e_sub = xp.asarray(e_sub_np)
         lei = int(ei_interp_full[panel_idx_iter])
-        f_sub = _law1_spectrum_panel_pair(
-            data, int(panel_idx_iter), lei, e_sub, ep_out_xp, eff_lct,
-            gl_x, gl_w, xp,
-        )
+        if n_ep <= ep_chunk_size:
+            f_sub = _law1_spectrum_panel_pair(
+                data, int(panel_idx_iter), lei, e_sub, ep_out_xp,
+                eff_lct, gl_x, gl_w, xp,
+            )
+        else:
+            chunks = []
+            for start in range(0, n_ep, ep_chunk_size):
+                stop = min(start + ep_chunk_size, n_ep)
+                chunk = _law1_spectrum_panel_pair(
+                    data, int(panel_idx_iter), lei, e_sub,
+                    ep_out_xp[start:stop],
+                    eff_lct, gl_x, gl_w, xp,
+                )
+                chunks.append(chunk)
+            f_sub = xp.concatenate(chunks, axis=-1)
         result = _kernel._scatter_rows(result, rows_np, f_sub, xp)
 
     return result
@@ -224,15 +249,28 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
     # the smooth (Legendre / Kalbach) amplitude covers it.
     is_cm = (eff_lct == 2) or (eff_lct == 3 and data.awp < 4.0)
     c0 = float(np.sqrt(data.awi * data.awp) / (data.awi + data.awr))
+    # Kink count uses only the CONTINUUM Ep' knots from each panel;
+    # the first ``nd`` entries in each panel's ``ep_panels`` row are
+    # discrete-line positions whose delta contributions are handled
+    # by the sibling ``compute_dxs_dE_law1_discrete_broadened``
+    # folder, not by this continuous integrator. Including them here
+    # is a no-op numerically (their CM<->LAB-map images typically
+    # clamp to umin -> zero-width subpanels) but blows the
+    # (nE, nEp, K) intermediate up to O(nd) per query on files with
+    # dense discrete-line cascades (U-233 (n,g) has ~86 lines per
+    # panel; issue #275).
+    n_kink1 = nep1 - nd1
+    n_kink2 = nep2 - nd2
+    n_kinks = n_kink1 + n_kink2
     if is_cm and c0 > 0.0:
-        ep1_arr = xp.asarray(data.ep_panels[p1, :nep1])
-        ep2_arr = xp.asarray(data.ep_panels[p2, :nep2])
+        ep1_arr = xp.asarray(data.ep_panels[p1, nd1:nep1])
+        ep2_arr = xp.asarray(data.ep_panels[p2, nd2:nep2])
         knots1_img = ep1_arr[None, None, :] * (epmax_eff[..., None] / ep1max)
         knots2_img = ep2_arr[None, None, :] * (epmax_eff[..., None] / ep2max)
         # (nE, 1, K) then broadcast to (nE, nEp, K).
         all_knots = xp.concatenate([knots1_img, knots2_img], axis=-1)
         all_knots = xp.broadcast_to(
-            all_knots, (n_e_sub, n_ep, nep1 + nep2),
+            all_knots, (n_e_sub, n_ep, n_kinks),
         )
         ep_safe = xp.where(ep_bc > 0.0, ep_bc, 1.0)
         denom = 2.0 * c0 * xp.sqrt(ep_safe * e_bc)                # (nE, nEp)
@@ -242,7 +280,7 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
     else:
         # LAB frame or massless ejectile: no CM<->LAB-map kinks.
         mu_kinks = xp.broadcast_to(
-            umin[..., None], (n_e_sub, n_ep, nep1 + nep2),
+            umin[..., None], (n_e_sub, n_ep, n_kinks),
         )
 
     # Clamp to [umin, +1] so out-of-range kinks land at endpoints
