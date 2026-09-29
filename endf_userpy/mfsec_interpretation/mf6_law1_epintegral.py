@@ -105,10 +105,25 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
     # across panels without the caller having to compute the panel
     # index themselves.
     if panel_idx is None and xp.name == 'jax':
-        from . import mf6_law1_multipanel_traced as _mp
-        return _mp.integrate_law1_spectrum_multipanel_traced(
-            data, energies_in, energies_out, eff_lct, gl_x, gl_w, xp,
-        )
+        # The multipanel-traced kernel evaluates every one of the
+        # n_pairs Ein panels and gathers the answer via searchsorted;
+        # that is necessary for grad-through-Ein autodiff but on a
+        # file with ~118 Ein panels (U-233 (n,g)) it builds ~118x
+        # more work and memory than the numpy-loop path per Ein
+        # query. When the caller's ``energies_in`` is CONCRETE (not
+        # a jax tracer) autodiff through Ein is not being taken, so
+        # we can safely route through the numpy-loop path below --
+        # which chunks the Ep query axis and only visits the panel
+        # that actually brackets each Ein (issue #278). The
+        # multipanel-traced dispatch stays reachable when Ein
+        # carries a tracer.
+        _tracer_ein = _kernel._is_jax_tracer(energies_in)
+        _tracer_mesh = _kernel._is_jax_tracer(data.ei_mesh)
+        if _tracer_ein or _tracer_mesh:
+            from . import mf6_law1_multipanel_traced as _mp
+            return _mp.integrate_law1_spectrum_multipanel_traced(
+                data, energies_in, energies_out, eff_lct, gl_x, gl_w, xp,
+            )
 
     if panel_idx is not None:
         # Single-panel autodiff path: no numpy conversion, no
