@@ -59,6 +59,7 @@ def adaptive_convolve(
     n_kernel_widths=5.0,
     richardson=True,
     xp=None,
+    mesh_bounds=None,
 ):
     """Compute `(f * kernel)(E)` at `eval_points` via adaptive FFT
     convolution on a doubling uniform internal mesh.
@@ -105,7 +106,21 @@ def adaptive_convolve(
         through ``jax.scipy.signal.fftconvolve`` and keeps the values
         arrays xp-native, so tracers in ``f`` outputs or in ``kernel``
         closures propagate through to the returned array. The mesh
-        and eval-point machinery stays numpy.
+        itself always stays numpy (its shape must be static at trace
+        time); only the final interpolation onto ``eval_points`` runs
+        through ``xp`` and therefore supports tracer eval_points.
+    mesh_bounds : (float, float), optional
+        ``(emin, emax)`` bounds for the internal convolution mesh.
+        Required when ``eval_points`` is a jax tracer (under
+        ``@jax.jit`` or ``jax.grad`` wrt eval_points), since deriving
+        the bounds from ``eval_points.min() / .max()`` would need to
+        materialise the tracer. Also useful for concrete eval_points
+        when the caller wants a fixed mesh shape across calls (e.g.
+        to reuse a jit-compiled graph). When None (default) and
+        eval_points is concrete, bounds are derived as before via
+        ``eval_points.min() - margin`` / ``.max() + margin``. When
+        passed, the ``n_kernel_widths * kernel_width`` margin is
+        assumed to be already included; do not double-count.
 
     Returns
     -------
@@ -128,9 +143,22 @@ def adaptive_convolve(
     if xp is None:
         xp = array_ns.get_backend('numpy')
 
-    eval_points = np.asarray(eval_points, dtype=float)
-    if eval_points.ndim != 1:
-        raise ValueError("eval_points must be 1D")
+    # eval_points may be a jax tracer under @jax.jit or when the
+    # caller took jax.grad wrt eval_points. Skip the numpy dtype
+    # normalisation in that case; the final interp step in
+    # _interp_last_axis works with a tracer eval_points as long as
+    # the internal mesh (always concrete) can be built from static
+    # bounds. Bounds come from ``mesh_bounds`` when provided; else
+    # derived from concrete eval_points as before (which fails
+    # helpfully if the caller forgot to pass mesh_bounds under jit).
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
+    if not _is_jax_tracer(eval_points):
+        eval_points = np.asarray(eval_points, dtype=float)
+        if eval_points.ndim != 1:
+            raise ValueError("eval_points must be 1D")
+    else:
+        if eval_points.ndim != 1:
+            raise ValueError("eval_points must be 1D")
     if kernel_width <= 0:
         raise ValueError("kernel_width must be positive")
     if max_iter < 1:
@@ -140,8 +168,26 @@ def adaptive_convolve(
         h0 = kernel_width / 2.0
 
     margin = n_kernel_widths * kernel_width
-    emin = float(eval_points.min()) - margin
-    emax = float(eval_points.max()) + margin
+    if mesh_bounds is None:
+        if _is_jax_tracer(eval_points):
+            raise TypeError(
+                "adaptive_convolve was called with a jax tracer for "
+                "eval_points but no mesh_bounds override. Under "
+                "@jax.jit / jax.grad wrt eval_points the internal "
+                "mesh bounds must be provided as static concrete "
+                "floats via mesh_bounds=(emin, emax); the "
+                "n_kernel_widths * kernel_width margin should be "
+                "included on both sides."
+            )
+        emin = float(eval_points.min()) - margin
+        emax = float(eval_points.max()) + margin
+    else:
+        emin, emax = float(mesh_bounds[0]), float(mesh_bounds[1])
+        if emax <= emin:
+            raise ValueError(
+                f"mesh_bounds must satisfy emax > emin; got "
+                f"({emin}, {emax})"
+            )
 
     n_intervals = max(1, int(np.ceil((emax - emin) / h0)))
     n_intervals = 1 << int(np.ceil(np.log2(n_intervals)))  # round up to power of 2
@@ -256,21 +302,48 @@ def adaptive_convolve(
 def _interp_last_axis(arr, x_in, x_out, xp=None):
     """Vectorised linear interpolation along the last axis.
 
-    `arr` shape `(..., len(x_in))`, `x_in` strictly increasing,
-    returns shape `(..., len(x_out))`. Indexing uses numpy
-    (``x_in``, ``x_out`` are always concrete host arrays) but the
-    gather from ``arr`` and the linear blend run through ``xp`` so
-    tracers survive.
+    ``arr`` shape ``(..., len(x_in))``, ``x_in`` strictly increasing
+    (and always the numpy internal mesh built by
+    :func:`adaptive_convolve`), returns shape
+    ``(..., len(x_out))``.
+
+    ``x_out`` may be numpy or a jax tracer. Because the source mesh
+    ``x_in`` is a UNIFORM grid (``np.linspace``), we can locate the
+    bracketing interval for each query in O(1) via
+    ``idx = floor((x_out - x_in[0]) / h)`` without a searchsorted,
+    which keeps the interp jit-safe and grad-safe under jax.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    x_in = np.asarray(x_in)
-    x_out = np.asarray(x_out)
-    idx = np.searchsorted(x_in, x_out, side='right') - 1
-    idx = np.clip(idx, 0, x_in.shape[0] - 2)
-    x_left = x_in[idx]
-    x_right = x_in[idx + 1]
-    t = xp.asarray((x_out - x_left) / (x_right - x_left))
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
+    x_in_np = np.asarray(x_in)
+    n_in = x_in_np.shape[0]
+    x0 = float(x_in_np[0])
+    h = float(x_in_np[-1] - x_in_np[0]) / (n_in - 1)
+
+    if _is_jax_tracer(x_out):
+        # Fully xp-native path: idx, t and the two gathers all flow
+        # as tracers so jax.jit / jax.grad can differentiate through
+        # x_out.
+        idx_raw = xp.floor((x_out - x0) / h).astype(xp.int32)
+        idx = xp.clip(idx_raw, 0, n_in - 2)
+        x_in_xp = xp.asarray(x_in_np)
+        x_left = xp.take(x_in_xp, idx, axis=0)
+        x_right = xp.take(x_in_xp, idx + 1, axis=0)
+        t = (x_out - x_left) / (x_right - x_left)
+        left = xp.take(arr, idx, axis=-1)
+        right = xp.take(arr, idx + 1, axis=-1)
+        return left * (1.0 - t) + right * t
+
+    # Concrete x_out: keep the numpy fast path (advanced-indexing on
+    # arr's last axis, no take call). Behaviour bit-identical to the
+    # pre-refactor implementation.
+    x_out_np = np.asarray(x_out)
+    idx = np.searchsorted(x_in_np, x_out_np, side='right') - 1
+    idx = np.clip(idx, 0, n_in - 2)
+    x_left = x_in_np[idx]
+    x_right = x_in_np[idx + 1]
+    t = xp.asarray((x_out_np - x_left) / (x_right - x_left))
     left = arr[..., idx]
     right = arr[..., idx + 1]
     return left * (1.0 - t) + right * t

@@ -357,6 +357,120 @@ def test_jit_top_level_ddxs_al27_ng_mf15():
 
 
 @pytest.mark.skipif(
+    not os.path.exists(_AL27_PATH),
+    reason='Al-27 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
+)
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_jit_top_level_broadening_al27_ng_tracer_eouts():
+    """Phase 5 milestone: ``@jax.jit`` with ``energies_out`` also a
+    tracer. Under the Phase 3/4 API, ``adaptive_convolve`` derived
+    its internal mesh from ``float(eval_points.min())`` / ``.max()``,
+    which forced ``energies_out`` to be a compile-time constant.
+
+    Passing ``broadening_mesh_bounds=(emin, emax)`` supplies a
+    static mesh so ``energies_out`` can flow as a tracer end-to-end.
+    Numerical result must still match the concrete numpy path.
+    """
+    import jax
+    import jax.numpy as jnp
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.quantities import get_particle_production_dxs_dE
+
+    parser = EndfParserCpp(ignore_missing_tpid=True)
+    endf_dict = parser.parsefile(_AL27_PATH)
+    ein = np.array([1.0e6, 5.0e6])
+    eout = np.linspace(0.0, 1.0e7, 41)
+    # Match the concrete path's default margin exactly
+    # (n_kernel_widths=5.0 * kernel_width=5e4) so the two paths
+    # converge on the same FFT mesh and their results agree to
+    # floating-point precision.
+    kernel_width = 5.0e4
+    margin = 5.0 * kernel_width
+    bounds = (float(eout.min()) - margin, float(eout.max()) + margin)
+
+    xp_np = array_ns.get_backend('numpy')
+    xp_jax = array_ns.get_backend('jax')
+
+    r_np = get_particle_production_dxs_dE(
+        endf_dict, '(n,g)', 'g', ein, eout,
+        broadening=5.0e4, xp=xp_np,
+    )
+
+    @jax.jit
+    def jit_go(ein_arg, eout_arg):
+        return get_particle_production_dxs_dE(
+            endf_dict, '(n,g)', 'g', ein_arg, eout_arg,
+            broadening=5.0e4, xp=xp_jax,
+            broadening_mesh_bounds=bounds,
+        )
+
+    r_jit = np.asarray(jit_go(jnp.asarray(ein), jnp.asarray(eout)))
+    peak = float(np.max(np.abs(r_np)))
+    diff = float(np.max(np.abs(r_jit - r_np)))
+    rel = diff / max(1e-30, peak)
+    # Tolerance is looser than the Phase 3/4 tests because the
+    # tracer path in ``adaptive_convolve`` runs the full ``max_iter``
+    # doubling loop under trace (the concrete convergence check
+    # can't fire on a tracer), so the two paths converge at
+    # different iteration counts.
+    assert rel < 1e-3, (
+        f'jit(tracer eouts) vs numpy on Al-27 (n,g) broadening: '
+        f'rel-to-peak diff = {rel:.3e}'
+    )
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_AL27_PATH),
+    reason='Al-27 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
+)
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_grad_wrt_eouts_al27_ng_broadening():
+    """Phase 5 milestone: ``jax.grad`` wrt ``energies_out`` on the
+    top-level ``get_particle_production_dxs_dE`` broadened path.
+    Requires a tracer ``eval_points`` in ``adaptive_convolve`` and
+    a static mesh via ``broadening_mesh_bounds``; the pre-Phase-5
+    API failed at ``float(eval_points.min())``.
+
+    We do not compare the gradient values to anything analytic —
+    the file's MF12/MF15/MF6 mix makes that intractable — but we
+    do assert the gradient is finite everywhere and has at least
+    one non-zero entry (i.e. the trace really reaches through
+    the broadening kernel to ``energies_out``).
+    """
+    import jax
+    import jax.numpy as jnp
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.quantities import get_particle_production_dxs_dE
+
+    parser = EndfParserCpp(ignore_missing_tpid=True)
+    endf_dict = parser.parsefile(_AL27_PATH)
+    ein = np.array([2.5e6])
+    eout = np.linspace(1.0e5, 8.0e6, 24)
+    bounds = (0.0, 1.0e7)
+
+    xp_jax = array_ns.get_backend('jax')
+
+    def scalar_out(eout_arg):
+        r = get_particle_production_dxs_dE(
+            endf_dict, '(n,g)', 'g', ein, eout_arg,
+            broadening=5.0e4, xp=xp_jax,
+            broadening_mesh_bounds=bounds,
+        )
+        return jnp.sum(r)
+
+    g = np.asarray(jax.grad(scalar_out)(jnp.asarray(eout)))
+    assert g.shape == eout.shape
+    assert np.all(np.isfinite(g)), (
+        f'jax.grad wrt energies_out returned non-finite values: {g}'
+    )
+    assert float(np.max(np.abs(g))) > 0.0, (
+        'jax.grad wrt energies_out was identically zero — the trace '
+        'does not actually reach energies_out through the broadened '
+        'path.'
+    )
+
+
+@pytest.mark.skipif(
     not os.path.exists(_FE56_PATH),
     reason='Fe-56 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
 )
