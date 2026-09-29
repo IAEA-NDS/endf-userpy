@@ -276,12 +276,14 @@ def compute_dxs_dE_broadened(
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    # Skip the numpy conversion for jax tracers so ``@jax.jit`` /
+    # Preserve the historical ``np.asarray(..., dtype=float)`` normalisation
+    # for concrete inputs, but skip it for jax tracers so ``@jax.jit`` /
     # ``jax.grad`` can flow ``energies_in`` / ``energies_out`` through
-    # this call as symbolic axes. The downstream integrator and
-    # ``adaptive_convolve`` treat both as xp-native arrays; the only
-    # historical reason for ``np.asarray`` here was to ensure float
-    # dtype on caller-supplied Python lists.
+    # this call. Cannot use ``xp.asarray`` here: under a jit trace
+    # ``jnp.asarray(numpy_const)`` returns a ``DynamicJaxprTracer``
+    # rather than a compile-time-constant array, which then breaks
+    # downstream numpy-materialisation in ``adaptive_convolve``'s
+    # mesh-bound extraction.
     if not _is_jax_tracer(energies_in):
         energies_in = np.asarray(energies_in, dtype=float)
     if not _is_jax_tracer(energies_out):
@@ -374,8 +376,9 @@ def compute_dxs_dE_broadened_summed(
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    # Skip the numpy conversion for jax tracers -- see the sibling
-    # comment in ``compute_dxs_dE_broadened``.
+    # Skip numpy normalisation for tracers -- see the sibling comment
+    # in ``compute_dxs_dE_broadened`` for why ``xp.asarray`` is not
+    # a drop-in replacement.
     einc = energies_in if _is_jax_tracer(energies_in) \
         else np.asarray(energies_in, dtype=float)
     eouts = energies_out if _is_jax_tracer(energies_out) \
@@ -558,8 +561,8 @@ def compute_ddx_law1_discrete_broadened(
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    # Skip numpy conversion for jax tracers (see the sibling comment
-    # in ``compute_dxs_dE_broadened``).
+    # Skip numpy normalisation for tracers -- see the sibling comment
+    # in ``compute_dxs_dE_broadened``.
     if not _is_jax_tracer(energies_in):
         energies_in = np.asarray(energies_in, dtype=float)
     if not _is_jax_tracer(energies_out):
