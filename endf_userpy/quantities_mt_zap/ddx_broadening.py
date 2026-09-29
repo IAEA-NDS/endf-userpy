@@ -284,6 +284,10 @@ def compute_dxs_dE_broadened(
             xp=xp,
         )
 
+    # Same Nyquist mesh cap as the summed sibling; keeps the two
+    # 1D-broadened entry points consistent for single-MT callers.
+    convolve_kwargs.setdefault('h0', kernel_width / 8.0)
+    convolve_kwargs.setdefault('max_iter', 3)
     try:
         # dxs/dE of a physical spectrum is non-negative; clip sub-eps
         # FFT-noise negatives from adaptive_convolve for the same
@@ -312,6 +316,102 @@ def compute_dxs_dE_broadened(
         return xp.zeros(
             (len(energies_in), len(energies_out)), dtype=xp.float64,
         )
+
+
+def compute_dxs_dE_broadened_summed(
+    endf_dict, mts, zap,
+    energies_in, energies_out,
+    kernel, kernel_width,
+    to_lab=True, xp=None,
+    **convolve_kwargs,
+):
+    """1D dxs/dE of ``sum_{MT in mts}`` convolved with ``kernel``
+    along E_out in a single ``adaptive_convolve`` call (issue #277).
+
+    Sibling of :func:`compute_ddx_continuous_broadened_summed` for
+    the 1D dxs/dE case. Uses linearity of convolution: instead of
+    one FFT per MT (each with its own Richardson-refined internal
+    mesh), one FFT covers the sum. The per-MT continuum
+    reconstruction cost stays roughly the same because
+    ``compute_dexs`` still gets called per MT inside ``f_summed``;
+    the savings come from the FFT / Richardson loop running once
+    across the whole sum.
+
+    On U-233 (n,g) (~100 admitted MTs after widening) the
+    per-MT dispatcher runs ~100 independent ``adaptive_convolve``
+    passes each with ~6 Richardson doublings; this coalesced path
+    runs one. The per-MT ``compute_dexs`` calls that used to be
+    inside each convolution now happen inside a single ``f_summed``
+    call per Richardson-mesh evaluation.
+
+    Callers pass any ``mts`` that pass the caller-side admission
+    filter (``contains_zap`` / ``satisfies_particle_production_select``);
+    MTs whose ``compute_dexs`` raises IndexError/AssertionError
+    (mostly the same defensive cases the per-MT
+    :func:`compute_dxs_dE_broadened` guards against) contribute
+    zero. A one-MT list is accepted but the top-level dispatcher
+    should only route here when ``len(mts) >= 2``.
+
+    ``xp=None`` (default) is numpy. Passing an xp adapter
+    dispatches the FFT and per-mesh reconstruction through it, so
+    ``jax.grad`` still reaches file-side leaves through the
+    coalesced ``f_summed`` closure.
+
+    Returns
+    -------
+    dxs_dE : ndarray of shape ``(n_einc, n_eouts)`` in barn/eV.
+    """
+    from ..primitives import array_ns
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    einc = np.asarray(energies_in, dtype=float)
+    eouts = np.asarray(energies_out, dtype=float)
+
+    if len(mts) == 0:
+        return xp.zeros((len(einc), len(eouts)), dtype=xp.float64)
+
+    def f_summed(eout_internal):
+        total = None
+        for mt in mts:
+            try:
+                contrib = compute_dexs(
+                    endf_dict, mt, zap, einc, eout_internal, to_lab,
+                    xp=xp,
+                )
+            except (IndexError, AssertionError):
+                # Same defensive cases the per-MT
+                # compute_dxs_dE_broadened guards against
+                # (compute_yields IndexError, get_ejectile assert
+                # on multi-ejectile MTs). Contribute zero.
+                continue
+            total = contrib if total is None else total + contrib
+        if total is None:
+            return xp.zeros(
+                (len(einc), eout_internal.shape[0]), dtype=xp.float64,
+            )
+        return total
+
+    # Nyquist mesh cap (issue #277): a smooth kernel whose Fourier
+    # transform decays at least exponentially (Gaussian, Lorentzian,
+    # sech^2, ...) has essentially no energy at |k| > few/kernel_width,
+    # so features finer than ~kernel_width/8 in the underlying
+    # integrand are annihilated (< 1e-4 for Gaussian, < 1e-11 for
+    # Lorentzian) by the kernel regardless of how well the FFT mesh
+    # resolves them. Setting h0 = kernel_width/8 sizes the initial
+    # mesh to Nyquist, and max_iter=3 gives up to three safety
+    # refinements. This avoids the pathological case where a file
+    # has Ep' knots spaced kernel_width / 500 apart (U-233 (n,g)'s
+    # ~20 eV sub-bin structure vs 10 keV kernel) and Richardson
+    # would otherwise burn 6+ doublings chasing features the kernel
+    # already killed. Callers can still override via ``h0=`` /
+    # ``max_iter=`` in ``convolve_kwargs`` for hard-edged kernels
+    # (boxcar, triangle) whose Fourier support does not decay.
+    convolve_kwargs.setdefault('h0', kernel_width / 8.0)
+    convolve_kwargs.setdefault('max_iter', 3)
+    return xp.clip(adaptive_convolve(
+        f_summed, kernel, eouts,
+        kernel_width=kernel_width, xp=xp, **convolve_kwargs,
+    ), 0.0, None)
 
 
 def compute_ddx_discrete_broadened(
