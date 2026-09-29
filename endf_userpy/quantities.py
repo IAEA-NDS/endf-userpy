@@ -555,7 +555,7 @@ def _get_particle_production_xs_impl(
 def get_particle_production_dxs_dE(
     endf_dict, reaction, particle, energies_in, energies_out,
     broadening=None, above_range='warn_nan', resonance_range='warn',
-    xp=None,
+    xp=None, broadening_mesh_bounds=None,
 ):
     """Energy-differential cross section for particle production.
 
@@ -593,17 +593,29 @@ def get_particle_production_dxs_dE(
         file-side leaves (e.g. MF6 LAW=1 ``b`` coefficients) end-
         to-end. Broadened paths are numpy-only in this PR and are
         materialised to xp-native at the return boundary.
+    broadening_mesh_bounds : (float, float), optional
+        Static ``(emin, emax)`` for the internal
+        :func:`~endf_userpy.primitives.convolution.adaptive_convolve`
+        mesh. Required when ``energies_out`` is a jax tracer (i.e.
+        the caller took ``jax.grad`` wrt ``energies_out``, or is
+        inside ``@jax.jit`` with a tracer ``energies_out``): the mesh
+        shape must be static at trace time and cannot be derived
+        from a tracer's ``.min()`` / ``.max()``. Include the
+        ``n_kernel_widths * kernel_width`` margin on both sides; see
+        ``adaptive_convolve`` docstring for details. Ignored when
+        no broadening is applied.
     """
     with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_particle_production_dxs_dE_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             broadening, xp=xp,
+            broadening_mesh_bounds=broadening_mesh_bounds,
         )
 
 
 def _get_particle_production_dxs_dE_impl(
     endf_dict, reaction, particle, energies_in, energies_out, broadening,
-    xp=None,
+    xp=None, broadening_mesh_bounds=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
@@ -647,6 +659,7 @@ def _get_particle_production_dxs_dE_impl(
         return ddxb.compute_dxs_dE_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            mesh_bounds=broadening_mesh_bounds,
         )
 
     def _admitted_cont_mts():
@@ -708,6 +721,7 @@ def _get_particle_production_dxs_dE_impl(
             endf_dict, admitted_cont_mts, zap,
             energies_in, energies_out,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            mesh_bounds=broadening_mesh_bounds,
         )
     else:
         cont = quant_mt_zap.compute_cumulative_quantity(
@@ -786,6 +800,7 @@ def _get_particle_production_dxs_dmu_impl(
 def get_particle_production_ddxs(
     endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out,
     broadening=None, above_range='warn_nan', resonance_range='warn', xp=None,
+    broadening_mesh_bounds=None,
 ):
     """Double-differential cross section for particle production.
 
@@ -835,11 +850,21 @@ def get_particle_production_ddxs(
         ``jax.grad`` reaches file-side leaves. Broadened kernels are
         FFT-based numpy-only in this PR and are materialised to
         xp-native at the return boundary.
+    broadening_mesh_bounds : (float, float), optional
+        Static ``(emin, emax)`` for the internal
+        :func:`~endf_userpy.primitives.convolution.adaptive_convolve`
+        mesh. Required when ``energies_out`` is a jax tracer (i.e.
+        the caller took ``jax.grad`` wrt ``energies_out``, or is
+        inside ``@jax.jit`` with a tracer ``energies_out``). Include
+        the ``n_kernel_widths * kernel_width`` margin on both sides.
+        See :func:`get_particle_production_dxs_dE` for the same
+        parameter's semantics; ignored when no broadening is applied.
     """
     with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
         return _get_particle_production_ddxs_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             angle_cosines_out, broadening, xp=xp,
+            broadening_mesh_bounds=broadening_mesh_bounds,
         )
 
 
@@ -902,6 +927,7 @@ def get_particle_production_discrete_gamma_lines(
 def _get_particle_production_ddxs_impl(
     endf_dict, reaction, particle, energies_in, energies_out,
     angle_cosines_out, broadening, xp=None,
+    broadening_mesh_bounds=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
@@ -962,6 +988,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_continuous_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            mesh_bounds=broadening_mesh_bounds,
         )
 
     def cont_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -1027,6 +1054,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_mf15_continuum_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            mesh_bounds=broadening_mesh_bounds,
         )
 
     def mf15_cont_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -1052,6 +1080,7 @@ def _get_particle_production_ddxs_impl(
             endf_dict, cont_mts, zap,
             energies_in, energies_out, angle_cosines_out,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            mesh_bounds=broadening_mesh_bounds,
         )
     else:
         cont = quant_mt_zap.compute_cumulative_quantity(
