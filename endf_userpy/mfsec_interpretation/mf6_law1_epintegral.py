@@ -253,6 +253,42 @@ def _law1_spectrum_panel_pair(data, panel_idx, lei, e_sub, ep_out_xp,
         # No continuum data on at least one panel; spectrum is 0.
         return xp.zeros((n_e_sub, n_ep), dtype=data.b_panels.dtype)
 
+    # ---- Gamma-isotropic analytical collapse (fast path) -------------
+    # When ``c0 == 0`` (photon ejectile, i.e. ``awp == 0``) the LAB<->
+    # CM map is identity (``tp == ep``, ``dinv == 1``, ``w == mu``).
+    # For ``lang == 1`` with ``na == 0`` on both panels, the amplitude
+    # ``_f6law1con_panel_pair_bc`` does not depend on ``mu``. The full
+    # kink-aware polar-angle Gauss-Legendre integral then reduces to
+    #     spectrum(e, ep) = f_amp(e, ep) * int_0^pi sin(z) dz
+    # applied uniformly at both effective LAB and CM frames (the two
+    # coincide when the LAB<->CM map is identity). The GL-approx of
+    # ``int_0^pi sin(z) dz`` at the caller's ``n_gl`` nodes is used
+    # rather than the analytic ``2`` so the output is bit-comparable
+    # to the general kink-aware path at the same ``gl_x, gl_w``.
+    #
+    # This branch replaces an O(n_sub * n_gl) accumulation with a
+    # single ``(n_e, n_ep)`` amplitude call, cutting broadening
+    # runtime for every gamma-production channel by ~30x on real
+    # actinide files (U-233 (n,g) session measurement, PR #282
+    # follow-up).
+    _lang = int(data.lang)
+    _na_np = np.asarray(data.na_arr)
+    _na1 = int(_na_np[p1])
+    _na2 = int(_na_np[p2])
+    _c0 = float(np.sqrt(data.awi * data.awp) / (data.awi + data.awr))
+    if _c0 == 0.0 and _lang == 1 and _na1 == 0 and _na2 == 0:
+        e_bc_2d = e_sub[:, None]                                  # (nE, 1)
+        tp_bc_2d = ep_out_xp[None, :]                             # (1, nEp)
+        w_bc = xp.zeros_like(tp_bc_2d)                            # (1, nEp), unused for lang=1 na=0
+        f_amp = _kernel._f6law1con_panel_pair_bc(
+            data, panel_idx, lei, e_bc_2d, tp_bc_2d, w_bc, xp,
+        )
+        half_pi = np.pi / 2.0
+        gl_sin_integral = half_pi * xp.sum(
+            gl_w * xp.sin(half_pi * (1.0 + gl_x)),
+        )
+        return gl_sin_integral * f_amp
+
     # Panel-pair Ep upper bound at each incident e (unit-base
     # transformed from panel-1 and panel-2 continuum tail).
     ep_panels_np = np.asarray(data.ep_panels)
