@@ -16,10 +16,7 @@ the collapse output must match a completely independent reference
 NJOY) to float64 machine precision. That is exactly the check
 :func:`test_collapse_matches_fortran_u233_ng` runs.
 
-The collapse fires for numpy and JAX backends. It is bypassed when
-the numba fast path (:mod:`mf6_law1_epintegral_numba`) intercepts
-first with its own equivalent collapse; disabling the numba path in
-these tests exercises the numpy implementation directly.
+The collapse fires for both numpy and JAX backends transparently.
 """
 from __future__ import annotations
 
@@ -29,9 +26,6 @@ import numpy as np
 import pytest
 
 from endf_userpy.mfsec_interpretation import mf6_law1_epintegral as _epi
-from endf_userpy.mfsec_interpretation import (
-    mf6_law1_epintegral_numba as _numba_fastpath,
-)
 from endf_userpy.mfsec_interpretation import mf6_law1_preproc as pp
 from endf_userpy.primitives import array_ns
 
@@ -74,13 +68,11 @@ def _endf_dict(path):
 def test_collapse_matches_fortran_u233_ng():
     """The collapse output must equal the NJOY-derived Fortran
     reference to float64 machine precision on the U-233 (n,g)
-    MF6/LAW=1 subsection (c0=0 gamma, lang=1 na=0).
-
-    Disables the numba fast path so the numpy code with the new
-    collapse is what runs. Matching Fortran independently validates
-    the algebra: the two paths integrate the same physics using
-    completely different numerical strategies, so bit-comparable
-    agreement means the collapse is faithful.
+    MF6/LAW=1 subsection (c0=0 gamma, lang=1 na=0). Matching
+    Fortran independently validates the algebra: the two paths
+    integrate the same physics using completely different numerical
+    strategies, so bit-comparable agreement means the collapse is
+    faithful.
     """
     from endf_userpy.mfsec_interpretation import (
         mf6_interpretation_integrals_fort as fort,
@@ -95,15 +87,9 @@ def test_collapse_matches_fortran_u233_ng():
     r_fort = fort.get_energydist_from_subsec_law1_fort(
         endf_dict, 102, 1, e_in, e_out, to_lab=True,
     )
-
-    saved = _numba_fastpath.HAS_NUMBA
-    _numba_fastpath.HAS_NUMBA = False
-    try:
-        r_np = _epi.integrate_law1_spectrum(
-            data, e_in, e_out, to_lab=True, xp=xp,
-        )
-    finally:
-        _numba_fastpath.HAS_NUMBA = saved
+    r_np = _epi.integrate_law1_spectrum(
+        data, e_in, e_out, to_lab=True, xp=xp,
+    )
 
     peak = float(np.max(np.abs(r_fort)))
     diff = float(np.max(np.abs(r_np - r_fort)))
@@ -129,22 +115,17 @@ def test_collapse_matches_between_numpy_and_jax_u233_ng():
     e_in = np.array([2.0e6, 2.5e6, 3.0e6])
     e_out = np.linspace(1.0e4, 4.5e6, 41)
 
-    saved = _numba_fastpath.HAS_NUMBA
-    _numba_fastpath.HAS_NUMBA = False
-    try:
-        xp_np = array_ns.get_backend('numpy')
-        data_np = pp.mf6_law1_data_from_endf_dict(endf_dict, 102, 1, xp=xp_np)
-        r_np = _epi.integrate_law1_spectrum(
-            data_np, e_in, e_out, to_lab=True, xp=xp_np,
-        )
+    xp_np = array_ns.get_backend('numpy')
+    data_np = pp.mf6_law1_data_from_endf_dict(endf_dict, 102, 1, xp=xp_np)
+    r_np = _epi.integrate_law1_spectrum(
+        data_np, e_in, e_out, to_lab=True, xp=xp_np,
+    )
 
-        xp_jax = array_ns.get_backend('jax')
-        data_jax = pp.mf6_law1_data_from_endf_dict(endf_dict, 102, 1, xp=xp_jax)
-        r_jax = np.asarray(_epi.integrate_law1_spectrum(
-            data_jax, e_in, e_out, to_lab=True, xp=xp_jax,
-        ))
-    finally:
-        _numba_fastpath.HAS_NUMBA = saved
+    xp_jax = array_ns.get_backend('jax')
+    data_jax = pp.mf6_law1_data_from_endf_dict(endf_dict, 102, 1, xp=xp_jax)
+    r_jax = np.asarray(_epi.integrate_law1_spectrum(
+        data_jax, e_in, e_out, to_lab=True, xp=xp_jax,
+    ))
 
     peak = float(np.max(np.abs(r_np)))
     diff = float(np.max(np.abs(r_jax - r_np)))
@@ -171,17 +152,9 @@ def test_c0_positive_regression_fe56_ninl():
     e_in = np.array([ei[len(ei) // 2], ei[len(ei) // 2 + 3]])
     e_out = np.linspace(1.0e3, 1.5e7, 41)
 
-    # numba disabled so we exercise the numpy path (with the collapse
-    # gate). c0>0 means the collapse should not fire and the general
-    # kink-aware kernel runs.
-    saved = _numba_fastpath.HAS_NUMBA
-    _numba_fastpath.HAS_NUMBA = False
-    try:
-        r = _epi.integrate_law1_spectrum(
-            data, e_in, e_out, to_lab=True, xp=xp,
-        )
-    finally:
-        _numba_fastpath.HAS_NUMBA = saved
+    r = _epi.integrate_law1_spectrum(
+        data, e_in, e_out, to_lab=True, xp=xp,
+    )
 
     # Confirm the c0>0 gate really rejected the collapse: awp > 0
     # (a non-photon ejectile), so c0 > 0.
