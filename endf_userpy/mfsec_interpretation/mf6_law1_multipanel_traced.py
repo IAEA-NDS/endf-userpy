@@ -262,6 +262,45 @@ def _law1_spectrum_panel_pair_traced(
     n_e_sub = int(e_sub.shape[0])
     n_ep = int(ep_out_xp.shape[0])
 
+    # ---- Gamma-isotropic analytical collapse (fast path) -------------
+    # Mirrors the same collapse in
+    # ``mf6_law1_epintegral._law1_spectrum_panel_pair``: when c0 == 0
+    # (photon ejectile, awp == 0), the LAB<->CM map is identity, so
+    # ``f_amp`` does not depend on ``mu`` (for lang=1 na=0). The
+    # kink-aware polar-angle GL integral reduces to
+    #     spectrum(e, ep) = f_amp(e, ep) * int_0^pi sin(z) dz.
+    # For the jit path this collapses the ``(nE, nEp, 2*max_nep + 1,
+    # n_gl)`` traced GL tensors down to a single ``(nE, nEp)``
+    # amplitude call, which is what makes the U-233 (n,g)-class
+    # broadening workloads fit in memory under jit at n_Ein=100
+    # (issue #281 follow-up; without this the multipanel-traced path
+    # requests ~50 GB and OOMs).
+    #
+    # Gate is fully Python-side static: c0, lang, and the uniform-NA
+    # value are all set at data-preproc time. na uniformity is
+    # already required by the caller
+    # (:func:`integrate_law1_spectrum_multipanel_traced`), so
+    # ``na_arr[0]`` is the constant NA.
+    c0_static = float(np.sqrt(data.awi * data.awp) / (data.awi + data.awr))
+    na_static = int(np.asarray(data.na_arr)[0])
+    if c0_static == 0.0 and lang == 1 and na_static == 0:
+        e_bc_2d = e_sub[:, None]                             # (nE, 1)
+        tp_bc_2d = ep_out_xp[None, :]                        # (1, nEp)
+        w_bc = xp.zeros_like(tp_bc_2d)                       # (1, nEp) -- unused
+        f_amp = _f6law1con_panel_pair_traced(
+            data, panel_idx, lei, e_bc_2d, tp_bc_2d, w_bc, xp,
+            max_nep, max_na_plus_one, lang, lep,
+        )
+        half_pi = np.pi / 2.0
+        gl_sin_integral = half_pi * xp.sum(
+            gl_w * xp.sin(half_pi * (1.0 + gl_x)),
+        )
+        result = gl_sin_integral * f_amp
+        p1_has_cont = nep1 > nd1
+        p2_has_cont = nep2 > nd2
+        any_cont = p1_has_cont | p2_has_cont
+        return xp.where(any_cont, result, xp.zeros_like(result))
+
     # Panel-pair Ep upper bound at each incident e. Padding invariant
     # makes ep_panels[p, -1] the continuum upper endpoint.
     ep_row_p1 = xp.take(data.ep_panels, p1, axis=0)

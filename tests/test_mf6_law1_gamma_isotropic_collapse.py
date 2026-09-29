@@ -134,6 +134,55 @@ def test_collapse_matches_between_numpy_and_jax_u233_ng():
 
 
 @pytest.mark.skipif(
+    not os.path.exists(_U233_PATH),
+    reason='U-233 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
+)
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_jit_collapse_matches_numpy_u233_ng():
+    """Under ``jax.jit`` with tracer ``energies_in``, the driver
+    routes to the multipanel-traced kernel; this test pins that
+    the collapse also fires there (the same ``c0 == 0, lang == 1,
+    na == 0`` gate is checked in
+    ``mf6_law1_multipanel_traced._law1_spectrum_panel_pair_traced``).
+
+    Without the collapse on that path, the traced kernel builds an
+    ``(nE, nEp, 2 * max_nep + 1, n_gl)`` tensor and OOMs at n_Ein=100
+    (issue #281 follow-up). With the collapse, jit warm-run stays
+    under 10 ms and peak RSS under 1 GB.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    endf_dict = _endf_dict(_U233_PATH)
+    e_in = np.array([2.0e6, 2.5e6, 3.0e6])
+    e_out = np.linspace(1.0e4, 4.5e6, 41)
+
+    xp_np = array_ns.get_backend('numpy')
+    data_np = pp.mf6_law1_data_from_endf_dict(endf_dict, 102, 1, xp=xp_np)
+    r_np = _epi.integrate_law1_spectrum(
+        data_np, e_in, e_out, to_lab=True, xp=xp_np,
+    )
+
+    xp_jax = array_ns.get_backend('jax')
+    data_jax = pp.mf6_law1_data_from_endf_dict(endf_dict, 102, 1, xp=xp_jax)
+
+    @jax.jit
+    def go(ein, eout):
+        return _epi.integrate_law1_spectrum(
+            data_jax, ein, eout, to_lab=True, xp=xp_jax,
+        )
+
+    r_jit = np.asarray(go(jnp.asarray(e_in), jnp.asarray(e_out)))
+
+    peak = float(np.max(np.abs(r_np)))
+    diff = float(np.max(np.abs(r_jit - r_np)))
+    rel = diff / max(1e-30, peak)
+    assert rel < 1e-12, (
+        f'jax-jit-with-collapse vs numpy: rel-to-peak diff = {rel:.3e}'
+    )
+
+
+@pytest.mark.skipif(
     not os.path.exists(_FE56_PATH),
     reason='Fe-56 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
 )
