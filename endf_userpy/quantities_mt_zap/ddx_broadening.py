@@ -707,15 +707,26 @@ def compute_ddx_mf12_discrete_broadened(
             (n_einc, len(Eg_disc), n_mus), 0.5, dtype=xp.float64,
         )
 
-    result = result_zero
-    for k in range(len(Eg_disc)):
-        e_kernel = kernel(xp.asarray(energies_out) - Eg_disc[k])
-        # (n_einc, 1, 1) * (1, n_eouts, 1) * (n_einc, 1, n_mus)
-        result = result + (
-            weight_E[:, k].reshape(-1, 1, 1)
-            * e_kernel.reshape(1, -1, 1)
-            * per_line_angdist[:, k, :].reshape(n_einc, 1, n_mus)
-        )
+    # Broadcast per-line fold (issue #293): einsum over the K
+    # discrete lines instead of a Python ``for k in range(K)``.
+    # Under ``@jax.jit`` the loop unrolled at trace time, so the
+    # graph grew linearly in K (~20 s cold-compile on Al-27 with
+    # K~290 MF12 lines); this collapses to a single XLA einsum
+    # node with the K axis dynamic. Numpy behaviour is unchanged
+    # (bit-identical on Al-27 (n,g)).
+    #
+    # einsum keeps the intermediate at (n_einc, K, n_mus) rather
+    # than materialising the full (n_einc, K, n_eouts, n_mus)
+    # tensor a naive broadcast + sum would build, so memory stays
+    # ~n_einc * K * n_mus (small even for Al-27 K~290).
+    eouts_xp = xp.asarray(energies_out)
+    Eg_disc_xp = xp.asarray(Eg_disc)
+    delta = eouts_xp[None, :] - Eg_disc_xp[:, None]     # (K, n_eouts)
+    per_line_kernel = kernel(delta)                     # (K, n_eouts)
+    result = xp.einsum(
+        'ek,kn,ekm->enm',
+        weight_E, per_line_kernel, per_line_angdist,
+    )
     return xp.clip(result / (2 * np.pi), 0.0, None)
 
 
@@ -798,18 +809,16 @@ def compute_dxs_dE_mf12_discrete_broadened(
     )  # (n_einc,), xp-native
     weight = yields_disc * xs[:, None]  # (n_einc, n_disc_lines)
 
-    # Per-line kernel folding. Loop over the K discrete lines rather
-    # than materialising a (n_einc, n_eouts, K) tensor -- K is small
-    # for LO=2 partial channels (typically 1..a few) and moderate for
-    # LO=1 capture files (~300 for Al-27) but the loop stays flat
-    # anyway and keeps memory linear in n_eouts.
-    result = result_zero
+    # Broadcast per-line fold (issue #293): matmul over the K
+    # discrete lines instead of a Python ``for k in range(K)``.
+    # Under ``@jax.jit`` the loop unrolled at trace time; matmul
+    # collapses to a single XLA dot with the K axis dynamic. Numpy
+    # behaviour is unchanged (bit-identical on Al-27 (n,g)).
     eouts_xp = xp.asarray(energies_out)
-    for k in range(len(Eg_disc)):
-        delta = eouts_xp - Eg_disc[k]
-        result = result + (
-            kernel(delta)[None, :] * weight[:, k].reshape(-1, 1)
-        )
+    Eg_disc_xp = xp.asarray(Eg_disc)
+    delta = eouts_xp[None, :] - Eg_disc_xp[:, None]     # (K, n_eouts)
+    per_line_kernel = kernel(delta)                     # (K, n_eouts)
+    result = weight @ per_line_kernel                   # (n_einc, n_eouts)
     return xp.clip(result, 0.0, None)
 
 
@@ -867,13 +876,13 @@ def compute_dxs_dE_mf13_discrete_broadened(
         endf_dict, mt, energies_in, Eg_disc, xp=xp,
     )
 
-    result = result_zero
+    # Broadcast per-line fold (issue #293): see MF12 sibling for
+    # the jit compile-time motivation.
     eouts_xp = xp.asarray(energies_out)
-    for k in range(len(Eg_disc)):
-        delta = eouts_xp - Eg_disc[k]
-        result = result + (
-            kernel(delta)[None, :] * prod_xs[:, k].reshape(-1, 1)
-        )
+    Eg_disc_xp = xp.asarray(Eg_disc)
+    delta = eouts_xp[None, :] - Eg_disc_xp[:, None]     # (K, n_eouts)
+    per_line_kernel = kernel(delta)                     # (K, n_eouts)
+    result = prod_xs @ per_line_kernel                  # (n_einc, n_eouts)
     return xp.clip(result, 0.0, None)
 
 
@@ -955,15 +964,17 @@ def compute_ddx_mf13_discrete_broadened(
             (n_einc, len(Eg_disc), n_mus), 0.5, dtype=xp.float64,
         )
 
-    result = result_zero
+    # Broadcast per-line fold (issue #293): see the MF12 DDX
+    # sibling for the compile-time motivation and the einsum
+    # memory rationale.
     eouts_xp = xp.asarray(energies_out)
-    for k in range(len(Eg_disc)):
-        e_kernel = kernel(eouts_xp - Eg_disc[k])
-        result = result + (
-            prod_xs[:, k].reshape(-1, 1, 1)
-            * e_kernel.reshape(1, -1, 1)
-            * per_line_angdist[:, k, :].reshape(n_einc, 1, n_mus)
-        )
+    Eg_disc_xp = xp.asarray(Eg_disc)
+    delta = eouts_xp[None, :] - Eg_disc_xp[:, None]     # (K, n_eouts)
+    per_line_kernel = kernel(delta)                     # (K, n_eouts)
+    result = xp.einsum(
+        'ek,kn,ekm->enm',
+        prod_xs, per_line_kernel, per_line_angdist,
+    )
     return xp.clip(result / (2 * np.pi), 0.0, None)
 
 
