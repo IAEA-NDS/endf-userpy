@@ -1024,6 +1024,7 @@ def compute_ddx_mf15_continuum_broadened(
     `compute_ddx_continuous_broadened`: barn / eV / sr.
     """
     from ..primitives import array_ns
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
@@ -1031,12 +1032,16 @@ def compute_ddx_mf15_continuum_broadened(
             'MF15 continuum broadening is gamma-only; got '
             f'ZAP={zap}'
         )
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
-    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
-    n_einc = len(energies_in)
-    n_eouts = len(energies_out)
-    n_mus = len(angle_cosines_out)
+    # Skip numpy conversion for jax tracers (issue #290 Phase 4).
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
+    if not _is_jax_tracer(angle_cosines_out):
+        angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = energies_in.shape[0]
+    n_eouts = energies_out.shape[0]
+    n_mus = angle_cosines_out.shape[0]
     result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
 
     if not has_mf15_mt(endf_dict, mt):
@@ -1073,9 +1078,9 @@ def compute_ddx_mf15_continuum_broadened(
         cont_idcs = np.where(cont_mask)[0]
         y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)   # (n_einc,)
         xs = mf3_interp.compute_cross_section(
-            endf_dict, mt, energies_in,
-        )   # (n_einc,), numpy
-        weight = xp.asarray(xs) * y_cont
+            endf_dict, mt, energies_in, xp=xp,
+        )   # (n_einc,), xp-native
+        weight = xs * y_cont
         # NOTE on normalisation: the 1D dxs/dE path composes
         # `compute_dexs = compute_yields * xs * compute_energydist_values`
         # where compute_yields returns Y_total (all photons: discrete
