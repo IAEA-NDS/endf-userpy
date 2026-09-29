@@ -68,6 +68,76 @@ def compute_photon_yields_from_transition_probabilities(
     return results
 
 
+def _as_1d_list(obj):
+    """Normalise ``endf_parserpy``'s per-table columns to a flat
+    Python list. The parser yields ``dict`` for some fields and
+    ``list`` for others; both routes need a plain sequence for the
+    bucket-signature key and for ``np.asarray``.
+    """
+    if hasattr(obj, 'values'):
+        return list(obj.values())
+    return list(obj)
+
+
+def _table_signature(t):
+    """(Eint, INT, NBT) tuple key for LO=1 bucket grouping."""
+    return (
+        tuple(_as_1d_list(t['Eint'])),
+        tuple(_as_1d_list(t['INT'])),
+        tuple(_as_1d_list(t['NBT'])),
+    )
+
+
+def _compute_photon_yields_bucketed_jax(tables, eincs, xp):
+    """Batched LO=1 tabulated-yield interpolation for xp=jax.
+
+    Groups tables sharing ``(Eint, INT, NBT)`` and evaluates each
+    group with one ``endf_interp1d`` call over a stacked ``y[K_b, N]``
+    array (Lever C of #290). For Al-27 MT102 the 291 photon-line
+    tables collapse to 3 buckets, cutting the cold-jit graph of
+    ``compute_photon_yields`` from ~10 s to ~0.25 s (only 3 XLA
+    interp graphs to lower/compile instead of 291) and cutting the
+    warm-time from ~0.11 ms to ~0.03 ms (one vectorised gather +
+    arithmetic per bucket instead of per line).
+
+    The scalar per-table code path is preserved for xp=numpy in the
+    caller; there is no compile-time cost to save, and per-table
+    numpy loops keep the read-through pattern of the original.
+    """
+    from collections import defaultdict
+    buckets = defaultdict(list)                 # signature -> [table_idx]
+    for k, t in enumerate(tables):
+        buckets[_table_signature(t)].append(k)
+
+    bucket_outputs = []
+    bucket_cols = []
+    for (ei_tup, int_tup, nbt_tup), idxs in buckets.items():
+        ei_np = np.asarray(ei_tup, dtype=float)
+        int_np = np.asarray(int_tup, dtype=int)
+        nbt_np = np.asarray(nbt_tup, dtype=int)
+        y_stack = xp.stack(
+            [xp.asarray(_as_1d_list(tables[k]['y']), dtype=xp.float64)
+             for k in idxs],
+            axis=0,
+        )                                       # (K_b, N)
+        # ``endf_interp1d`` under xp=jax dispatches to
+        # ``_endf_interp1d_traced_x``, which takes ``fp`` along the
+        # last axis, so ``y_stack`` (K_b, N) yields (K_b, n_ein).
+        y_at_ein = endf_interp1d(
+            eincs, ei_np, y_stack, int_np, nbt_np,
+            outside_value=0.0, xp=xp,
+        )                                       # (K_b, n_ein)
+        bucket_outputs.append(y_at_ein)
+        bucket_cols.extend(idxs)
+
+    combined = xp.concatenate(bucket_outputs, axis=0)   # (K, n_ein)
+    # Reorder rows so row j has the original table-index-j yield.
+    perm = np.asarray(bucket_cols, dtype=np.int64)
+    inv_perm = np.argsort(perm)
+    reordered = xp.take(combined, xp.asarray(inv_perm), axis=0)
+    return reordered.T                                  # (n_ein, K)
+
+
 def compute_photon_yields_from_tabulated_yields(
     endf_dict, mt, energies_in, xp=None,
 ):
@@ -83,17 +153,27 @@ def compute_photon_yields_from_tabulated_yields(
 
     level_energies = dict2array(mtsec['ES'])
     photon_energies = dict2array(mtsec['Eg'])
-    cols = [
-        endf_interp1d(
-            eincs, t['Eint'], t['y'], t['INT'], t['NBT'],
-            outside_value=0.0, xp=xp,
-        )
-        for t in tables
-    ]
-    if len(cols) == 0:
+    if len(tables) == 0:
         n_ein = np.asarray(eincs).size
         photon_yields = xp.zeros((n_ein, 0), dtype=xp.float64)
+    elif xp.name == 'jax':
+        # Signature-bucketed batched interpolation (Lever C of #290).
+        # Reduces the traced-graph size from O(K) per-line XLA subgraphs
+        # to O(num-distinct-signatures) batched calls; on Al-27 MT102
+        # (K=291 lines, 3 signatures) cold jit drops from ~10 s to
+        # ~0.25 s and warm time from ~0.11 ms to ~0.03 ms. Numerically
+        # bit-identical to the per-table path on real corpus files.
+        photon_yields = _compute_photon_yields_bucketed_jax(
+            tables, eincs, xp,
+        )
     else:
+        cols = [
+            endf_interp1d(
+                eincs, t['Eint'], t['y'], t['INT'], t['NBT'],
+                outside_value=0.0, xp=xp,
+            )
+            for t in tables
+        ]
         photon_yields = xp.stack(cols, axis=1)
     return {
         'level_energy': level_energies,

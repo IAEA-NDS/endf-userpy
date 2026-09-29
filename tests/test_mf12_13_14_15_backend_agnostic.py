@@ -111,6 +111,70 @@ def test_mf12_compute_photon_yields_numpy_jax_parity(al27_endf_dict):
     np.testing.assert_allclose(a, b, rtol=1e-11, atol=1e-30)
 
 
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_mf12_bucketed_jax_preserves_column_order_interleaved():
+    """Pins the row-reorder step of the LO=1 signature-bucketed
+    batched interpolation. On Al-27 MT102 the tables happen to be
+    grouped by signature already (identity permutation), so a
+    corpus-only parity test cannot detect a broken reorder. This
+    synthetic dict interleaves two signatures across seven tables,
+    forcing a non-trivial permutation between bucket concatenation
+    order and the original table (column) order that the caller
+    expects."""
+    # Two signatures: 6-point lin-lin, and 4-point lin-lin.
+    sig_a_eint = [1.0e-5, 1.0e4, 1.0e5, 1.0e6, 5.0e6, 2.0e7]
+    sig_a_nbt = [len(sig_a_eint)]
+    sig_b_eint = [1.0e-5, 1.0e5, 1.0e6, 2.0e7]
+    sig_b_nbt = [len(sig_b_eint)]
+
+    def make_table(eint, nbt, y):
+        return {
+            'Eint': list(eint),
+            'INT': [2],
+            'NBT': list(nbt),
+            'y': list(y),
+        }
+
+    # Interleave: signature pattern is [A, B, A, B, A, B, A].
+    # y-values differ per table so a reorder bug swaps columns
+    # observably.
+    tables = [
+        make_table(sig_a_eint, sig_a_nbt, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+        make_table(sig_b_eint, sig_b_nbt, [1.1, 1.2, 1.3, 1.4]),
+        make_table(sig_a_eint, sig_a_nbt, [0.7, 0.8, 0.9, 1.0, 1.1, 1.2]),
+        make_table(sig_b_eint, sig_b_nbt, [2.1, 2.2, 2.3, 2.4]),
+        make_table(sig_a_eint, sig_a_nbt, [1.3, 1.4, 1.5, 1.6, 1.7, 1.8]),
+        make_table(sig_b_eint, sig_b_nbt, [3.1, 3.2, 3.3, 3.4]),
+        make_table(sig_a_eint, sig_a_nbt, [1.9, 2.0, 2.1, 2.2, 2.3, 2.4]),
+    ]
+    endf_dict = {
+        12: {
+            102: {
+                'LO': 1,
+                'ES': {i: 0.0 for i in range(len(tables))},
+                'Eg': {i: 1e6 + 1e3 * i for i in range(len(tables))},
+                'table': {i: t for i, t in enumerate(tables)},
+            }
+        }
+    }
+    ein = np.array([5.0e5, 5.0e6])
+
+    xp_np = array_ns.get_backend('numpy')
+    xp_jx = array_ns.get_backend('jax')
+    a = np.asarray(
+        mf12.compute_photon_yields_from_tabulated_yields(
+            endf_dict, 102, ein, xp=xp_np,
+        )['photon_yield']
+    )
+    b = np.asarray(
+        mf12.compute_photon_yields_from_tabulated_yields(
+            endf_dict, 102, ein, xp=xp_jx,
+        )['photon_yield']
+    )
+    # Bit-identical: no summation-order divergence at this size.
+    np.testing.assert_array_equal(a, b)
+
+
 def test_mf13_total_prod_default_matches_xp_numpy(nb93_endf_dict):
     """MF13 total photon production: Nb-93 MT3 (JEFF-4.0 style, NK=1)."""
     if 13 not in nb93_endf_dict:
