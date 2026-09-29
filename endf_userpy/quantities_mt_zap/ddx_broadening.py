@@ -67,6 +67,40 @@ import logging
 module_logger = logging.getLogger(__name__)
 
 
+def _apply_jit_fast_path_defaults(convolve_kwargs, kernel_width):
+    """Halve ``adaptive_convolve``'s trace-time f-calls when the
+    caller passes an explicit ``mesh_bounds``.
+
+    Rationale: under ``@jax.jit`` / ``jax.grad`` the tracer-based
+    convergence check inside :func:`adaptive_convolve` cannot fire,
+    so the doubling loop runs to ``max_iter`` unconditionally. That
+    unrolls ``f`` (the folder's per-mesh reconstruction) ``max_iter
+    + 1`` times inside the traced graph -- and ``f`` is the dominant
+    compile cost (see per-folder profile in the Lever A PR
+    description for #290).
+
+    When the caller has passed ``mesh_bounds`` it has already opted
+    into the jit-safe static-mesh path (Phase 5 of #290). In that
+    case we can safely short-circuit to the last two iterations of
+    the doubling loop by starting at ``h0 = kernel_width / 32`` and
+    running one doubling. Adaptive_convolve's Richardson return
+    ``(4 * R_{h=kw/64} - R_{h=kw/32}) / 3`` is bit-identical to
+    what the current 4-iteration (or 7-iteration for the DDX
+    folders that use adaptive_convolve's own defaults) jit path
+    already returns from its own last two iterations -- earlier
+    iterations were pure waste.
+
+    Concrete (non-jit) callers do not pass ``mesh_bounds`` and see
+    no behaviour change; they keep the full adaptive doubling with
+    its early-convergence exit.
+    """
+    if convolve_kwargs.get('mesh_bounds') is None:
+        return
+    convolve_kwargs.setdefault('h0', kernel_width / 32.0)
+    convolve_kwargs.setdefault('max_iter', 1)
+    convolve_kwargs.setdefault('min_iter', 1)
+
+
 def compute_ddx_continuous_broadened(
     endf_dict, mt, zap,
     energies_in, energies_out, angle_cosines_out,
@@ -130,6 +164,7 @@ def compute_ddx_continuous_broadened(
         )
         return xp.moveaxis(dist2d, 1, -1)
 
+    _apply_jit_fast_path_defaults(convolve_kwargs, kernel_width)
     # shape (n_einc, n_mus, n_eouts) after adaptive_convolve
     broadened = adaptive_convolve(
         f, kernel, energies_out,
@@ -224,6 +259,7 @@ def compute_ddx_continuous_broadened_summed(
             total = contrib if total is None else total + contrib
         return total
 
+    _apply_jit_fast_path_defaults(convolve_kwargs, kernel_width)
     broadened = adaptive_convolve(
         f_summed, kernel, eouts,
         kernel_width=kernel_width, xp=xp, **convolve_kwargs,
@@ -295,6 +331,10 @@ def compute_dxs_dE_broadened(
             xp=xp,
         )
 
+    # Fast-path override for jit callers who supplied mesh_bounds
+    # (no-op otherwise); must come BEFORE the concrete adaptive
+    # defaults so its setdefault calls win.
+    _apply_jit_fast_path_defaults(convolve_kwargs, kernel_width)
     # Same Nyquist mesh cap as the summed sibling; keeps the two
     # 1D-broadened entry points consistent for single-MT callers.
     convolve_kwargs.setdefault('h0', kernel_width / 8.0)
@@ -423,6 +463,11 @@ def compute_dxs_dE_broadened_summed(
     # already killed. Callers can still override via ``h0=`` /
     # ``max_iter=`` in ``convolve_kwargs`` for hard-edged kernels
     # (boxcar, triangle) whose Fourier support does not decay.
+    #
+    # Fast-path override for jit callers who supplied mesh_bounds
+    # (no-op otherwise); must come BEFORE the concrete adaptive
+    # defaults so its setdefault calls win.
+    _apply_jit_fast_path_defaults(convolve_kwargs, kernel_width)
     convolve_kwargs.setdefault('h0', kernel_width / 8.0)
     convolve_kwargs.setdefault('max_iter', 3)
     return xp.clip(adaptive_convolve(
@@ -1128,6 +1173,7 @@ def compute_ddx_mf15_continuum_broadened(
             endf_dict, mt, energies_in, eout_internal, xp=xp,
         )
 
+    _apply_jit_fast_path_defaults(convolve_kwargs, kernel_width)
     broadened_spec = adaptive_convolve(
         f_spec, kernel, energies_out,
         kernel_width=kernel_width, xp=xp,

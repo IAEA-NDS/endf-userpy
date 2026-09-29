@@ -471,6 +471,66 @@ def test_grad_wrt_eouts_al27_ng_broadening():
 
 
 @pytest.mark.skipif(
+    not os.path.exists(_AL27_PATH),
+    reason='Al-27 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
+)
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_jit_fast_path_matches_slow_path_al27_ng():
+    """Fast-path (issue #290 Lever A): when the caller passes
+    ``broadening_mesh_bounds``, ``compute_dxs_dE_broadened`` and its
+    DDX siblings short-circuit adaptive_convolve to just its final
+    Richardson pair (h0=kw/32, one doubling to kw/64), skipping the
+    kw/8 and kw/16 iterations. Under jit those earlier iterations
+    were pure compile-time waste because the convergence check can
+    never fire on a tracer.
+
+    The Richardson return ``(4*R_{kw/64} - R_{kw/32})/3`` is
+    algebraically identical to what the pre-fast-path 4-iteration
+    jit path already returned from its OWN last two iterations, so
+    output must be bit-identical between the two jit paths.
+    """
+    import jax
+    import jax.numpy as jnp
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.quantities import get_particle_production_dxs_dE
+
+    parser = EndfParserCpp(ignore_missing_tpid=True)
+    endf_dict = parser.parsefile(_AL27_PATH)
+    ein = np.array([1.0e6, 5.0e6])
+    eout = np.linspace(0.0, 1.0e7, 41)
+    margin = 5.0 * 5.0e4
+    bounds = (float(eout.min()) - margin, float(eout.max()) + margin)
+    xp_jax = array_ns.get_backend('jax')
+
+    @jax.jit
+    def jit_hint(ein_arg):
+        return get_particle_production_dxs_dE(
+            endf_dict, '(n,g)', 'g', ein_arg, eout,
+            broadening=5.0e4, xp=xp_jax,
+            broadening_mesh_bounds=bounds,
+        )
+
+    @jax.jit
+    def jit_nohint(ein_arg):
+        return get_particle_production_dxs_dE(
+            endf_dict, '(n,g)', 'g', ein_arg, eout,
+            broadening=5.0e4, xp=xp_jax,
+        )
+
+    r_hint = np.asarray(jit_hint(jnp.asarray(ein)))
+    r_nohint = np.asarray(jit_nohint(jnp.asarray(ein)))
+
+    peak = float(np.max(np.abs(r_nohint)))
+    rel = float(np.max(np.abs(r_hint - r_nohint))) / max(1e-30, peak)
+    # Bit-identical: same Richardson pair reached in two paths, same
+    # jax FFT under the hood, so summation order matches too.
+    assert rel == 0.0, (
+        f'jit fast-path vs jit no-hint on Al-27 (n,g) dxs_dE: '
+        f'rel-to-peak = {rel:.3e} (expected bit-identical)'
+    )
+
+
+@pytest.mark.skipif(
     not os.path.exists(_FE56_PATH),
     reason='Fe-56 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
 )
