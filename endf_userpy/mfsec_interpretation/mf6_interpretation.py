@@ -154,8 +154,11 @@ def compute_law1_discrete_lines(
     if not subsec_nums:
         raise ValueError(f'No MF6/MT{mt} subsection contains ZAP={zap}')
 
-    energies_in = np.asarray(energies_in, dtype=float)
-    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    from .mf6_law1_kernel import _is_jax_tracer
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(angle_cosines_out):
+        angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
     ep_slabs = []
     amp_slabs = []
     for subsec_num in subsec_nums:
