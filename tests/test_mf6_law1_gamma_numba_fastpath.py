@@ -32,6 +32,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _fortran_available():
+    try:
+        import endf_userpy.fortran.endf6  # noqa: F401
+        from endf_userpy.fortran import HAS_FORTRAN
+        return HAS_FORTRAN
+    except ImportError:
+        return False
+
+
 def _make_synthetic_gamma_data(lang=1, na=0, lep=2, lei=22, awp=0.0):
     """Build a minimal MF6Law1Data for a gamma-ejectile section with
     two Ein panels and a small continuum tabulation each. Discrete
@@ -232,3 +241,61 @@ def test_u233_ng_broadened_matches_numpy():
     peak = float(np.nanmax(np.abs(r_np)))
     rel = float(np.nanmax(np.abs(r_nb - r_np))) / max(1e-30, peak)
     assert rel < 1e-14, f'rel-to-peak diff = {rel:.3e}'
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_U233_PATH),
+    reason='U-233 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
+)
+@pytest.mark.skipif(
+    not _fortran_available(),
+    reason='Fortran extension not built; set ENDF_USERPY_BUILD_FORTRAN=1',
+)
+def test_numba_fastpath_matches_fortran_oracle_u233_ng():
+    """Cross-check the numba fast path against the Fortran-backed
+    reference implementation on the U-233 (n,g) MF6/LAW=1 subsection.
+
+    Fortran ``feep_points_law1con`` is the NJOY-derived reference
+    integrator for MF6 LAW=1 continuum spectra; it uses its own
+    kink-aware Ep-mesh handling internally. Bit-comparable agreement
+    (rel-to-peak diff <= 1e-12) between the numba fast path and the
+    Fortran reference validates that the ``c0=0`` analytical collapse
+    used in :mod:`mf6_law1_epintegral_numba` reproduces the reference
+    physics exactly, not merely the numpy re-implementation of it.
+    """
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.mfsec_interpretation import mf6_law1_preproc as pp
+    from endf_userpy.mfsec_interpretation import (
+        mf6_interpretation_integrals_fort as fort,
+    )
+
+    parser = EndfParserCpp(
+        ignore_send_records=True, ignore_missing_tpid=True,
+        ignore_blank_lines=True,
+    )
+    endf_dict = parser.parsefile(_U233_PATH)
+
+    e_in = np.array([2.0e6, 2.5e6, 3.0e6])
+    e_out = np.linspace(1.0e4, 4.5e6, 41)
+
+    xp = array_ns.get_backend('numpy')
+    data = pp.mf6_law1_data_from_endf_dict(endf_dict, 102, 1)
+
+    # Reference: Fortran feep_points_law1con.
+    r_fort = fort.get_energydist_from_subsec_law1_fort(
+        endf_dict, 102, 1, e_in, e_out, to_lab=True,
+    )
+
+    # Fast path: numba dispatches when the gate matches; for U-233
+    # (n,g) it always matches (gamma out, na=0, lep=2, lei_law=2).
+    r_nb = _epi.integrate_law1_spectrum(
+        data, e_in, e_out, to_lab=True, xp=xp,
+    )
+
+    peak = float(np.max(np.abs(r_fort)))
+    diff = float(np.max(np.abs(r_nb - r_fort)))
+    rel = diff / max(1e-30, peak)
+    assert rel < 1e-12, (
+        f'numba vs fortran rel-to-peak diff = {rel:.3e} '
+        f'(abs {diff:.3e}, peak {peak:.3e})'
+    )
