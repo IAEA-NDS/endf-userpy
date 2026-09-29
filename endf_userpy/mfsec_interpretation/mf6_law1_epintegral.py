@@ -45,6 +45,7 @@ import numpy as np
 from ..primitives import array_ns
 from ..primitives.helpers import convert_interp_repr, find_interval
 from . import mf6_law1_kernel as _kernel
+from . import mf6_law1_epintegral_numba as _numba_fastpath
 
 
 def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
@@ -184,7 +185,18 @@ def integrate_law1_spectrum(data, energies_in, energies_out, to_lab,
         e_sub_np = e_inside_np[row_mask]
         e_sub = xp.asarray(e_sub_np)
         lei = int(ei_interp_full[panel_idx_iter])
-        if n_ep <= ep_chunk_size:
+        # Gamma-ejectile fast path (issue-tracked follow-up): the numba
+        # dispatcher returns None when the panel-pair does not match its
+        # specialisation (non-photon ejectile, non-numpy xp, higher-order
+        # LEP / LEI, Kalbach LANG, na>0, ...); in that case fall through
+        # to the general numpy kink-aware kernel below.
+        f_sub_numba = _numba_fastpath.try_panel_pair(
+            data, int(panel_idx_iter), lei, e_sub_np, ep_out_np,
+            eff_lct, gl_x, gl_w, xp,
+        )
+        if f_sub_numba is not None:
+            f_sub = f_sub_numba
+        elif n_ep <= ep_chunk_size:
             f_sub = _law1_spectrum_panel_pair(
                 data, int(panel_idx_iter), lei, e_sub, ep_out_xp,
                 eff_lct, gl_x, gl_w, xp,
