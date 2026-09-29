@@ -87,6 +87,21 @@ class MF6Law1Data:
     nep_arr: np.ndarray
     ep_panels: Any
     b_panels: Any
+    # Discrete-line dedup extension (issue #290, Phase 2). Discrete
+    # lines with coincident Ep values within a panel are summed into
+    # a single (Ep, b) row so downstream can iterate a fixed-shape
+    # (max_nd_ded,) axis without doing dedup inside a jit-traced
+    # kernel. ``nd_ded_arr[p]`` gives the true dedup'd count per
+    # panel; slots beyond it in ``ep_disc_ded`` / ``b_disc_ded``
+    # are zero-padded.
+    #
+    # ``ep_disc_ded``: shape ``(n_panels, max_nd_ded)`` (numpy).
+    # ``b_disc_ded``:  shape ``(n_panels, max_nd_ded, max_na + 1)``
+    #                  (xp-native, so ``b`` autodiff flows through).
+    # ``nd_ded_arr``:  shape ``(n_panels,)`` (numpy int).
+    ep_disc_ded: np.ndarray
+    b_disc_ded: Any
+    nd_ded_arr: np.ndarray
 
 
 def mf6_law1_data_from_endf_dict(endf_dict, mt: int, subsec_num: int,
@@ -235,6 +250,60 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
     ei_mesh = xp.asarray(ei_mesh)
     ep_panels = xp.asarray(ep_panels)
 
+    # Discrete-line dedup pass (issue #290, Phase 2). For each panel
+    # compute the (ep, b) rows after summing coincident-Ep discrete
+    # slots. Padded to a common ``max_nd_ded`` across panels so the
+    # downstream traced kernel can index a fixed-shape axis. Uses
+    # the sibling implementation from ``mf6_interpretation_subsecs``
+    # to keep dedup semantics in one place.
+    #
+    # Dedup requires materialising the ``b`` rows to numpy so it
+    # can group by ``ep`` value. If the caller injected a jax tracer
+    # into ``subsec['b']`` for file-side autodiff, materialisation
+    # would raise; in that case skip dedup and expose the raw padded
+    # ``(nd_max,)``-wide arrays instead. The traced downstream
+    # kernel handles both shapes uniformly, and files with genuine
+    # coincident discrete lines are rare (verified: U-233 (n,g)
+    # nd_ded == nd across all 118 panels).
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
+    from . import mf6_interpretation_subsecs as _subsecs
+    max_nd = int(nd_arr.max()) if nd_arr.size else 0
+    if xp.name == 'jax' and _is_jax_tracer(b_panels):
+        # Skip dedup; expose the raw first ``nd_arr[p]`` slots of
+        # each panel through the same interface.
+        ep_disc_ded = np.zeros((n_panels, max_nd), dtype=float)
+        for p in range(n_panels):
+            nd_p = int(nd_arr[p])
+            if nd_p > 0:
+                ep_disc_ded[p, :nd_p] = np.asarray(ep_panels[p, :nd_p])
+        # b_disc_ded slices ``b_panels`` xp-native so tracer identity
+        # is preserved. Take first ``max_nd`` rows; per-panel valid
+        # count is ``nd_arr[p]`` (== nd_ded_arr[p] in this branch).
+        b_disc_ded = b_panels[:, :max_nd, :]
+        nd_ded_arr = nd_arr.copy()
+    else:
+        per_panel_ded = []
+        for p in range(n_panels):
+            ep_panel_np = np.asarray(ep_panels[p])
+            b_panel_np = np.asarray(b_panels[p])
+            nd_p = int(nd_arr[p])
+            ep_ded, b_ded, nd_ded = _subsecs._dedup_discrete_lines(
+                ep_panel_np, b_panel_np, nd_p,
+            )
+            per_panel_ded.append((ep_ded, b_ded, nd_ded))
+        nd_ded_arr = np.asarray([d[2] for d in per_panel_ded], dtype=int)
+        max_nd_ded = int(nd_ded_arr.max()) if nd_ded_arr.size else 0
+        ep_disc_ded = np.zeros((n_panels, max_nd_ded), dtype=float)
+        b_disc_ded_np = np.zeros(
+            (n_panels, max_nd_ded, max_na_plus_one), dtype=float,
+        )
+        for p, (ep_ded, b_ded, nd_ded) in enumerate(per_panel_ded):
+            if nd_ded == 0:
+                continue
+            ep_disc_ded[p, :nd_ded] = ep_ded
+            b_disc_ded_np[p, :nd_ded, :] = b_ded
+        b_disc_ded = xp.asarray(b_disc_ded_np)
+
     return MF6Law1Data(
         awi=awi, awr=awr, awp=awp, q=q,
         za=za, zai=zai, zap=zap,
@@ -242,4 +311,6 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
         ei_mesh=ei_mesh, int_arr=int_arr, nbt_arr=nbt_arr,
         nd_arr=nd_arr, na_arr=na_arr, nep_arr=nep_arr,
         ep_panels=ep_panels, b_panels=b_panels,
+        ep_disc_ded=ep_disc_ded, b_disc_ded=b_disc_ded,
+        nd_ded_arr=nd_ded_arr,
     )
