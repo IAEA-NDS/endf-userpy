@@ -155,10 +155,53 @@ def compute_law1_discrete_lines(
         raise ValueError(f'No MF6/MT{mt} subsection contains ZAP={zap}')
 
     from .mf6_law1_kernel import _is_jax_tracer
+    tracer_inputs = _is_jax_tracer(energies_in) or \
+        _is_jax_tracer(angle_cosines_out)
     if not _is_jax_tracer(energies_in):
         energies_in = np.asarray(energies_in, dtype=float)
     if not _is_jax_tracer(angle_cosines_out):
         angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+
+    # Dispatch to the traced kernel (issue #290 Phase 2) when the
+    # inputs contain jax tracers; that path also requires the LANG=1
+    # NA=0 MVP specialisation. The traced kernel raises
+    # NotImplementedError for other LANG/NA combinations; in that
+    # case we do not have a jit-friendly path and let the raise
+    # propagate to the caller so they see a clear error rather than
+    # a downstream TracerArrayConversionError.
+    if tracer_inputs:
+        from ..primitives import array_ns
+        from . import mf6_law1_preproc as _pp
+        from . import mf6_law1_disc_traced as _disc_traced
+        # ``_is_jax_tracer`` only returns True when jax is installed
+        # and the input is an active tracer, so the xp choice is
+        # unambiguous here.
+        xp = array_ns.get_backend('jax')
+        ep_slabs_t = []
+        amp_slabs_t = []
+        for subsec_num in subsec_nums:
+            subsec = endf_dict[6][mt]['subsection'][subsec_num]
+            if subsec['LAW'] != 1:
+                continue
+            if not any(nd > 0 for nd in subsec['ND'].values()):
+                continue
+            data = _pp.mf6_law1_data_from_endf_dict(
+                endf_dict, mt, subsec_num, xp=xp,
+            )
+            ep_s, amp_s = _disc_traced.get_law1_discrete_lines_from_subsec_traced(
+                data, energies_in, angle_cosines_out, to_lab, xp,
+            )
+            ep_slabs_t.append(ep_s)
+            amp_slabs_t.append(amp_s)
+        if not ep_slabs_t:
+            empty = xp.zeros(
+                (energies_in.shape[0], angle_cosines_out.shape[0], 0),
+                dtype=float,
+            )
+            return empty, empty
+        return xp.concatenate(ep_slabs_t, axis=-1), \
+            xp.concatenate(amp_slabs_t, axis=-1)
+
     ep_slabs = []
     amp_slabs = []
     for subsec_num in subsec_nums:

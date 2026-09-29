@@ -607,7 +607,13 @@ def _get_particle_production_dxs_dE_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    kernel, kernel_width = _normalize_broadening(broadening)
+    # ``xp`` may be None here (default = numpy). Pass it through as-is
+    # so downstream cumulative-quantity dispatchers keep their existing
+    # ``{'xp': xp} if xp is not None else {}`` guard: functions that
+    # do not accept an xp kwarg still get called without one when the
+    # caller did not opt in to a specific backend. ``_normalize_broadening``
+    # handles ``xp=None`` internally (falls back to numpy).
+    kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
 
@@ -899,10 +905,13 @@ def _get_particle_production_ddxs_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
+    # ``xp`` may be None (default numpy); see sibling comment in
+    # ``_get_particle_production_dxs_dE_impl`` for why we do not
+    # resolve it early here.
     # Widened MT iteration (issue #130).
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
 
-    kernel, kernel_width = _normalize_broadening(broadening)
+    kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     if kernel is None:
         if not _broadening_explicit_no_kernel(broadening):
             _warn_discrete_dropped_from_unbroadened_ddx(
@@ -1242,7 +1251,7 @@ def _warn_mf12_mf13_discrete_dropped(endf_dict, zap, user_mts, context):
     )
 
 
-def _normalize_broadening(broadening):
+def _normalize_broadening(broadening, xp=None):
     """Translate a user broadening spec into ``(kernel, width)`` for
     the low-level folders.
 
@@ -1255,7 +1264,16 @@ def _normalize_broadening(broadening):
     :func:`_broadening_explicit_no_kernel` and suppresses the
     "discrete content dropped" UserWarnings in the ``broadening=0``
     case.
+
+    ``xp`` is captured by the built-in-Gaussian kernel closure so
+    ``xp.exp`` dispatches correctly under ``@jax.jit`` /
+    ``jax.grad``. Defaults to numpy; caller-supplied
+    ``(kernel_callable, width)`` tuples are used as-is and are the
+    caller's responsibility to keep xp-consistent.
     """
+    if xp is None:
+        from .primitives import array_ns
+        xp = array_ns.get_backend('numpy')
     if broadening is None:
         return None, None
     if isinstance(broadening, (int, float, np.integer, np.floating)):
@@ -1267,7 +1285,12 @@ def _normalize_broadening(broadening):
         norm = 1.0 / (sigma * np.sqrt(2 * np.pi))
 
         def gaussian_kernel(d):
-            return norm * np.exp(-0.5 * (d / sigma) ** 2)
+            # Bind ``xp.exp`` at closure creation so ``@jax.jit`` /
+            # ``jax.grad`` on the broadening path uses ``jnp.exp``
+            # on tracer ``d`` and numpy on concrete ``d``. The
+            # captured ``xp`` comes from the caller's
+            # ``_normalize_broadening(broadening, xp=xp)`` call.
+            return norm * xp.exp(-0.5 * (d / sigma) ** 2)
         return gaussian_kernel, sigma
     try:
         kernel, width = broadening

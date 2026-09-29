@@ -76,7 +76,7 @@ def stub_quantities(monkeypatch):
         state['calls'].append(('law1_disc', mt, id(kernel), None))
         return state['law1_disc_return'][mt]
 
-    def fake_compute_ddxs(endf_dict, mt, zap, einc, eouts, mus):
+    def fake_compute_ddxs(endf_dict, mt, zap, einc, eouts, mus, **_):
         # Unbroadened path used when broadening=None.
         state['calls'].append(('plain', mt, None, None))
         return state['cont_return'][mt]
@@ -98,7 +98,7 @@ def stub_quantities(monkeypatch):
             state['calls'].append(('dexs_b', mt, id(kernel), kernel_width))
         return sum(state['dexs_return'][mt] for mt in mts)
 
-    def fake_compute_dexs(endf_dict, mt, zap, einc, eouts):
+    def fake_compute_dexs(endf_dict, mt, zap, einc, eouts, **_):
         state['calls'].append(('dexs_plain', mt, None, None))
         return state['dexs_return'][mt]
 
