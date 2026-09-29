@@ -647,6 +647,7 @@ def compute_ddx_mf12_discrete_broadened(
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``.
     """
     from ..primitives import array_ns
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
@@ -654,12 +655,16 @@ def compute_ddx_mf12_discrete_broadened(
             'MF12 discrete-line broadening is gamma-only; got '
             f'ZAP={zap}'
         )
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
-    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
-    n_einc = len(energies_in)
-    n_eouts = len(energies_out)
-    n_mus = len(angle_cosines_out)
+    # Skip numpy conversion for jax tracers (issue #290 Phase 3).
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
+    if not _is_jax_tracer(angle_cosines_out):
+        angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = energies_in.shape[0]
+    n_eouts = energies_out.shape[0]
+    n_mus = angle_cosines_out.shape[0]
     result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
     if not has_mf12_mt(endf_dict, mt):
         return result_zero
@@ -680,9 +685,9 @@ def compute_ddx_mf12_discrete_broadened(
     yields_disc = yields_all[:, disc_idcs]  # (n_einc, n_disc)
 
     xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in,
-    )  # (n_einc,), numpy
-    weight_E = yields_disc * xp.asarray(xs[:, None])  # (n_einc, n_disc)
+        endf_dict, mt, energies_in, xp=xp,
+    )  # (n_einc,), xp-native
+    weight_E = yields_disc * xs[:, None]  # (n_einc, n_disc)
 
     # Per-line angular distribution f_i(mu | Ein), shape
     # (n_einc, n_disc, n_mus).
@@ -751,6 +756,7 @@ def compute_dxs_dE_mf12_discrete_broadened(
     ``sigma * y_i`` line by line.
     """
     from ..primitives import array_ns
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
@@ -758,10 +764,12 @@ def compute_dxs_dE_mf12_discrete_broadened(
             'MF12 discrete-line broadening is gamma-only; got '
             f'ZAP={zap}'
         )
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
     result_zero = xp.zeros(
-        (len(energies_in), len(energies_out)), dtype=xp.float64,
+        (energies_in.shape[0], energies_out.shape[0]), dtype=xp.float64,
     )
     if not has_mf12_mt(endf_dict, mt):
         return result_zero
@@ -786,9 +794,9 @@ def compute_dxs_dE_mf12_discrete_broadened(
     yields_disc = yields_all[:, disc_idcs]  # (n_einc, n_disc_lines)
 
     xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in,
-    )  # (n_einc,), numpy
-    weight = yields_disc * xp.asarray(xs[:, None])  # (n_einc, n_disc_lines)
+        endf_dict, mt, energies_in, xp=xp,
+    )  # (n_einc,), xp-native
+    weight = yields_disc * xs[:, None]  # (n_einc, n_disc_lines)
 
     # Per-line kernel folding. Loop over the K discrete lines rather
     # than materialising a (n_einc, n_eouts, K) tensor -- K is small
@@ -827,6 +835,7 @@ def compute_dxs_dE_mf13_discrete_broadened(
     convention as MF12) and is excluded here.
     """
     from ..primitives import array_ns
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
@@ -834,10 +843,12 @@ def compute_dxs_dE_mf13_discrete_broadened(
             'MF13 discrete-line broadening is gamma-only; got '
             f'ZAP={zap}'
         )
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
     result_zero = xp.zeros(
-        (len(energies_in), len(energies_out)), dtype=xp.float64,
+        (energies_in.shape[0], energies_out.shape[0]), dtype=xp.float64,
     )
     if not has_mf13_mt(endf_dict, mt):
         return result_zero
@@ -889,6 +900,7 @@ def compute_ddx_mf13_discrete_broadened(
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``.
     """
     from ..primitives import array_ns
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
     if zap != get_zap_for_particle('g'):
@@ -896,12 +908,15 @@ def compute_ddx_mf13_discrete_broadened(
             'MF13 discrete-line broadening is gamma-only; got '
             f'ZAP={zap}'
         )
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
-    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
-    n_einc = len(energies_in)
-    n_eouts = len(energies_out)
-    n_mus = len(angle_cosines_out)
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
+    if not _is_jax_tracer(angle_cosines_out):
+        angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    n_einc = energies_in.shape[0]
+    n_eouts = energies_out.shape[0]
+    n_mus = angle_cosines_out.shape[0]
     result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
     if not has_mf13_mt(endf_dict, mt):
         return result_zero

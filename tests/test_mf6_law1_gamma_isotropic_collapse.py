@@ -33,6 +33,7 @@ from endf_userpy.primitives import array_ns
 _ADHOC_DIR = os.path.join(os.path.dirname(__file__), 'data_law1_adhoc')
 _U233_PATH = os.path.join(_ADHOC_DIR, 'endfb81_n_U-233.endf')
 _FE56_PATH = os.path.join(_ADHOC_DIR, 'tendl21_n_Fe-56.endf')
+_AL27_PATH = os.path.join(_ADHOC_DIR, 'endfb81_n_Al-27.endf')
 
 
 def _fortran_available():
@@ -246,6 +247,59 @@ def test_jit_top_level_broadening_u233_ng():
     assert g.shape == ein.shape
     assert np.all(np.isfinite(g)), (
         f'jax.grad wrt energies_in returned non-finite values: {g}'
+    )
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_AL27_PATH),
+    reason='Al-27 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
+)
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_jit_top_level_broadening_al27_ng():
+    """End-to-end ``@jax.jit`` on Al-27 (n,g) — sibling of the U-233
+    test but exercising the MF12 discrete-line path (issue #290
+    Phase 3). Al-27 MT102 has ~300 MF12 discrete gamma lines plus
+    an MF6/LAW=1 continuum tail; jit must trace both.
+
+    Pins the Phase 3 milestone: after adding ``_is_jax_tracer``
+    guards on the four MF12/MF13 discrete-line broadening entry
+    points and threading ``xp`` through their MF3 cross-section
+    calls, ``@jax.jit(get_particle_production_dxs_dE)`` produces
+    bit-comparable output to numpy.
+    """
+    import jax
+    import jax.numpy as jnp
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.quantities import get_particle_production_dxs_dE
+
+    parser = EndfParserCpp(ignore_missing_tpid=True)
+    endf_dict = parser.parsefile(_AL27_PATH)
+    # Ein above the RRR to avoid the "raw MF3 background" warning
+    # (the resonance-region policy is orthogonal to this test).
+    ein = np.array([1.0e6, 5.0e6])
+    eout = np.linspace(0.0, 1.0e7, 41)
+
+    xp_np = array_ns.get_backend('numpy')
+    xp_jax = array_ns.get_backend('jax')
+
+    r_np = get_particle_production_dxs_dE(
+        endf_dict, '(n,g)', 'g', ein, eout,
+        broadening=5.0e4, xp=xp_np,
+    )
+
+    @jax.jit
+    def jit_go(ein_arg):
+        return get_particle_production_dxs_dE(
+            endf_dict, '(n,g)', 'g', ein_arg, eout,
+            broadening=5.0e4, xp=xp_jax,
+        )
+
+    r_jit = np.asarray(jit_go(jnp.asarray(ein)))
+    peak = float(np.max(np.abs(r_np)))
+    diff = float(np.max(np.abs(r_jit - r_np)))
+    rel = diff / max(1e-30, peak)
+    assert rel < 1e-12, (
+        f'jit vs numpy on Al-27 (n,g) broadening: rel-to-peak diff = {rel:.3e}'
     )
 
 
