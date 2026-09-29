@@ -102,6 +102,71 @@ def mf6cm2lab_disc(awr: float, awi: float, awp: float, lct: int,
     return ep, w, dinv
 
 
+def mf6cm2lab_disc_bc(awr, awi, awp, lct, e, tp, u, xp):
+    """Vectorised broadcast form of :func:`mf6cm2lab_disc` for the
+    tracer-safe / jit-friendly discrete-line path (issue #290 Phase 2).
+
+    ``e``, ``tp``, ``u`` are broadcastable xp-native arrays (each
+    scalar or ndarray). Returns ``(ep, w, dinv)`` of the broadcast
+    shape.
+
+    Branch handling matches the scalar reference exactly, expressed
+    as ``xp.where`` masks so tracer inputs can flow through
+    ``jax.jit`` / ``jax.grad``:
+
+    - Non-CM frame (``lct not in {2, 3+light-ejectile}``): identity
+      map ``(tp, u, 1)`` for every point. Decided Python-side since
+      it depends only on static ints.
+    - Below-threshold (``e * tp <= 0``): identity ``(tp, u, 1)`` --
+      the discrete line is not kinematically reachable at that ``E``.
+    - Negative discriminant or both quadratic roots non-positive:
+      sentinel ``(0, 0, 0)``. Callers treat ``dinv == 0`` as "no
+      contribution at this cell".
+    - Otherwise: the (+) root if positive, else the (-) root; then
+      the forward LAB->eval formulas for ``w`` and ``dinv``.
+    """
+    is_cm = (lct == 2) or (lct == 3 and awp < 4.0)
+    if not is_cm:
+        # Identity for every point; broadcast to the query shape.
+        target = e * tp * u
+        return (
+            tp + xp.zeros_like(target),
+            u + xp.zeros_like(target),
+            xp.ones_like(target),
+        )
+    c0 = float(np.sqrt(awi * awp) / (awi + awr))
+    # Guard divisions and sqrts so the "invalid" branches contribute
+    # only through the where masks, not through NaN propagation.
+    positive = e * tp > 0.0
+    e_safe = xp.where(e > 0.0, e, 1.0)
+    bcoef = c0 * xp.sqrt(e_safe) * u
+    ccoef = c0 * c0 * e - tp
+    disc = bcoef * bcoef - ccoef
+    root = xp.sqrt(xp.where(disc >= 0.0, disc, 0.0))
+    y1 = bcoef + root
+    y2 = bcoef - root
+    y_valid = (y1 > 0.0) | (y2 > 0.0)
+    y = xp.where(y1 > 0.0, y1, xp.where(y2 > 0.0, y2, 1.0))
+    ep_raw = y * y
+    ep_safe = xp.where(ep_raw > 0.0, ep_raw, 1.0)
+    c = c0 * xp.sqrt(e_safe / ep_safe)
+    d2 = 1.0 + c * c - 2.0 * c * u
+    d2_lt_min = d2 < _MF6CM_D2_MIN
+    d2_safe = xp.where(d2_lt_min, _MF6CM_D2_MIN, d2)
+    c_safe = xp.where(d2_lt_min, u - _MF6CM_C_MIN, c)
+    dinv_raw = 1.0 / xp.sqrt(d2_safe)
+    w_raw = dinv_raw * (u - c_safe)
+    w_clip = xp.clip(w_raw, -1.0, 1.0)
+
+    valid_cm = positive & (disc >= 0.0) & y_valid
+    # Three-way select: valid_cm -> raw; positive but invalid -> 0
+    # sentinel; not positive (below-threshold) -> identity.
+    ep = xp.where(valid_cm, ep_raw, xp.where(positive, 0.0, tp))
+    w = xp.where(valid_cm, w_clip, xp.where(positive, 0.0, u))
+    dinv = xp.where(valid_cm, dinv_raw, xp.where(positive, 0.0, 1.0))
+    return ep, w, dinv
+
+
 # --- Kalbach-Mann angular distribution -----------------------------
 
 # Isotope-averaged natural-A fallbacks for the semi-empirical
