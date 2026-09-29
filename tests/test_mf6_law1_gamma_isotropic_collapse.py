@@ -304,6 +304,59 @@ def test_jit_top_level_broadening_al27_ng():
 
 
 @pytest.mark.skipif(
+    not os.path.exists(_AL27_PATH),
+    reason='Al-27 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
+)
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_jit_top_level_ddxs_al27_ng_mf15():
+    """End-to-end ``@jax.jit`` on the top-level DDX API
+    (:func:`get_particle_production_ddxs`) on Al-27 (n,g). Pins
+    the Phase 4 milestone: after the same ``_is_jax_tracer`` guard
+    + ``xp=xp`` threading in
+    :func:`compute_ddx_mf15_continuum_broadened`, the DDX pipeline
+    traces end-to-end through the MF15 continuum path in addition
+    to the MF12 discrete-line path already covered by Phase 3.
+
+    Al-27 MT102 has MF12 discrete lines, MF15 continuum, and MF14
+    LI=1 isotropic angular. The DDX folder folds all three.
+    """
+    import jax
+    import jax.numpy as jnp
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.quantities import get_particle_production_ddxs
+
+    parser = EndfParserCpp(ignore_missing_tpid=True)
+    endf_dict = parser.parsefile(_AL27_PATH)
+    ein = np.array([1.0e6, 5.0e6])
+    eout = np.linspace(0.0, 1.0e7, 21)
+    mu = np.linspace(-0.9, 0.9, 5)
+
+    xp_np = array_ns.get_backend('numpy')
+    xp_jax = array_ns.get_backend('jax')
+
+    r_np = get_particle_production_ddxs(
+        endf_dict, '(n,g)', 'g', ein, eout, mu,
+        broadening=5.0e4, xp=xp_np,
+    )
+
+    @jax.jit
+    def jit_go(ein_arg):
+        return get_particle_production_ddxs(
+            endf_dict, '(n,g)', 'g', ein_arg, eout, mu,
+            broadening=5.0e4, xp=xp_jax,
+        )
+
+    r_jit = np.asarray(jit_go(jnp.asarray(ein)))
+    peak = float(np.max(np.abs(r_np)))
+    diff = float(np.max(np.abs(r_jit - r_np)))
+    rel = diff / max(1e-30, peak)
+    assert rel < 1e-12, (
+        f'jit vs numpy on Al-27 (n,g) DDX (MF15 route): '
+        f'rel-to-peak diff = {rel:.3e}'
+    )
+
+
+@pytest.mark.skipif(
     not os.path.exists(_FE56_PATH),
     reason='Fe-56 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
 )
