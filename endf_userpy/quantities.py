@@ -607,9 +607,12 @@ def _get_particle_production_dxs_dE_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    if xp is None:
-        from .primitives import array_ns
-        xp = array_ns.get_backend('numpy')
+    # ``xp`` may be None here (default = numpy). Pass it through as-is
+    # so downstream cumulative-quantity dispatchers keep their existing
+    # ``{'xp': xp} if xp is not None else {}`` guard: functions that
+    # do not accept an xp kwarg still get called without one when the
+    # caller did not opt in to a specific backend. ``_normalize_broadening``
+    # handles ``xp=None`` internally (falls back to numpy).
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
@@ -902,9 +905,9 @@ def _get_particle_production_ddxs_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    if xp is None:
-        from .primitives import array_ns
-        xp = array_ns.get_backend('numpy')
+    # ``xp`` may be None (default numpy); see sibling comment in
+    # ``_get_particle_production_dxs_dE_impl`` for why we do not
+    # resolve it early here.
     # Widened MT iteration (issue #130).
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
 
