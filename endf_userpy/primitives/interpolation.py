@@ -368,6 +368,14 @@ def _endf_interp1d_traced_x(
     the numpy per-region loop (5x scheme evaluations per point) but
     JAX-native and single-graph.
 
+    ``fp`` may be shape ``(N,)`` (returns ``(n_query,)`` as before)
+    or shape ``(..., N)`` where the last axis is the mesh axis
+    (returns ``(..., n_query)``). The batched form lets callers
+    fuse K independent yield tables that share ``xp_mesh``,
+    ``int_arr`` and ``nbt_arr`` into a single JAX graph rather
+    than K separate ``endf_interp1d`` calls (Lever C of #290);
+    the arithmetic naturally broadcasts over the leading axes.
+
     ``xp_mesh``, ``int_arr``, ``nbt_arr`` are file-side data (small,
     concrete) and stay numpy for the panel-index precomputation;
     only the arithmetic on ``x`` and ``fp`` runs through ``xp``.
@@ -387,7 +395,8 @@ def _endf_interp1d_traced_x(
         # Degenerate: too few mesh points for any bracket. Return
         # outside_value everywhere (or zeros if outside_value is None).
         fill = 0.0 if outside_value is None else float(outside_value)
-        return xp.full(x.shape, fill, dtype=x.dtype)
+        out_shape = fp.shape[:-1] + x.shape if fp.ndim > 1 else x.shape
+        return xp.full(out_shape, fill, dtype=x.dtype)
 
     # Per-mesh-point INT law (length n_mesh). ``convert_interp_repr``
     # assigns the shared boundary mesh point to the LOWER region;
@@ -408,8 +417,13 @@ def _endf_interp1d_traced_x(
 
     x1 = xp.take(xp_mesh_xp, idx)
     x2 = xp.take(xp_mesh_xp, idx + 1)
-    y1 = xp.take(fp, idx)
-    y2 = xp.take(fp, idx + 1)
+    # ``fp`` may be 1-D (shape ``(N,)``) or batched (shape
+    # ``(..., N)``). Take along the mesh (last) axis so the
+    # batched output has shape ``(..., n_query)`` and the
+    # arithmetic below broadcasts naturally against the per-query
+    # scalars ``x``, ``x1``, ``x2``.
+    y1 = xp.take(fp, idx, axis=-1)
+    y2 = xp.take(fp, idx + 1, axis=-1)
 
     # Safe denominators and log arguments so the branches we don't
     # select don't propagate NaN.
