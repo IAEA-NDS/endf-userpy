@@ -86,6 +86,18 @@ def stub_quantities(monkeypatch):
         state['calls'].append(('dexs_b', mt, id(kernel), kernel_width))
         return state['dexs_return'][mt]
 
+    def fake_dxs_dE_broadened_summed(endf_dict, mts, zap, einc, eouts,
+                                     kernel, kernel_width, **_):
+        # Coalesced summed-FFT path (issue #277): record one call
+        # naming the MT list, and return the sum of the per-MT stub
+        # results so the aggregate assertions still hold.
+        state['calls'].append(
+            ('dexs_b_summed', tuple(mts), id(kernel), kernel_width),
+        )
+        for mt in mts:
+            state['calls'].append(('dexs_b', mt, id(kernel), kernel_width))
+        return sum(state['dexs_return'][mt] for mt in mts)
+
     def fake_compute_dexs(endf_dict, mt, zap, einc, eouts):
         state['calls'].append(('dexs_plain', mt, None, None))
         return state['dexs_return'][mt]
@@ -161,6 +173,10 @@ def stub_quantities(monkeypatch):
     )
     monkeypatch.setattr(
         quantities.ddxb, 'compute_dxs_dE_broadened', fake_dxs_dE_broadened
+    )
+    monkeypatch.setattr(
+        quantities.ddxb, 'compute_dxs_dE_broadened_summed',
+        fake_dxs_dE_broadened_summed,
     )
     monkeypatch.setattr(
         quantities.quant_mt_zap, 'compute_dexs', fake_compute_dexs

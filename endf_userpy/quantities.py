@@ -643,6 +643,15 @@ def _get_particle_production_dxs_dE_impl(
             kernel=kernel, kernel_width=kernel_width, xp=xp,
         )
 
+    def _admitted_cont_mts():
+        # Collect MTs the per-MT continuous folder would visit, so
+        # the coalesced summed-FFT path (issue #277) can run one
+        # adaptive_convolve across them instead of one per MT.
+        return [
+            mt for mt in mts
+            if select(endf_dict, mt, zap, energies_in, energies_out)
+        ]
+
     def law1_disc_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_law1_discrete_broadened(
             endf_dict, mt, zap, einc, eouts,
@@ -682,11 +691,24 @@ def _get_particle_production_dxs_dE_impl(
             selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         )
 
-    cont = quant_mt_zap.compute_cumulative_quantity(
-        cont_compute, select,
-        endf_dict, zap, energies_in, energies_out,
-        mts=mts,
-    )
+    admitted_cont_mts = _admitted_cont_mts()
+    if len(admitted_cont_mts) >= 2:
+        # Coalesced-summed FFT: one adaptive_convolve for the sum
+        # of every admitted MT's continuous dxs/dE, instead of one
+        # per MT (issue #277). ~30-50x runtime cut on files where
+        # widening the reaction string admits many MTs
+        # (e.g. U-233 (n,g) with ~100+ partial channels).
+        cont = ddxb.compute_dxs_dE_broadened_summed(
+            endf_dict, admitted_cont_mts, zap,
+            energies_in, energies_out,
+            kernel=kernel, kernel_width=kernel_width, xp=xp,
+        )
+    else:
+        cont = quant_mt_zap.compute_cumulative_quantity(
+            cont_compute, select,
+            endf_dict, zap, energies_in, energies_out,
+            mts=mts,
+        )
     law1_disc = quant_mt_zap.compute_cumulative_quantity(
         law1_disc_compute, law1_disc_select,
         endf_dict, zap, energies_in, energies_out,
