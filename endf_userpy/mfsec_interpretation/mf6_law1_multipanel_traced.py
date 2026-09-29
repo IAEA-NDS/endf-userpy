@@ -413,10 +413,17 @@ def integrate_law1_spectrum_multipanel_traced(
 
     e_in_xp = xp.asarray(energies_in)
     ep_out_xp = xp.asarray(energies_out)
-    n_pairs = int(np.asarray(data.ei_mesh).shape[0]) - 1
+    # Shape is static even for tracers -- no numpy materialisation
+    # needed. Fixes ``@jax.jit`` failure at
+    # ``np.asarray(tracer).shape[0]`` when ``data`` is built inside
+    # the jitted function (data.ei_mesh becomes a tracer array of
+    # concrete shape).
+    n_pairs = data.ei_mesh.shape[0] - 1
 
-    # Concrete numpy view for outer-region interp lookup (data-side
-    # only; the panel-pair kernel gathers with a tracer index).
+    # int_arr / nbt_arr are stored as concrete numpy arrays by the
+    # preproc (numpy or jax build alike; they carry ENDF INT / NBT
+    # region-descriptor integers), so np.asarray on them is a no-op
+    # and stays jit-safe.
     ei_interp_full = convert_interp_repr(
         np.asarray(data.int_arr), np.asarray(data.nbt_arr),
     )
@@ -435,8 +442,12 @@ def integrate_law1_spectrum_multipanel_traced(
         )
 
     ei_mesh_xp = xp.asarray(data.ei_mesh)
-    e_min = float(np.asarray(data.ei_mesh)[0])
-    e_max = float(np.asarray(data.ei_mesh)[-1])
+    # Keep ``e_min`` / ``e_max`` as xp-native scalars: under jit
+    # ``data.ei_mesh`` is a tracer and ``float(...)`` would fail. The
+    # downstream ``in_range`` mask uses ``e_scalar >= e_min``, which
+    # is jit-safe with tracer bounds.
+    e_min = ei_mesh_xp[0]
+    e_max = ei_mesh_xp[-1]
 
     def _spectrum_one_e(e_scalar):
         # panel_idx = clamp(searchsorted(ei_mesh, e, side='right') - 1,

@@ -273,10 +273,21 @@ def compute_dxs_dE_broadened(
         `compute_dexs`.
     """
     from ..primitives import array_ns
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
+    # Preserve the historical ``np.asarray(..., dtype=float)`` normalisation
+    # for concrete inputs, but skip it for jax tracers so ``@jax.jit`` /
+    # ``jax.grad`` can flow ``energies_in`` / ``energies_out`` through
+    # this call. Cannot use ``xp.asarray`` here: under a jit trace
+    # ``jnp.asarray(numpy_const)`` returns a ``DynamicJaxprTracer``
+    # rather than a compile-time-constant array, which then breaks
+    # downstream numpy-materialisation in ``adaptive_convolve``'s
+    # mesh-bound extraction.
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
 
     def f(eout_internal):
         return compute_dexs(
@@ -362,13 +373,19 @@ def compute_dxs_dE_broadened_summed(
     dxs_dE : ndarray of shape ``(n_einc, n_eouts)`` in barn/eV.
     """
     from ..primitives import array_ns
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    einc = np.asarray(energies_in, dtype=float)
-    eouts = np.asarray(energies_out, dtype=float)
+    # Skip numpy normalisation for tracers -- see the sibling comment
+    # in ``compute_dxs_dE_broadened`` for why ``xp.asarray`` is not
+    # a drop-in replacement.
+    einc = energies_in if _is_jax_tracer(energies_in) \
+        else np.asarray(energies_in, dtype=float)
+    eouts = energies_out if _is_jax_tracer(energies_out) \
+        else np.asarray(energies_out, dtype=float)
 
     if len(mts) == 0:
-        return xp.zeros((len(einc), len(eouts)), dtype=xp.float64)
+        return xp.zeros((einc.shape[0], eouts.shape[0]), dtype=xp.float64)
 
     def f_summed(eout_internal):
         total = None
@@ -541,18 +558,24 @@ def compute_ddx_law1_discrete_broadened(
     ddx : ndarray of shape (n_einc, n_eouts, n_mus).
     """
     from ..primitives import array_ns
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
-    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    # Skip numpy normalisation for tracers -- see the sibling comment
+    # in ``compute_dxs_dE_broadened``.
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
+    if not _is_jax_tracer(angle_cosines_out):
+        angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
 
     ep_disc_lab, amp_disc = mf6_interp.compute_law1_discrete_lines(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
     )
-    n_einc = len(energies_in)
-    n_eouts = len(energies_out)
-    n_mus = len(angle_cosines_out)
+    n_einc = energies_in.shape[0]
+    n_eouts = energies_out.shape[0]
+    n_mus = angle_cosines_out.shape[0]
     if ep_disc_lab.shape[-1] == 0:
         return xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
 
