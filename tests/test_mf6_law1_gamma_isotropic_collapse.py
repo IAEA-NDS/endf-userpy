@@ -183,6 +183,73 @@ def test_jit_collapse_matches_numpy_u233_ng():
 
 
 @pytest.mark.skipif(
+    not os.path.exists(_U233_PATH),
+    reason='U-233 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
+)
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_jit_top_level_broadening_u233_ng():
+    """End-to-end ``@jax.jit`` on the top-level broadening API on
+    U-233 (n,g). Milestone for issue #290 Phase 2.
+
+    Verifies that after (i) the discrete-line kernel port to a
+    traced form, (ii) threading ``xp`` through the built-in Gaussian
+    kernel closure, and (iii) switching the MF3 cross-section call
+    to ``xp=``, the top-level ``get_particle_production_dxs_dE``
+    traces end-to-end and produces bit-comparable output to numpy.
+
+    Also spot-checks ``jax.grad`` wrt ``energies_in``.
+    """
+    import jax
+    import jax.numpy as jnp
+    from endf_parserpy import EndfParserCpp
+    from endf_userpy.quantities import get_particle_production_dxs_dE
+
+    parser = EndfParserCpp(
+        ignore_send_records=True, ignore_missing_tpid=True,
+        ignore_blank_lines=True,
+    )
+    endf_dict = parser.parsefile(_U233_PATH)
+    ein = np.array([1.0e6, 2.0e6])
+    eout = np.linspace(0.0, 8.0e6, 41)
+
+    xp_np = array_ns.get_backend('numpy')
+    xp_jax = array_ns.get_backend('jax')
+
+    r_np = get_particle_production_dxs_dE(
+        endf_dict, '(n,g)', 'g', ein, eout,
+        broadening=1.0e4, xp=xp_np,
+    )
+
+    @jax.jit
+    def jit_go(ein_arg):
+        return get_particle_production_dxs_dE(
+            endf_dict, '(n,g)', 'g', ein_arg, eout,
+            broadening=1.0e4, xp=xp_jax,
+        )
+
+    r_jit = np.asarray(jit_go(jnp.asarray(ein)))
+    peak = float(np.max(np.abs(r_np)))
+    diff = float(np.max(np.abs(r_jit - r_np)))
+    rel = diff / max(1e-30, peak)
+    assert rel < 1e-12, (
+        f'jit vs numpy on U-233 (n,g) broadening: rel-to-peak diff = {rel:.3e}'
+    )
+
+    def scalar_out(ein_arg):
+        r = get_particle_production_dxs_dE(
+            endf_dict, '(n,g)', 'g', ein_arg, eout,
+            broadening=1.0e4, xp=xp_jax,
+        )
+        return jnp.sum(r)
+
+    g = np.asarray(jax.grad(scalar_out)(jnp.asarray(ein)))
+    assert g.shape == ein.shape
+    assert np.all(np.isfinite(g)), (
+        f'jax.grad wrt energies_in returned non-finite values: {g}'
+    )
+
+
+@pytest.mark.skipif(
     not os.path.exists(_FE56_PATH),
     reason='Fe-56 corpus file not fetched; run tests/data_law1_adhoc/fetch.sh',
 )

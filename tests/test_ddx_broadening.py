@@ -59,7 +59,7 @@ def patched_environment(monkeypatch):
             return state['yields_all'](einc)
         return state['yields_cont'](einc)
 
-    def fake_xs(endf_dict, mt, einc):
+    def fake_xs(endf_dict, mt, einc, **_):
         return state['xs'](einc)
 
     def fake_angdist_mf4(endf_dict, mt, einc, mus, to_lab=True, **_):

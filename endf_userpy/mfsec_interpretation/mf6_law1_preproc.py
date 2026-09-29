@@ -247,6 +247,10 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
     # ``jax.jit(loss)`` and ``jax.jit(jax.grad(loss))``, where the
     # whole preproc runs inside a JAX trace, do not turn integer
     # counts into tracers whose ``int(...)`` would raise.
+    # Keep a numpy view of ep_panels for the dedup pass below; the
+    # xp.asarray promotion turns it into a tracer under jit, which
+    # then can't be materialised for the Python-side dedup lookup.
+    ep_panels_np = ep_panels
     ei_mesh = xp.asarray(ei_mesh)
     ep_panels = xp.asarray(ep_panels)
 
@@ -259,23 +263,25 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
     #
     # Dedup requires materialising the ``b`` rows to numpy so it
     # can group by ``ep`` value. If the caller injected a jax tracer
-    # into ``subsec['b']`` for file-side autodiff, materialisation
-    # would raise; in that case skip dedup and expose the raw padded
-    # ``(nd_max,)``-wide arrays instead. The traced downstream
-    # kernel handles both shapes uniformly, and files with genuine
-    # coincident discrete lines are rare (verified: U-233 (n,g)
-    # nd_ded == nd across all 118 panels).
+    # into ``subsec['b']`` for file-side autodiff (or the whole
+    # preproc runs inside a jit trace), materialisation would raise;
+    # in that case skip dedup and expose the raw padded ``(nd_max,)``-
+    # wide arrays instead. The traced downstream kernel handles both
+    # shapes uniformly, and files with genuine coincident discrete
+    # lines are rare (verified: U-233 (n,g) nd_ded == nd across all
+    # 118 panels).
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     from . import mf6_interpretation_subsecs as _subsecs
     max_nd = int(nd_arr.max()) if nd_arr.size else 0
     if xp.name == 'jax' and _is_jax_tracer(b_panels):
         # Skip dedup; expose the raw first ``nd_arr[p]`` slots of
-        # each panel through the same interface.
+        # each panel through the same interface. ``ep_panels_np`` is
+        # the pre-tracer numpy view captured above.
         ep_disc_ded = np.zeros((n_panels, max_nd), dtype=float)
         for p in range(n_panels):
             nd_p = int(nd_arr[p])
             if nd_p > 0:
-                ep_disc_ded[p, :nd_p] = np.asarray(ep_panels[p, :nd_p])
+                ep_disc_ded[p, :nd_p] = ep_panels_np[p, :nd_p]
         # b_disc_ded slices ``b_panels`` xp-native so tracer identity
         # is preserved. Take first ``max_nd`` rows; per-panel valid
         # count is ``nd_arr[p]`` (== nd_ded_arr[p] in this branch).
@@ -284,7 +290,7 @@ def _mf6_law1_data_build(endf_dict, mt: int, subsec_num: int, xp) -> MF6Law1Data
     else:
         per_panel_ded = []
         for p in range(n_panels):
-            ep_panel_np = np.asarray(ep_panels[p])
+            ep_panel_np = ep_panels_np[p]
             b_panel_np = np.asarray(b_panels[p])
             nd_p = int(nd_arr[p])
             ep_ded, b_ded, nd_ded = _subsecs._dedup_discrete_lines(
