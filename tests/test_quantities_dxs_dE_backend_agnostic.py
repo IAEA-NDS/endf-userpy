@@ -28,6 +28,7 @@ from endf_parserpy import EndfParserCpp
 from endf_userpy.quantities import get_particle_production_dxs_dE
 from endf_userpy.primitives import array_ns
 from endf_userpy.primitives.helpers import find_interval
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_al27
 
@@ -55,9 +56,7 @@ def test_default_matches_xp_numpy_adapter(al27_endf_dict):
         default = np.asarray(get_particle_production_dxs_dE(
             al27_endf_dict, '(n,2n)', 'n', ein, eout,
         ))
-        with_xp = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,2n)', 'n', ein, eout, xp=xp_np,
-        ))
+        with_xp = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,2n)', 'n', ein, eout, options=RunOptions(backend=xp_np)))
     np.testing.assert_array_equal(default, with_xp)
 
 
@@ -71,12 +70,8 @@ def test_numpy_jax_parity_al27_n2n(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
-        f_np = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,2n)', 'n', ein, eout, xp=xp_np,
-        ))
-        f_jx = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,2n)', 'n', ein, eout, xp=xp_jx,
-        ))
+        f_np = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,2n)', 'n', ein, eout, options=RunOptions(backend=xp_np)))
+        f_jx = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,2n)', 'n', ein, eout, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(f_np, f_jx, rtol=1e-11, atol=1e-30)
 
 
@@ -116,9 +111,7 @@ def test_jax_grad_end_to_end_to_law1_b_coeff(al27_endf_dict):
         d_t[6][16]['subsection'][1]['b'][panel_key][ep_row][coef] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return jnp.sum(get_particle_production_dxs_dE(
-                d_t, '(n,2n)', 'n', ein, eout, xp=xp_jx,
-            ))
+            return jnp.sum(get_particle_production_dxs_dE(d_t, '(n,2n)', 'n', ein, eout, options=RunOptions(backend=xp_jx)))
 
     val = float(loss(jnp.array(original)))
     grad = float(jax.grad(loss)(jnp.array(original)))

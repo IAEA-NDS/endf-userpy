@@ -18,6 +18,7 @@ import pytest
 from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
+from endf_userpy.run_options import RunOptions
 from endf_userpy.quantities import (
     get_particle_production_discrete_gamma_lines,
     get_particle_production_dxs_dE,
@@ -275,9 +276,7 @@ def test_jax_grad_reaches_line_weight_through_yield_swap(h2_endf_dict):
         tab['y'] = new_y
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            lines = get_particle_production_discrete_gamma_lines(
-                d_t, '(n,g)', np.array([1e6]), xp=xp_jax,
-            )
+            lines = get_particle_production_discrete_gamma_lines(d_t, '(n,g)', np.array([1e6]), options=RunOptions(backend=xp_jax))
         return jnp.sum(jnp.stack([jnp.sum(ln.weight) for ln in lines]))
 
     theta0 = jnp.array(orig_val)

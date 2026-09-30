@@ -7,7 +7,7 @@ energydist_from_subsec_law1``).
 
 Pins:
 
-- ``get_particle_production_dxs_dE(..., xp=jax)`` runs to completion
+- ``get_particle_production_dxs_dE(..., options=RunOptions(backend=jax))`` runs to completion
   with a jax tracer E on Al-27 (n, 2n) MT16.
 - ``jax.grad`` wrt E matches central FD at three mid-panel E values.
 - Numpy path unchanged (default and explicit xp=numpy identical).
@@ -23,6 +23,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_particle_production_dxs_dE
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_al27
 
@@ -48,9 +49,7 @@ def test_numpy_path_unchanged(al27_endf_dict):
         a = np.asarray(get_particle_production_dxs_dE(
             al27_endf_dict, '(n,2n)', 'n', ein, eout,
         ))
-        b = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,2n)', 'n', ein, eout, xp=xp_np,
-        ))
+        b = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,2n)', 'n', ein, eout, options=RunOptions(backend=xp_np)))
     np.testing.assert_array_equal(a, b)
 
 
@@ -70,9 +69,7 @@ def test_jax_grad_wrt_E_multipanel_through_top_level(al27_endf_dict):
     def loss(E):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            return jnp.sum(get_particle_production_dxs_dE(
-                al27_endf_dict, '(n,2n)', 'n', E[None], eout, xp=xp_jx,
-            ))
+            return jnp.sum(get_particle_production_dxs_dE(al27_endf_dict, '(n,2n)', 'n', E[None], eout, options=RunOptions(backend=xp_jx)))
 
     for E_val in (1.42e7, 1.55e7, 1.7e7):
         E0 = jnp.array(E_val)

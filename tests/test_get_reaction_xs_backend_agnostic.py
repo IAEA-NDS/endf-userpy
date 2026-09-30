@@ -22,6 +22,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.quantities import get_reaction_xs
 from endf_userpy.primitives import array_ns
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_nb93
 
@@ -47,22 +48,16 @@ def test_default_matches_xp_numpy_adapter(nb93_endf_dict):
         warnings.simplefilter('ignore', UserWarning)
         default = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein))
         xp_np = array_ns.get_backend('numpy')
-        with_xp = np.asarray(get_reaction_xs(
-            nb93_endf_dict, '(n,total)', ein, xp=xp_np,
-        ))
+        with_xp = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(backend=xp_np)))
     np.testing.assert_array_equal(default, with_xp)
 
 
 def test_default_matches_xp_numpy_with_resonance(nb93_endf_dict):
     """Same for the include_resonance=True composition path."""
     ein = np.array([1e-3, 1.0, 100.0])
-    default = np.asarray(get_reaction_xs(
-        nb93_endf_dict, '(n,total)', ein, include_resonance=True,
-    ))
+    default = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(include_resonance=True)))
     xp_np = array_ns.get_backend('numpy')
-    with_xp = np.asarray(get_reaction_xs(
-        nb93_endf_dict, '(n,total)', ein, include_resonance=True, xp=xp_np,
-    ))
+    with_xp = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_np)))
     np.testing.assert_array_equal(default, with_xp)
 
 
@@ -73,12 +68,8 @@ def test_numpy_jax_parity_include_resonance_nb93(nb93_endf_dict):
     ein = np.array([1e-3, 1.0, 35.0, 100.0])
     xp_np = array_ns.get_backend('numpy')
     xp_jx = array_ns.get_backend('jax')
-    f_np = np.asarray(get_reaction_xs(
-        nb93_endf_dict, '(n,total)', ein, include_resonance=True, xp=xp_np,
-    ))
-    f_jx = np.asarray(get_reaction_xs(
-        nb93_endf_dict, '(n,total)', ein, include_resonance=True, xp=xp_jx,
-    ))
+    f_np = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_np)))
+    f_jx = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_jx)))
     np.testing.assert_allclose(f_np, f_jx, rtol=1e-11, atol=1e-30)
 
 
@@ -111,9 +102,7 @@ def test_jax_grad_wrt_mlbw_ER_end_to_end_nb93(nb93_endf_dict):
             or d_t[2][151]['isotope'][1]['range'][1]['spingroup']
         )
         lg[1]['ER'][er_row] = theta
-        return jnp.sum(get_reaction_xs(
-            d_t, '(n,total)', ein, include_resonance=True, xp=xp_jx,
-        ))
+        return jnp.sum(get_reaction_xs(d_t, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_jx)))
 
     val = float(loss(jnp.array(original)))
     grad = float(jax.grad(loss)(jnp.array(original)))

@@ -1,5 +1,3 @@
-import contextlib
-import contextvars
 import numpy as np
 from ..primitives import properties
 from ..primitives import reactions as reaction
@@ -203,95 +201,98 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in, xp=None):
     return xs_mt5 * yield_mt5
 
 
-# Context-inherited flag: when True, `compute_xs` returns the
-# physical cross section including MF2 resolved-resonance
-# reconstruction (composed with MF3 as an additive background), on
-# whichever backend was set via `resonance_backend_ctx`. Set by the
-# top-level `get_*` APIs when the user passes `include_resonance=True`;
-# defaults to False everywhere else so legacy callers keep the raw
-# MF3 behaviour and the resonance-range policy machinery in
-# `mf3_interpretation`.
-_include_resonance_var = contextvars.ContextVar(
-    '_include_resonance', default=False,
-)
-_resonance_backend_var = contextvars.ContextVar(
-    '_resonance_backend', default=None,
-)
-_urr_quadrature_var = contextvars.ContextVar(
-    '_urr_quadrature', default='gauss_legendre_32',
-)
-
-
-@contextlib.contextmanager
-def resonance_reconstruction_ctx(include, backend=None,
-                                 urr_quadrature='gauss_legendre_32'):
-    """Context manager toggling MF2 resonance reconstruction inside
-    every :func:`compute_xs` call in the ``with`` block. ``backend``
-    is a backend name understood by
-    :func:`endf_userpy.primitives.array_ns.get_backend`
-    (``'numpy'`` / ``'numba'`` / ``'jax'``); ``None`` means numpy.
-    ``urr_quadrature`` selects the LRU=2 fluctuation-integral
-    quadrature; see
-    :func:`endf_userpy.mfsec_interpretation.mf2_interpretation_urr.reconstruct`
-    for the supported values and their accuracy characteristics
-    (issue #299).
-    """
-    tok_i = _include_resonance_var.set(bool(include))
-    tok_b = _resonance_backend_var.set(backend)
-    tok_q = _urr_quadrature_var.set(urr_quadrature)
-    try:
-        yield
-    finally:
-        _include_resonance_var.reset(tok_i)
-        _resonance_backend_var.reset(tok_b)
-        _urr_quadrature_var.reset(tok_q)
-
-
-def compute_xs(endf_dict, mt, energies_in, xp=None):
+def compute_xs(endf_dict, mt, energies_in, *, options=None):
     """Cross section for one MT.
 
-    Backend-agnostic (issue #169): ``xp=None`` (default) is numpy
-    and preserves the pre-port behaviour (raw MF3 returned as
-    numpy, resonance composition returned as numpy via
-    ``np.asarray`` at the boundary). Passing a JAX adapter, when
-    combined with ``resonance_reconstruction_ctx(include=True,
-    backend='jax')``, keeps the composed cross section xp-native
-    so ``jax.grad`` reaches file-side leaves (MF2 dict-stored
-    resonance parameters) through this entry.
-
-    Note: only the resonance composition is xp-native today; the
-    raw MF3 branch (used when ``include_resonance=False``) stays
-    numpy internally and returns numpy. See tier-2 remaining work
-    under issue #169 for the MF3 xp port.
+    ``options`` (see :class:`endf_userpy.run_options.RunOptions`)
+    carries every runtime policy formerly plumbed via contextvars
+    (issue #143 migration): ``above_range``, ``resonance_range``,
+    ``include_resonance``, ``backend`` (with ``'auto'`` resolving
+    to numba on resonance calls when available), and
+    ``urr_quadrature``. ``options=None`` resolves to a default
+    :class:`RunOptions` instance, so leaf callers get sensible
+    physics-first defaults if they invoke this directly.
     """
-    from ..primitives import array_ns
-    if _include_resonance_var.get():
-        # Prefer the caller-provided xp; fall back to the legacy
-        # ``resonance_backend`` context so pre-port callers keep
-        # working. If both are set the caller's xp wins.
-        if xp is None:
-            backend_name = _resonance_backend_var.get() or 'numpy'
-            xp_res = array_ns.get_backend(backend_name)
-        else:
-            xp_res = xp
+    from ..run_options import RunOptions
+    if options is None:
+        options = RunOptions()
+    if options.include_resonance:
+        xp_res = options.resolve_backend(is_resonance_call=True)
         result = _res_comp.compute_reconstructed_cross_section(
             endf_dict, mt, energies_in, xp_res,
-            urr_quadrature=_urr_quadrature_var.get(),
+            urr_quadrature=options.urr_quadrature,
         )
+        # The composition layer uses ``compute_cross_section_agnostic``
+        # so it bypasses the MF3 policy machinery. Reapply the
+        # above_range policy at the composed level so a top-level
+        # ``options=RunOptions(above_range=...)`` still governs
+        # what happens above the file's Ein mesh. The
+        # ``resonance_range`` policy is intentionally a no-op here:
+        # the whole point of ``include_resonance=True`` is that the
+        # composed XS in the RRR is physical, so warning about it
+        # would be misleading. If MT is not in MF3 at all (JENDL-5
+        # MT3 shape, no MF3 entry) skip the mask -- composition
+        # returns the pure MF2 contribution and there is no mesh
+        # to bound.
+        if mt in endf_dict.get(3, {}):
+            from ..mfsec_interpretation.mf3_interpretation import (
+                _handle_above_range,
+            )
+            e_mesh = np.asarray(endf_dict[3][mt]['xstable']['E'], dtype=float)
+            e_max = float(e_mesh.max())
+            # Under jax the tracer energies_in cannot be numpified;
+            # do the mask xp-natively. The _handle_above_range hook
+            # still needs a concrete count for the accumulator; on
+            # tracers we skip that (no summary warning fires under
+            # jit anyway).
+            einc_xp = xp_res.asarray(energies_in)
+            above_mask_xp = einc_xp > e_max
+            try:
+                einc_arr = np.asarray(energies_in, dtype=float)
+                above_mask_np = einc_arr > e_max
+                fill = _handle_above_range(
+                    options.above_range, mt, e_max,
+                    above_mask_np, einc_arr,
+                )
+            except Exception:
+                # tracer path: pick the fill from the policy name
+                if options.above_range in ('warn_nan', 'nan'):
+                    fill = float('nan')
+                else:
+                    fill = 0.0
+            if options.above_range in ('warn_nan', 'nan'):
+                result = xp_res.where(above_mask_xp, fill, result)
+            elif options.above_range in ('warn_zero', 'zero'):
+                result = xp_res.where(above_mask_xp, 0.0, result)
+            # 'raise' already raised inside _handle_above_range on
+            # the concrete path; no fill to apply here.
         # Preserve pre-port behaviour on the numpy path (return
         # numpy); on non-numpy xp keep the tracer alive so autodiff
         # works end-to-end.
         if xp_res.name == 'numpy':
             return np.asarray(result)
         return result
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp)
-    if xp is not None and xp.name != 'numpy':
+    xp = options.resolve_backend(is_resonance_call=False)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        xp=xp,
+    )
+    if xp.name != 'numpy':
         return xp.asarray(xs)
     return xs
 
 
-def compute_prodxs(endf_dict, mt, zap, energies_in, xp=None):
+def compute_prodxs(
+    endf_dict, mt, zap, energies_in, xp=None,
+    above_range='warn_nan', resonance_range='warn',
+):
     """Particle-production cross section for one (MT, ZAP).
+
+    ``above_range`` / ``resonance_range`` mirror
+    :func:`mf3_interpretation.compute_cross_section`. Threaded from
+    the top-level ``options=RunOptions(...)`` (issue #143).
 
     ``xp=None`` (default) preserves the pre-port numpy behaviour.
     Passing a JAX adapter promotes the numpy sub-components (MF13
@@ -313,7 +314,11 @@ def compute_prodxs(endf_dict, mt, zap, energies_in, xp=None):
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     )
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+        above_range=above_range, resonance_range=resonance_range,
+        xp=xp,
+    )
     return yields * xp.asarray(xs)
 
 
@@ -565,9 +570,12 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwar
         mt_list = get_reaction_mt_numbers(endf_dict)
     else:
         mt_list = mts
-    # ``select`` predicates take (endf_dict, mt, zap, ...) and do
-    # not accept ``xp``. Strip it before passing.
-    select_kwargs = {k: v for k, v in kwargs.items() if k != 'xp'}
+    # ``select`` predicates take (endf_dict, mt, zap, ...) positional
+    # only and do not accept ``xp`` / ``options``. Strip them before
+    # passing.
+    select_kwargs = {
+        k: v for k, v in kwargs.items() if k not in ('xp', 'options')
+    }
     is_first = True
     cum_res = None
     for mt in mt_list:

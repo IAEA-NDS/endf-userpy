@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from endf_userpy.quantities import get_reaction_xs
+from endf_userpy.run_options import RunOptions
 
 
 PU239_CORPUS = os.path.join(
@@ -49,12 +50,11 @@ def test_urr_quadrature_reaches_kernel_and_changes_output(pu239_endf_dict):
     ein = np.linspace(2.0e3, 25.0e3, 40)
     xs_gl = get_reaction_xs(
         pu239_endf_dict, '(n,g)', ein,
-        include_resonance=True,
+        options=RunOptions(include_resonance=True),
     )
     xs_ross = get_reaction_xs(
         pu239_endf_dict, '(n,g)', ein,
-        include_resonance=True,
-        urr_quadrature='ross_10',
+        options=RunOptions(include_resonance=True, urr_quadrature='ross_10'),
     )
     peak = float(np.max(np.abs(xs_gl)))
     assert peak > 0.0, 'expected non-zero composed XS in the URR window'
@@ -79,12 +79,11 @@ def test_urr_quadrature_agreement_within_documented_class(pu239_endf_dict):
     ein = np.linspace(2.0e3, 25.0e3, 40)
     xs_gl = get_reaction_xs(
         pu239_endf_dict, '(n,g)', ein,
-        include_resonance=True,
+        options=RunOptions(include_resonance=True),
     )
     xs_ross = get_reaction_xs(
         pu239_endf_dict, '(n,g)', ein,
-        include_resonance=True,
-        urr_quadrature='ross_10',
+        options=RunOptions(include_resonance=True, urr_quadrature='ross_10'),
     )
     peak = float(np.max(np.abs(xs_gl)))
     rel = float(np.max(np.abs(xs_gl - xs_ross))) / max(1e-30, peak)
@@ -106,11 +105,13 @@ def test_urr_quadrature_default_matches_gauss_legendre_explicit(pu239_endf_dict)
     ein = np.linspace(2.0e3, 25.0e3, 40)
     xs_default = get_reaction_xs(
         pu239_endf_dict, '(n,g)', ein,
-        include_resonance=True,
+        options=RunOptions(include_resonance=True),
     )
     xs_explicit = get_reaction_xs(
         pu239_endf_dict, '(n,g)', ein,
-        include_resonance=True,
-        urr_quadrature='gauss_legendre_32',
+        options=RunOptions(
+            include_resonance=True,
+            urr_quadrature='gauss_legendre_32',
+        ),
     )
     np.testing.assert_array_equal(xs_default, xs_explicit)

@@ -1,6 +1,6 @@
 import numpy as np
 from ..primitives.interpolation import endf_interp1d
-from .mf3_interpretation import _above_range_var, _handle_above_range
+from .mf3_interpretation import _handle_above_range, _above_range_policy
 
 
 def find_subsec_nums(endf_dict, mt, zap, level=None):
@@ -26,15 +26,15 @@ def compute_cross_section(
 ):
     """Residual-production cross section from MF10.
 
-    `above_range` follows the same convention as
-    ``mf3_interpretation.compute_cross_section``: when `None`
-    (default), the policy comes from the context variable set by
-    the top-level `get_*` APIs, defaulting to ``'warn_nan'`` when
-    nothing is set. See that docstring for the full set of
-    policies.
+    ``above_range=None`` (default) reads the active policy from the
+    private ``_above_range_policy`` contextvar populated by
+    :func:`endf_userpy.mfsec_interpretation.mf3_interpretation._warning_summary_ctx`
+    for the duration of a top-level ``endf_userpy.quantities`` call;
+    falls back to ``'warn_nan'`` when the leaf is called outside
+    that context.
     """
     if above_range is None:
-        above_range = _above_range_var.get()
+        above_range = _above_range_policy.get()
     subsecs = get_subsecs(endf_dict, mt, zap, level)
     if len(subsecs) == 0:
         levelstr = f', level={level}' if level is not None else ''

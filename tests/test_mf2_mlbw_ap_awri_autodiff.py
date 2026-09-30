@@ -1,6 +1,6 @@
 """``jax.grad`` wrt MF2/MT151 LRU=1 LRF=2 (MLBW) scattering-radius
 AP and per-L mass-ratio AWRI leaves through the top-level
-``get_reaction_xs(include_resonance=True)`` API.
+``get_reaction_xs(options=RunOptions(include_resonance=True))`` API.
 
 Extends the resonance-parameter autodiff coverage (already pinned
 for ER / Γn / Γγ / Γf in ``test_mf2_resonance_autodiff_wrt_E`` and
@@ -22,6 +22,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_reaction_xs
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_nb93
 
@@ -45,7 +46,7 @@ def nb93_endf_dict():
 
 def test_grad_wrt_mlbw_AP_matches_fd(nb93_endf_dict):
     """Perturb the range-level scattering radius AP and confirm
-    ``jax.grad`` through ``get_reaction_xs(include_resonance=True)``
+    ``jax.grad`` through ``get_reaction_xs(options=RunOptions(include_resonance=True))``
     matches central FD.
     """
     import jax
@@ -61,10 +62,7 @@ def test_grad_wrt_mlbw_AP_matches_fd(nb93_endf_dict):
         d_t[2][151]['isotope'][1]['range'][1]['AP'] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_reaction_xs(
-                d_t, '(n,total)', ein,
-                include_resonance=True, xp=xp_jax,
-            )
+            r = get_reaction_xs(d_t, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)
@@ -85,7 +83,7 @@ def test_grad_wrt_mlbw_AP_matches_fd(nb93_endf_dict):
 
 def test_grad_wrt_mlbw_AWRI_matches_fd(nb93_endf_dict):
     """Perturb the per-L AWRI (channel mass ratio) and confirm
-    ``jax.grad`` through ``get_reaction_xs(include_resonance=True)``
+    ``jax.grad`` through ``get_reaction_xs(options=RunOptions(include_resonance=True))``
     matches central FD.
     """
     import jax
@@ -108,10 +106,7 @@ def test_grad_wrt_mlbw_AWRI_matches_fd(nb93_endf_dict):
         lg2[1]['AWRI'] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_reaction_xs(
-                d_t, '(n,total)', ein,
-                include_resonance=True, xp=xp_jax,
-            )
+            r = get_reaction_xs(d_t, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)

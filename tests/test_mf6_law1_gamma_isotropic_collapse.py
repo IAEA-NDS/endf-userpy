@@ -28,6 +28,7 @@ import pytest
 from endf_userpy.mfsec_interpretation import mf6_law1_epintegral as _epi
 from endf_userpy.mfsec_interpretation import mf6_law1_preproc as pp
 from endf_userpy.primitives import array_ns
+from endf_userpy.run_options import RunOptions
 
 
 _ADHOC_DIR = os.path.join(os.path.dirname(__file__), 'data_law1_adhoc')
@@ -216,17 +217,11 @@ def test_jit_top_level_broadening_u233_ng():
     xp_np = array_ns.get_backend('numpy')
     xp_jax = array_ns.get_backend('jax')
 
-    r_np = get_particle_production_dxs_dE(
-        endf_dict, '(n,g)', 'g', ein, eout,
-        broadening=1.0e4, xp=xp_np,
-    )
+    r_np = get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein, eout, broadening=1.0e4, options=RunOptions(backend=xp_np))
 
     @jax.jit
     def jit_go(ein_arg):
-        return get_particle_production_dxs_dE(
-            endf_dict, '(n,g)', 'g', ein_arg, eout,
-            broadening=1.0e4, xp=xp_jax,
-        )
+        return get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein_arg, eout, broadening=1.0e4, options=RunOptions(backend=xp_jax))
 
     r_jit = np.asarray(jit_go(jnp.asarray(ein)))
     peak = float(np.max(np.abs(r_np)))
@@ -237,10 +232,7 @@ def test_jit_top_level_broadening_u233_ng():
     )
 
     def scalar_out(ein_arg):
-        r = get_particle_production_dxs_dE(
-            endf_dict, '(n,g)', 'g', ein_arg, eout,
-            broadening=1.0e4, xp=xp_jax,
-        )
+        r = get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein_arg, eout, broadening=1.0e4, options=RunOptions(backend=xp_jax))
         return jnp.sum(r)
 
     g = np.asarray(jax.grad(scalar_out)(jnp.asarray(ein)))
@@ -282,17 +274,11 @@ def test_jit_top_level_broadening_al27_ng():
     xp_np = array_ns.get_backend('numpy')
     xp_jax = array_ns.get_backend('jax')
 
-    r_np = get_particle_production_dxs_dE(
-        endf_dict, '(n,g)', 'g', ein, eout,
-        broadening=5.0e4, xp=xp_np,
-    )
+    r_np = get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein, eout, broadening=5.0e4, options=RunOptions(backend=xp_np))
 
     @jax.jit
     def jit_go(ein_arg):
-        return get_particle_production_dxs_dE(
-            endf_dict, '(n,g)', 'g', ein_arg, eout,
-            broadening=5.0e4, xp=xp_jax,
-        )
+        return get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein_arg, eout, broadening=5.0e4, options=RunOptions(backend=xp_jax))
 
     r_jit = np.asarray(jit_go(jnp.asarray(ein)))
     peak = float(np.max(np.abs(r_np)))
@@ -334,17 +320,11 @@ def test_jit_top_level_ddxs_al27_ng_mf15():
     xp_np = array_ns.get_backend('numpy')
     xp_jax = array_ns.get_backend('jax')
 
-    r_np = get_particle_production_ddxs(
-        endf_dict, '(n,g)', 'g', ein, eout, mu,
-        broadening=5.0e4, xp=xp_np,
-    )
+    r_np = get_particle_production_ddxs(endf_dict, '(n,g)', 'g', ein, eout, mu, broadening=5.0e4, options=RunOptions(backend=xp_np))
 
     @jax.jit
     def jit_go(ein_arg):
-        return get_particle_production_ddxs(
-            endf_dict, '(n,g)', 'g', ein_arg, eout, mu,
-            broadening=5.0e4, xp=xp_jax,
-        )
+        return get_particle_production_ddxs(endf_dict, '(n,g)', 'g', ein_arg, eout, mu, broadening=5.0e4, options=RunOptions(backend=xp_jax))
 
     r_jit = np.asarray(jit_go(jnp.asarray(ein)))
     peak = float(np.max(np.abs(r_np)))
@@ -391,18 +371,11 @@ def test_jit_top_level_broadening_al27_ng_tracer_eouts():
     xp_np = array_ns.get_backend('numpy')
     xp_jax = array_ns.get_backend('jax')
 
-    r_np = get_particle_production_dxs_dE(
-        endf_dict, '(n,g)', 'g', ein, eout,
-        broadening=5.0e4, xp=xp_np,
-    )
+    r_np = get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein, eout, broadening=5.0e4, options=RunOptions(backend=xp_np))
 
     @jax.jit
     def jit_go(ein_arg, eout_arg):
-        return get_particle_production_dxs_dE(
-            endf_dict, '(n,g)', 'g', ein_arg, eout_arg,
-            broadening=5.0e4, xp=xp_jax,
-            broadening_mesh_bounds=bounds,
-        )
+        return get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein_arg, eout_arg, broadening=5.0e4, options=RunOptions(broadening_mesh_bounds=bounds, backend=xp_jax))
 
     r_jit = np.asarray(jit_go(jnp.asarray(ein), jnp.asarray(eout)))
     peak = float(np.max(np.abs(r_np)))
@@ -451,11 +424,7 @@ def test_grad_wrt_eouts_al27_ng_broadening():
     xp_jax = array_ns.get_backend('jax')
 
     def scalar_out(eout_arg):
-        r = get_particle_production_dxs_dE(
-            endf_dict, '(n,g)', 'g', ein, eout_arg,
-            broadening=5.0e4, xp=xp_jax,
-            broadening_mesh_bounds=bounds,
-        )
+        r = get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein, eout_arg, broadening=5.0e4, options=RunOptions(broadening_mesh_bounds=bounds, backend=xp_jax))
         return jnp.sum(r)
 
     g = np.asarray(jax.grad(scalar_out)(jnp.asarray(eout)))
@@ -504,18 +473,11 @@ def test_jit_fast_path_matches_slow_path_al27_ng():
 
     @jax.jit
     def jit_hint(ein_arg):
-        return get_particle_production_dxs_dE(
-            endf_dict, '(n,g)', 'g', ein_arg, eout,
-            broadening=5.0e4, xp=xp_jax,
-            broadening_mesh_bounds=bounds,
-        )
+        return get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein_arg, eout, broadening=5.0e4, options=RunOptions(broadening_mesh_bounds=bounds, backend=xp_jax))
 
     @jax.jit
     def jit_nohint(ein_arg):
-        return get_particle_production_dxs_dE(
-            endf_dict, '(n,g)', 'g', ein_arg, eout,
-            broadening=5.0e4, xp=xp_jax,
-        )
+        return get_particle_production_dxs_dE(endf_dict, '(n,g)', 'g', ein_arg, eout, broadening=5.0e4, options=RunOptions(backend=xp_jax))
 
     r_hint = np.asarray(jit_hint(jnp.asarray(ein)))
     r_nohint = np.asarray(jit_nohint(jnp.asarray(ein)))
