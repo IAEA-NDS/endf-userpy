@@ -22,7 +22,7 @@ Design rationale is captured in issue #143; the summary is:
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 

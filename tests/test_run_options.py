@@ -6,10 +6,7 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from endf_userpy.run_options import (
-    RunOptions,
-    _warn_auto_backend_numba_missing_once,
-)
+from endf_userpy.run_options import RunOptions
 
 
 def test_defaults_are_physics_first():
