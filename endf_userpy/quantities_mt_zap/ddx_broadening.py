@@ -274,6 +274,7 @@ def compute_dxs_dE_broadened(
     energies_in, energies_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
+    *, options=None, _warnings=None,
     **convolve_kwargs,
 ):
     """1D dxs/dE for (MT, ZAP) convolved with `kernel` along E_out.
@@ -325,10 +326,14 @@ def compute_dxs_dE_broadened(
     if not _is_jax_tracer(energies_out):
         energies_out = np.asarray(energies_out, dtype=float)
 
+    from ..run_options import RunOptions
+    if options is None:
+        options = RunOptions()
+
     def f(eout_internal):
         return compute_dexs(
             endf_dict, mt, zap, energies_in, eout_internal, to_lab,
-            xp=xp,
+            options=options, _warnings=_warnings,
         )
 
     # Fast-path override for jit callers who supplied mesh_bounds
@@ -374,6 +379,7 @@ def compute_dxs_dE_broadened_summed(
     energies_in, energies_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
+    *, options=None, _warnings=None,
     **convolve_kwargs,
 ):
     """1D dxs/dE of ``sum_{MT in mts}`` convolved with ``kernel``
@@ -427,13 +433,17 @@ def compute_dxs_dE_broadened_summed(
     if len(mts) == 0:
         return xp.zeros((einc.shape[0], eouts.shape[0]), dtype=xp.float64)
 
+    from ..run_options import RunOptions
+    if options is None:
+        options = RunOptions()
+
     def f_summed(eout_internal):
         total = None
         for mt in mts:
             try:
                 contrib = compute_dexs(
                     endf_dict, mt, zap, einc, eout_internal, to_lab,
-                    xp=xp,
+                    options=options, _warnings=_warnings,
                 )
             except (IndexError, AssertionError):
                 # Same defensive cases the per-MT

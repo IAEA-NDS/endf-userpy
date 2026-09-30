@@ -342,9 +342,9 @@ def _get_reaction_xs_impl(
         # MT5 fallback component: adds a redistributed MT5
         # contribution at Es where the direct MT is zero. Only
         # relevant when the file actually carries MF6/MT=5 data.
-        # Under xp=jax the fallback now stays xp-native end-to-end
-        # (issue #215): ``compute_xs_mt5_contrib`` accepts xp, and
-        # the "only backfill where direct MT is zero" mask uses
+        # Under jax the fallback stays xp-native end-to-end (issue
+        # #215): ``compute_xs_mt5_contrib`` derives xp from options,
+        # and the "only backfill where direct MT is zero" mask uses
         # ``xp.where`` so tracers survive.
         if (mt in user_mts
                 and options.mt5_contrib
@@ -360,10 +360,8 @@ def _get_reaction_xs_impl(
             else:
                 cur_xs_ref = cur_xs
             mt5_xs_all = quant_mt_zap.compute_xs_mt5_contrib(
-                endf_dict, mt, energies_in, xp=xp,
-                above_range=options.above_range,
-                resonance_range=options.resonance_range,
-                _warnings=_warnings,
+                endf_dict, mt, energies_in,
+                options=options, _warnings=_warnings,
             )
             # Backfill: add mt5_xs_all where the direct MT gave zero
             # (or wasn't selected), leave xs unchanged where the
@@ -417,9 +415,7 @@ def _get_residual_production_xs_impl(
     xs = quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt: quant_mt_zap.compute_residual_xs(
             endf_dict, mt, za_residual, level, energies_in,
-            above_range=options.above_range,
-            resonance_range=options.resonance_range,
-            _warnings=_warnings,
+            options=options, _warnings=_warnings,
         ),
         lambda endf_dict, mt: (
             (options.mt5_contrib or mt != 5) and
@@ -470,9 +466,6 @@ def _get_particle_production_xs_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    xp = resolve_backend(options, is_resonance_call=False)
-    ar = options.above_range
-    rr = options.resonance_range
     # Widened iteration (union of MF3+MF12+MF13+MF15 keys) so MTs
     # that carry gamma production only in MF12/MF13/MF15 without an
     # MF3 entry (JENDL-5 N-14 MT 3 nonelastic) are visited by the
@@ -481,10 +474,9 @@ def _get_particle_production_xs_impl(
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
     warnings_hits = _warnings
     return quant_mt_zap.compute_cumulative_quantity(
-        lambda endf_dict, mt, zap, einc, xp=None: quant_mt_zap.compute_prodxs(
-            endf_dict, mt, zap, einc, xp=xp,
-            above_range=ar, resonance_range=rr,
-            _warnings=warnings_hits,
+        lambda endf_dict, mt, zap, einc: quant_mt_zap.compute_prodxs(
+            endf_dict, mt, zap, einc,
+            options=options, _warnings=warnings_hits,
         ),
         lambda endf_dict, mt, zap, energies_in: (
             selectors.satisfies_particle_production_select(
@@ -492,7 +484,7 @@ def _get_particle_production_xs_impl(
             )
             and selectors.contains_zap(endf_dict, mt, zap)
         ),
-        endf_dict, zap, energies_in, mts=mts, xp=xp,
+        endf_dict, zap, energies_in, mts=mts,
     )
 
 
@@ -562,22 +554,21 @@ def _get_particle_production_dxs_dE_impl(
                 'get_particle_production_dxs_dE',
             )
         return quant_mt_zap.compute_cumulative_quantity(
-            lambda endf_dict, mt, zap, einc, eouts, xp=None:
+            lambda endf_dict, mt, zap, einc, eouts:
                 quant_mt_zap.compute_dexs(
-                    endf_dict, mt, zap, einc, eouts, xp=xp,
-                    above_range=options.above_range,
-                    resonance_range=options.resonance_range,
-                    _warnings=_warnings,
+                    endf_dict, mt, zap, einc, eouts,
+                    options=options, _warnings=_warnings,
                 ),
             select,
             endf_dict, zap, energies_in, energies_out,
-            mts=mts, xp=xp,
+            mts=mts,
         )
 
     def cont_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            options=options, _warnings=_warnings,
             mesh_bounds=broadening_mesh_bounds,
         )
 
@@ -640,6 +631,7 @@ def _get_particle_production_dxs_dE_impl(
             endf_dict, admitted_cont_mts, zap,
             energies_in, energies_out,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            options=options, _warnings=_warnings,
             mesh_bounds=broadening_mesh_bounds,
         )
     else:
@@ -699,22 +691,19 @@ def _get_particle_production_dxs_dmu_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    xp = resolve_backend(options, is_resonance_call=False)
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
     return quant_mt_zap.compute_cumulative_quantity(
-        lambda endf_dict, mt, zap, einc, mus, xp=None:
+        lambda endf_dict, mt, zap, einc, mus:
             quant_mt_zap.compute_daxs(
-                endf_dict, mt, zap, einc, mus, xp=xp,
-                above_range=options.above_range,
-                resonance_range=options.resonance_range,
-                _warnings=_warnings,
+                endf_dict, mt, zap, einc, mus,
+                options=options, _warnings=_warnings,
             ),
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         ),
         endf_dict, zap, energies_in, angle_cosines_out,
-        mts=mts, xp=xp,
+        mts=mts,
     )
 
 
@@ -838,12 +827,10 @@ def _get_particle_production_ddxs_impl(
         # contribution the same way the broadened dispatcher does
         # for compute_ddx_mf15_continuum_broadened.
         cont_unbroad = quant_mt_zap.compute_cumulative_quantity(
-            lambda endf_dict, mt, zap, einc, eouts, mus, xp=None:
+            lambda endf_dict, mt, zap, einc, eouts, mus:
                 quant_mt_zap.compute_ddxs(
-                    endf_dict, mt, zap, einc, eouts, mus, xp=xp,
-                    above_range=options.above_range,
-                    resonance_range=options.resonance_range,
-                    _warnings=_warnings,
+                    endf_dict, mt, zap, einc, eouts, mus,
+                    options=options, _warnings=_warnings,
                 ),
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
@@ -851,15 +838,13 @@ def _get_particle_production_ddxs_impl(
                 selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
-            mts=mts, xp=xp,
+            mts=mts,
         )
         mf15_unbroad = quant_mt_zap.compute_cumulative_quantity(
-            lambda endf_dict, mt, zap, einc, eouts, mus, xp=None:
+            lambda endf_dict, mt, zap, einc, eouts, mus:
                 quant_mt_zap.compute_ddxs_from_mf15_mf14(
-                    endf_dict, mt, zap, einc, eouts, mus, xp=xp,
-                    above_range=options.above_range,
-                    resonance_range=options.resonance_range,
-                    _warnings=_warnings,
+                    endf_dict, mt, zap, einc, eouts, mus,
+                    options=options, _warnings=_warnings,
                 ),
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
@@ -867,7 +852,7 @@ def _get_particle_production_ddxs_impl(
                 selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
-            mts=mts, xp=xp,
+            mts=mts,
         )
         parts = [p for p in (cont_unbroad, mf15_unbroad) if p is not None]
         if not parts:
