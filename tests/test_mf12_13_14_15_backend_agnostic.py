@@ -50,6 +50,7 @@ from endf_userpy.quantities import (
 )
 
 from _corpus import resolve_al27, resolve_c12, resolve_nb93
+from endf_userpy.run_options import RunOptions
 
 
 def _jax_available():
@@ -299,12 +300,8 @@ def test_end_to_end_gamma_dxs_dE_parity(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
-        a = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,g)', 'g', ein, eout, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,g)', 'g', ein, eout, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,g)', 'g', ein, eout, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,g)', 'g', ein, eout, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-11, atol=1e-30)
 
 
@@ -318,12 +315,8 @@ def test_end_to_end_gamma_dxs_dmu_parity(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
-        a = np.asarray(get_particle_production_dxs_dmu(
-            al27_endf_dict, '(n,g)', 'g', ein, mus, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_dxs_dmu(
-            al27_endf_dict, '(n,g)', 'g', ein, mus, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_dxs_dmu(al27_endf_dict, '(n,g)', 'g', ein, mus, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_dxs_dmu(al27_endf_dict, '(n,g)', 'g', ein, mus, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-11, atol=1e-30)
 
 
@@ -338,12 +331,8 @@ def test_end_to_end_gamma_ddxs_parity(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
-        a = np.asarray(get_particle_production_ddxs(
-            al27_endf_dict, '(n,g)', 'g', ein, eout, mus, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_ddxs(
-            al27_endf_dict, '(n,g)', 'g', ein, eout, mus, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_ddxs(al27_endf_dict, '(n,g)', 'g', ein, eout, mus, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_ddxs(al27_endf_dict, '(n,g)', 'g', ein, eout, mus, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-11, atol=1e-30)
 
 
@@ -356,12 +345,8 @@ def test_end_to_end_gamma_xs_parity(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
-        a = np.asarray(get_particle_production_xs(
-            al27_endf_dict, '(n,g)', 'g', ein, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_xs(
-            al27_endf_dict, '(n,g)', 'g', ein, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_xs(al27_endf_dict, '(n,g)', 'g', ein, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_xs(al27_endf_dict, '(n,g)', 'g', ein, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-11, atol=1e-30)
 
 
@@ -396,9 +381,7 @@ def test_jax_grad_end_to_end_to_mf15_subsec_prob(al27_endf_dict):
         d_t[15][102]['subsection'][1]['rtfm_tab1']['p'] = new_p
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return jnp.sum(get_particle_production_dxs_dE(
-                d_t, '(n,g)', 'g', ein, eout, xp=xp_jx,
-            ))
+            return jnp.sum(get_particle_production_dxs_dE(d_t, '(n,g)', 'g', ein, eout, options=RunOptions(backend=xp_jx)))
 
     val = float(loss(jnp.array(orig)))
     grad = float(jax.grad(loss)(jnp.array(orig)))

@@ -39,6 +39,7 @@ import warnings
 import numpy as np
 import pytest
 from endf_parserpy import EndfParserCpp
+from endf_userpy.run_options import RunOptions
 
 from endf_userpy.quantities import (
     get_reaction_xs,
@@ -127,10 +128,15 @@ def _get_warnings(recorded, needle='resonance'):
 
 def test_default_warn_returns_raw_and_warns(cu63_jendl5):
     """Default policy: numeric answer unchanged from pre-fix
-    behaviour; one summary UserWarning fires."""
+    behaviour; one summary UserWarning fires. The resonance-range
+    policy only matters when include_resonance=False (composed
+    XS is physical over the RRR)."""
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter('always')
-        xs = get_reaction_xs(cu63_jendl5, '(n,total)', IN_RRR_EINC)
+        xs = get_reaction_xs(
+            cu63_jendl5, '(n,total)', IN_RRR_EINC,
+            options=RunOptions(include_resonance=False),
+        )
     assert xs.shape == IN_RRR_EINC.shape
     # Cu-63 MT1/MT2 both give -0.9 barn at thermal; the summed
     # (n,total) result stays negative here (below the resonance
@@ -148,10 +154,7 @@ def test_default_warn_returns_raw_and_warns(cu63_jendl5):
 def test_warn_nan_replaces_in_rrr_with_nan(cu63_jendl5):
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter('always')
-        xs = get_reaction_xs(
-            cu63_jendl5, '(n,total)', IN_RRR_EINC,
-            resonance_range='warn_nan',
-        )
+        xs = get_reaction_xs(cu63_jendl5, '(n,total)', IN_RRR_EINC, options=RunOptions(include_resonance=False, resonance_range='warn_nan'))
     assert np.all(np.isnan(xs))
     assert len(_get_warnings(recorded)) == 1
 
@@ -159,33 +162,21 @@ def test_warn_nan_replaces_in_rrr_with_nan(cu63_jendl5):
 def test_nan_replaces_in_rrr_silently(cu63_jendl5):
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter('always')
-        xs = get_reaction_xs(
-            cu63_jendl5, '(n,total)', IN_RRR_EINC,
-            resonance_range='nan',
-        )
+        xs = get_reaction_xs(cu63_jendl5, '(n,total)', IN_RRR_EINC, options=RunOptions(include_resonance=False, resonance_range='nan'))
     assert np.all(np.isnan(xs))
     assert _get_warnings(recorded) == []
 
 
 def test_raise_hard_errors_on_any_in_rrr_point(cu63_jendl5):
     with pytest.raises(ValueError, match='resolved-resonance region'):
-        get_reaction_xs(
-            cu63_jendl5, '(n,total)', IN_RRR_EINC,
-            resonance_range='raise',
-        )
+        get_reaction_xs(cu63_jendl5, '(n,total)', IN_RRR_EINC, options=RunOptions(include_resonance=False, resonance_range='raise'))
 
 
 def test_invalid_policy_rejected(cu63_jendl5):
     with pytest.raises(ValueError, match='resonance_range must be one of'):
-        get_reaction_xs(
-            cu63_jendl5, '(n,total)', IN_RRR_EINC,
-            resonance_range='clip',
-        )
+        get_reaction_xs(cu63_jendl5, '(n,total)', IN_RRR_EINC, options=RunOptions(include_resonance=False, resonance_range='clip'))
     with pytest.raises(ValueError, match='resonance_range must be one of'):
-        get_reaction_xs(
-            cu63_jendl5, '(n,total)', IN_RRR_EINC,
-            resonance_range='passthrough',
-        )
+        get_reaction_xs(cu63_jendl5, '(n,total)', IN_RRR_EINC, options=RunOptions(include_resonance=False, resonance_range='passthrough'))
 
 
 # ============================================================
@@ -200,17 +191,14 @@ def test_above_rrr_query_unchanged_and_no_warning(cu63_jendl5):
     the same numeric answer under all four policies."""
     xs_ref = get_reaction_xs(
         cu63_jendl5, '(n,total)', ABOVE_RRR_EINC,
-        resonance_range='nan',  # cheapest silent policy
+        options=RunOptions(include_resonance=False, resonance_range='nan'),  # cheapest silent policy
     )
     assert np.all(np.isfinite(xs_ref))
     assert np.all(xs_ref > 0.0)
     for pol in ('warn', 'warn_nan', 'raise'):
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter('always')
-            xs = get_reaction_xs(
-                cu63_jendl5, '(n,total)', ABOVE_RRR_EINC,
-                resonance_range=pol,
-            )
+            xs = get_reaction_xs(cu63_jendl5, '(n,total)', ABOVE_RRR_EINC, options=RunOptions(include_resonance=False, resonance_range=pol))
         np.testing.assert_array_equal(xs, xs_ref)
         assert _get_warnings(recorded) == [], (
             f'policy={pol}: unexpected resonance_range warning above RRR'
@@ -223,10 +211,7 @@ def test_lru0_only_file_is_silent_noop(h1_endfb81):
     for pol in ('warn', 'warn_nan', 'nan', 'raise'):
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter('always')
-            xs = get_reaction_xs(
-                h1_endfb81, '(n,total)', IN_RRR_EINC,
-                resonance_range=pol,
-            )
+            xs = get_reaction_xs(h1_endfb81, '(n,total)', IN_RRR_EINC, options=RunOptions(include_resonance=False, resonance_range=pol))
         assert np.all(np.isfinite(xs))
         assert _get_warnings(recorded) == [], (
             f'H-1 policy={pol}: unexpected resonance_range warning'
@@ -244,12 +229,17 @@ def test_positive_background_still_warns(fe56_tendl21):
     at thermal (no negative-value symptom). The warning still fires
     because the underlying physics limitation applies: MF3 there
     is background-only, so the returned value is not the physical
-    cross section regardless of its sign."""
+    cross section regardless of its sign. Only meaningful when
+    ``include_resonance=False`` (composed XS is physical over the
+    RRR)."""
     if not get_resolved_resonance_ranges(fe56_tendl21):
         pytest.skip('Fe-56 in this file has no LRU=1 range')
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter('always')
-        xs = get_reaction_xs(fe56_tendl21, '(n,total)', IN_RRR_EINC)
+        xs = get_reaction_xs(
+            fe56_tendl21, '(n,total)', IN_RRR_EINC,
+            options=RunOptions(include_resonance=False),
+        )
     assert np.all(np.isfinite(xs))
     assert len(_get_warnings(recorded)) == 1
 
@@ -262,10 +252,7 @@ def test_positive_background_still_warns(fe56_tendl21):
 def test_particle_production_xs_carries_policy(cu63_jendl5):
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter('always')
-        xs = get_particle_production_xs(
-            cu63_jendl5, '(n,total)', 'n', IN_RRR_EINC,
-            resonance_range='nan',
-        )
+        xs = get_particle_production_xs(cu63_jendl5, '(n,total)', 'n', IN_RRR_EINC, options=RunOptions(include_resonance=False, resonance_range='nan'))
     # xs is a per-MT-summed particle-production. Every contributor
     # comes from MF3-scaled evaluators, so in-RRR points are NaN.
     assert np.all(np.isnan(xs) | (xs == 0.0))  # some MTs contribute 0
@@ -277,10 +264,7 @@ def test_particle_production_dxs_dE_carries_policy(cu63_jendl5):
     eouts = np.linspace(1e5, 1.4e7, 15)
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter('always')
-        r = get_particle_production_dxs_dE(
-            cu63_jendl5, '(n,total)', 'n', einc_mixed, eouts,
-            resonance_range='warn',
-        )
+        r = get_particle_production_dxs_dE(cu63_jendl5, '(n,total)', 'n', einc_mixed, eouts, options=RunOptions(include_resonance=False, resonance_range='warn'))
     assert r is not None
     # Above-RRR rows should have finite non-negative content
     above_rows = r[2:]

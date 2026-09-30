@@ -47,6 +47,7 @@ from endf_userpy.quantities import (
     get_particle_production_ddxs,
 )
 from endf_userpy.primitives import array_ns
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_nb93, resolve_h2
 
@@ -105,9 +106,7 @@ def test_get_reaction_xs_grad_wrt_E_end_to_end(be9_endf_dict):
     xp_jx = array_ns.get_backend('jax')
 
     def loss(E_scalar):
-        return get_reaction_xs(
-            be9_endf_dict, '(n,n)', jnp.array([E_scalar]), xp=xp_jx,
-        ).sum()
+        return get_reaction_xs(be9_endf_dict, '(n,n)', jnp.array([E_scalar]), options=RunOptions(backend=xp_jx)).sum()
 
     for E_val in (1e6, 5e6, 1.2e7):
         grad = float(jax.grad(loss)(jnp.array(E_val)))
@@ -145,11 +144,7 @@ def test_get_reaction_xs_grad_wrt_resonance_ER_end_to_end(nb93_endf_dict):
         lg[1]['ER'][er_key] = er_val
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_reaction_xs(
-                d_t, '(n,total)', ein,
-                include_resonance=True, resonance_backend='jax',
-                xp=xp_jx,
-            ).sum()
+            return get_reaction_xs(d_t, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_jx)).sum()
 
     grad = float(jax.grad(loss)(jnp.array(er0)))
     fd = _fd5(lambda v: loss(jnp.array(v)), er0, 1e-3)
@@ -173,10 +168,7 @@ def test_get_particle_production_xs_grad_wrt_E(be9_endf_dict):
     def loss(E_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_xs(
-                be9_endf_dict, '(n,2n)', 'n',
-                jnp.array([E_scalar]), xp=xp_jx,
-            ).sum()
+            return get_particle_production_xs(be9_endf_dict, '(n,2n)', 'n', jnp.array([E_scalar]), options=RunOptions(backend=xp_jx)).sum()
 
     for E_val in (5e6, 1e7, 1.5e7):
         grad = float(jax.grad(loss)(jnp.array(E_val)))
@@ -207,10 +199,7 @@ def test_get_particle_production_dxs_dE_grad_wrt_E(be9_endf_dict):
     def loss(E_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_dxs_dE(
-                be9_endf_dict, '(n,2n)', 'n',
-                jnp.array([E_scalar]), eout, xp=xp_jx,
-            ).sum()
+            return get_particle_production_dxs_dE(be9_endf_dict, '(n,2n)', 'n', jnp.array([E_scalar]), eout, options=RunOptions(backend=xp_jx)).sum()
 
     for E_val in (5e6, 1e7, 1.5e7):
         grad = float(jax.grad(loss)(jnp.array(E_val)))
@@ -239,10 +228,7 @@ def test_get_particle_production_dxs_dE_grad_wrt_Ep(be9_endf_dict):
     def loss(Ep_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_dxs_dE(
-                be9_endf_dict, '(n,2n)', 'n',
-                ein, jnp.array([Ep_scalar]), xp=xp_jx,
-            ).sum()
+            return get_particle_production_dxs_dE(be9_endf_dict, '(n,2n)', 'n', ein, jnp.array([Ep_scalar]), options=RunOptions(backend=xp_jx)).sum()
 
     for Ep_val in (2.5e5, 8e5, 2.3e6):
         grad = float(jax.grad(loss)(jnp.array(Ep_val)))
@@ -271,10 +257,7 @@ def test_get_particle_production_dxs_dmu_grad_wrt_E(be9_endf_dict):
     def loss(E_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_dxs_dmu(
-                be9_endf_dict, '(n,g)', 'g',
-                jnp.array([E_scalar]), mu, xp=xp_jx,
-            ).sum()
+            return get_particle_production_dxs_dmu(be9_endf_dict, '(n,g)', 'g', jnp.array([E_scalar]), mu, options=RunOptions(backend=xp_jx)).sum()
 
     for E_val in (1e5, 1e6, 1e7):
         grad = float(jax.grad(loss)(jnp.array(E_val)))
@@ -298,10 +281,7 @@ def test_get_particle_production_dxs_dmu_grad_wrt_mu(be9_endf_dict):
     def loss(mu_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_dxs_dmu(
-                be9_endf_dict, '(n,g)', 'g',
-                ein, jnp.array([mu_scalar]), xp=xp_jx,
-            ).sum()
+            return get_particle_production_dxs_dmu(be9_endf_dict, '(n,g)', 'g', ein, jnp.array([mu_scalar]), options=RunOptions(backend=xp_jx)).sum()
 
     for mu_val in (-0.5, 0.0, 0.5):
         grad = float(jax.grad(loss)(jnp.array(mu_val)))
@@ -328,10 +308,7 @@ def test_get_particle_production_ddxs_grad_wrt_E(be9_endf_dict):
     def loss(E_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_ddxs(
-                be9_endf_dict, '(n,2n)', 'n',
-                jnp.array([E_scalar]), eout, mu, xp=xp_jx,
-            ).sum()
+            return get_particle_production_ddxs(be9_endf_dict, '(n,2n)', 'n', jnp.array([E_scalar]), eout, mu, options=RunOptions(backend=xp_jx)).sum()
 
     for E_val in (5e6, 1e7, 1.5e7):
         grad = float(jax.grad(loss)(jnp.array(E_val)))
@@ -357,10 +334,7 @@ def test_get_particle_production_ddxs_grad_wrt_Ep(be9_endf_dict):
     def loss(Ep_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_ddxs(
-                be9_endf_dict, '(n,2n)', 'n',
-                ein, jnp.array([Ep_scalar]), mu, xp=xp_jx,
-            ).sum()
+            return get_particle_production_ddxs(be9_endf_dict, '(n,2n)', 'n', ein, jnp.array([Ep_scalar]), mu, options=RunOptions(backend=xp_jx)).sum()
 
     for Ep_val in (2.5e5, 8e5, 2.3e6):
         grad = float(jax.grad(loss)(jnp.array(Ep_val)))
@@ -388,10 +362,7 @@ def test_get_particle_production_ddxs_grad_wrt_mu(be9_endf_dict):
     def loss(mu_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_ddxs(
-                be9_endf_dict, '(n,2n)', 'n',
-                ein, eout, jnp.array([mu_scalar]), xp=xp_jx,
-            ).sum()
+            return get_particle_production_ddxs(be9_endf_dict, '(n,2n)', 'n', ein, eout, jnp.array([mu_scalar]), options=RunOptions(backend=xp_jx)).sum()
 
     for mu_val in (-0.53, 0.05, 0.34):
         grad = float(jax.grad(loss)(jnp.array(mu_val)))
@@ -424,10 +395,7 @@ def test_get_particle_production_ddxs_grad_wrt_Ep_h2_int2(h2_endf_dict):
     def loss(Ep_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_ddxs(
-                h2_endf_dict, '(n,2n)', 'n',
-                ein, jnp.array([Ep_scalar]), mu, xp=xp_jx,
-            ).sum()
+            return get_particle_production_ddxs(h2_endf_dict, '(n,2n)', 'n', ein, jnp.array([Ep_scalar]), mu, options=RunOptions(backend=xp_jx)).sum()
 
     for Ep_val in (5e5, 5e6, 8e6):
         grad = float(jax.grad(loss)(jnp.array(Ep_val)))
@@ -454,10 +422,7 @@ def test_get_particle_production_ddxs_grad_wrt_mu_h2_int2(h2_endf_dict):
     def loss(mu_scalar):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
-            return get_particle_production_ddxs(
-                h2_endf_dict, '(n,2n)', 'n',
-                ein, eout, jnp.array([mu_scalar]), xp=xp_jx,
-            ).sum()
+            return get_particle_production_ddxs(h2_endf_dict, '(n,2n)', 'n', ein, eout, jnp.array([mu_scalar]), options=RunOptions(backend=xp_jx)).sum()
 
     for mu_val in (-0.63, 0.05, 0.34, 0.72):
         grad = float(jax.grad(loss)(jnp.array(mu_val)))

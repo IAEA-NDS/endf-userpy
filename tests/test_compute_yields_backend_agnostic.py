@@ -45,6 +45,7 @@ from endf_userpy.quantities import (
 from endf_userpy.quantities_mt_zap import quantities as qmz
 from endf_userpy.quantities_mt_zap import discrete_quantities as dq
 from endf_userpy.mfsec_interpretation import mf1_interpretation as mf1i
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_al27
 
@@ -100,12 +101,8 @@ def test_gamma_xs_numpy_jax_parity_al27(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        a = np.asarray(get_particle_production_xs(
-            al27_endf_dict, '(n,g)', 'g', ein, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_xs(
-            al27_endf_dict, '(n,g)', 'g', ein, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_xs(al27_endf_dict, '(n,g)', 'g', ein, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_xs(al27_endf_dict, '(n,g)', 'g', ein, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-10, atol=1e-30)
 
 
@@ -135,9 +132,7 @@ def test_jax_grad_wrt_mf12_tabulated_y_leaf(al27_endf_dict):
         d_t[12][102]['table'][k]['y'] = new_y
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            return jnp.sum(get_particle_production_xs(
-                d_t, '(n,g)', 'g', jnp.array([Ein_query]), xp=xp_jx,
-            ))
+            return jnp.sum(get_particle_production_xs(d_t, '(n,g)', 'g', jnp.array([Ein_query]), options=RunOptions(backend=xp_jx)))
 
     val = float(loss(jnp.array(orig)))
     grad = float(jax.grad(loss)(jnp.array(orig)))
@@ -188,12 +183,7 @@ def test_jax_grad_wrt_mf6_subsec_yield_leaf(al27_endf_dict):
         d_t[6][16]['subsection'][1]['yields']['yi'] = new_y
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            return jnp.sum(get_particle_production_dxs_dE(
-                d_t, '(n,2n)', 'n',
-                jnp.array([1.4e7]),
-                jnp.linspace(1e5, 5e6, 10),
-                xp=xp_jx,
-            ))
+            return jnp.sum(get_particle_production_dxs_dE(d_t, '(n,2n)', 'n', jnp.array([1.4e7]), jnp.linspace(1e5, 5e6, 10), options=RunOptions(backend=xp_jx)))
 
     val = float(loss(jnp.array(orig)))
     grad = float(jax.grad(loss)(jnp.array(orig)))

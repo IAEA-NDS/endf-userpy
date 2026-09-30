@@ -32,6 +32,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_reaction_xs
+from endf_userpy.run_options import RunOptions
 
 
 DATA_DIR = Path(__file__).parent / 'data'
@@ -75,7 +76,7 @@ def test_mf3_grad_wrt_mesh_knot_matches_fd(h1_endf_dict):
         d_t = copy.deepcopy(h1_endf_dict)
         d_t[3][102]['xstable']['E'][idx] = theta
         ein = jnp.asarray(np.array([ein_val]))
-        xs = get_reaction_xs(d_t, '(n,g)', ein, xp=xp_jax)
+        xs = get_reaction_xs(d_t, '(n,g)', ein, options=RunOptions(backend=xp_jax, include_resonance=False))
         return jnp.sum(xs)
 
     with warnings.catch_warnings():
@@ -119,7 +120,7 @@ def test_mf3_grad_wrt_multiple_mesh_knots_via_sum(h1_endf_dict):
         d_t[3][102]['xstable']['E'][idx_a] = theta + (e_a - 1.0)
         d_t[3][102]['xstable']['E'][idx_b] = theta + (e_b - 1.0)
         ein = jnp.asarray(np.array([ein_a, ein_b]))
-        return jnp.sum(get_reaction_xs(d_t, '(n,g)', ein, xp=xp_jax))
+        return jnp.sum(get_reaction_xs(d_t, '(n,g)', ein, options=RunOptions(backend=xp_jax, include_resonance=False)))
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')

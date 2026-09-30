@@ -1,6 +1,5 @@
-import contextlib
-import contextvars
 import warnings
+from dataclasses import dataclass, field
 import numpy as np
 from ..primitives.helpers import treat_duplicates
 from ..primitives.interpolation import interp_tab1
@@ -10,50 +9,76 @@ from ..primitives.properties import (
 
 
 _ABOVE_RANGE_POLICIES = ('warn_nan', 'nan', 'warn_zero', 'zero', 'raise')
-
-# Context-inherited policy for how to handle incident energies above
-# the file's upper Ein boundary (issue #28). Set by the top-level
-# `get_*` functions in `endf_userpy.quantities` via `above_range_ctx`;
-# read by the leaf `compute_cross_section` functions in mf3 / mf10.
-# Default `'warn_nan'` gives NaN fill with a UserWarning; see the
-# `compute_cross_section` docstring for the full set of policies.
-_above_range_var = contextvars.ContextVar(
-    '_above_range', default='warn_nan',
-)
-
-# Per-query accumulator for above-range hits. Populated by
-# `_handle_above_range` and drained by `above_range_ctx.__exit__`,
-# which emits ONE summary UserWarning for the whole query rather
-# than one per (MT, call). Value is either None (outside a context
-# that collects) or a dict {mt -> (e_max, n_above, n_total)}.
-_above_range_accum = contextvars.ContextVar(
-    '_above_range_accum', default=None,
-)
-
-
 _RESONANCE_RANGE_POLICIES = ('warn', 'warn_nan', 'nan', 'raise')
 
-# Context-inherited policy for how to handle incident energies
-# inside the file's resolved-resonance region (LRU=1). ENDF-6 stores
-# MF3 in the RRR as a subtractive **background cross section** that
-# must be added to the resonance reconstruction from MF2. The
-# library does not reconstruct resonances (documented in README's
-# "Known limitations"), so raw MF3 in the RRR is not the physical
-# cross section -- and can even be negative (JENDL-5 Cu-63 MT1/MT2
-# hit -0.9 barn at 1 eV; issue #84).
-#
-# Set by the top-level `get_*` functions via `resonance_range_ctx`;
-# read by the leaf `compute_cross_section`. Default `'warn'` returns
-# the raw MF3 background with one summary UserWarning per top-level
-# query; `'warn_nan'` / `'nan'` fill in-RRR points with NaN;
-# `'raise'` hard-errors on any RRR hit.
-_resonance_range_var = contextvars.ContextVar(
-    '_resonance_range', default='warn',
-)
 
-_resonance_range_accum = contextvars.ContextVar(
-    '_resonance_range_accum', default=None,
-)
+@dataclass
+class _WarningHits:
+    """Per-top-level-call mutable accumulator for the two policy-
+    driven summary warnings. Populated by leaf XS readers when a
+    top-level ``endf_userpy.quantities`` entry point threads a
+    fresh instance down, drained by :func:`_emit_summary_warnings`
+    on the way back out so the caller sees ONE UserWarning per
+    policy per top-level call rather than one per (MT, call).
+
+    Private implementation detail (issue #143): the public policy
+    surface is :class:`endf_userpy.run_options.RunOptions` and the
+    accumulator is threaded as an underscore-prefixed
+    ``_warnings=`` kwarg through every internal function that
+    transitively calls the leaves. ``_warnings=None`` (the leaf's
+    default) preserves the pre-migration per-call warning fallback,
+    which keeps the leaf usable when called from outside a
+    top-level query (unit tests, ad-hoc scripts).
+    """
+    above_range: dict = field(default_factory=dict)
+    resonance_range: dict = field(default_factory=dict)
+
+
+def _emit_summary_warnings(hits, options):
+    """Drain a :class:`_WarningHits` into UserWarnings, at most one
+    per policy family. Called by every top-level entry point in
+    :mod:`endf_userpy.quantities` after its impl returns (see
+    issue #143). Silent when the corresponding hits dict is empty
+    or when the policy is a non-``warn_*`` variant.
+    """
+    ar_policy = options.above_range
+    rr_policy = options.resonance_range
+    if hits.above_range and ar_policy in ('warn_nan', 'warn_zero'):
+        fill_word = 'NaN' if ar_policy == 'warn_nan' else '0'
+        n_mts = len(hits.above_range)
+        total_above = sum(
+            n_above for _, n_above, _ in hits.above_range.values()
+        )
+        mt_summary = ', '.join(
+            f'MT={mt} (max {e_max:.6g} eV, {n_above} pts)'
+            for mt, (e_max, n_above, _) in
+            sorted(hits.above_range.items())
+        )
+        warnings.warn(
+            f'above_range: {total_above} out-of-mesh points across '
+            f'{n_mts} MTs returned as {fill_word}: {mt_summary}. '
+            f'Cross section is undefined above the evaluation range.',
+            UserWarning, stacklevel=3,
+        )
+    if hits.resonance_range and rr_policy in ('warn', 'warn_nan'):
+        action = 'NaN' if rr_policy == 'warn_nan' else 'raw MF3 background'
+        n_mts = len(hits.resonance_range)
+        total_pts = sum(n for _, n, _, _ in hits.resonance_range.values())
+        details = ', '.join(
+            f'MT={mt} ({n_in} of {n_total} pts in RRR '
+            f'[{el:.3g}, {eh:.3g}] eV)'
+            for mt, (el, eh, n_in, n_total) in
+            sorted(hits.resonance_range.items())
+        )
+        warnings.warn(
+            f'resonance_range: {total_pts} in-RRR points across '
+            f'{n_mts} MTs returned as {action}: {details}. '
+            f'MF3 in the resolved-resonance region is a '
+            f'subtractive background cross section; the physical '
+            f'cross section requires resonance reconstruction from '
+            f'MF2 (see README "Known limitations").',
+            UserWarning, stacklevel=3,
+        )
 
 
 def get_resolved_resonance_ranges(endf_dict):
@@ -82,70 +107,7 @@ def get_resolved_resonance_ranges(endf_dict):
     return ranges
 
 
-@contextlib.contextmanager
-def resonance_range_ctx(policy):
-    """Context manager that sets the resonance-range policy for the
-    duration of the `with` block. Mirrors `above_range_ctx` from
-    issue #28.
-
-    Accepted policies:
-
-    - ``'warn'`` (default): return raw MF3 as-is; emit ONE summary
-      UserWarning on context exit naming every MT whose queried
-      Ein range touched the file's resolved-resonance region
-      (LRU=1). The library does not reconstruct MF2 resonances
-      (README "Known limitations"), so raw MF3 in the RRR is only
-      the background component, not the physical cross section.
-    - ``'warn_nan'``: fill in-RRR points with NaN plus the summary
-      warning. Convenient for callers that want to filter or mask
-      undefined regions downstream.
-    - ``'nan'``: same as above but silent.
-    - ``'raise'``: raise `ValueError` on any Ein inside the RRR.
-
-    The ``'clip'`` / ``'warn_clip'`` variants that would replace
-    negative background with zero were considered and dropped: the
-    MF3 background is a subtractive residual, not a physical XS on
-    its own, so clipping it to zero produces nothing meaningful
-    (either the user is doing their own resonance reconstruction --
-    in which case zeroing the background is silently wrong -- or
-    they are not, in which case NaN is a strictly more honest
-    fill).
-    """
-    if policy not in _RESONANCE_RANGE_POLICIES:
-        raise ValueError(
-            f"resonance_range must be one of "
-            f"{_RESONANCE_RANGE_POLICIES}; got {policy!r}"
-        )
-    policy_token = _resonance_range_var.set(policy)
-    accum = {} if policy in ('warn', 'warn_nan') else None
-    accum_token = _resonance_range_accum.set(accum)
-    try:
-        yield
-    finally:
-        _resonance_range_var.reset(policy_token)
-        _resonance_range_accum.reset(accum_token)
-        if accum:
-            action = 'NaN' if policy == 'warn_nan' else 'raw MF3 background'
-            n_mts = len(accum)
-            total_pts = sum(n for _, n, _, _ in accum.values())
-            details = ', '.join(
-                f'MT={mt} ({n_in} of {n_total} pts in RRR '
-                f'[{el:.3g}, {eh:.3g}] eV)'
-                for mt, (el, eh, n_in, n_total) in sorted(accum.items())
-            )
-            warnings.warn(
-                f'resonance_range: {total_pts} in-RRR points across '
-                f'{n_mts} MTs returned as {action}: {details}. '
-                f'MF3 in the resolved-resonance region is a '
-                f'subtractive background cross section; the physical '
-                f'cross section requires resonance reconstruction from '
-                f'MF2 (not performed by this library -- see README '
-                f'"Known limitations").',
-                UserWarning, stacklevel=2,
-            )
-
-
-def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges):
+def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, hits=None):
     """Common resonance-range policy implementation shared by every
     XS reader. Returns `(in_rrr_mask, fill_value)`: `in_rrr_mask` is
     True at Ein positions inside any LRU=1 range; `fill_value` is
@@ -184,11 +146,12 @@ def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges):
             f'reconstruction).'
         )
     if policy in ('warn', 'warn_nan'):
-        accum = _resonance_range_accum.get()
-        if accum is not None:
-            prev = accum.get(mt)
+        if hits is not None:
+            prev = hits.resonance_range.get(mt)
             if prev is None or n_in > prev[2]:
-                accum[mt] = (el_union, eh_union, n_in, len(einc_arr))
+                hits.resonance_range[mt] = (
+                    el_union, eh_union, n_in, len(einc_arr),
+                )
         else:
             # Called outside a ctx (leaf reader used directly): fall
             # back to a per-call warning so the caller still sees a
@@ -208,73 +171,19 @@ def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges):
     return in_rrr_mask, None  # 'warn' / passthrough
 
 
-@contextlib.contextmanager
-def above_range_ctx(policy):
-    """Context manager that sets the above-range fill policy for
-    the duration of the `with` block. Nested calls inherit the
-    innermost setting; the previous value is restored on exit.
-
-    For the two ``'warn_*'`` policies this context also collects
-    the per-MT above-range hits reported by leaf readers and, on
-    successful exit, emits ONE summary UserWarning naming every
-    affected MT and its exceeded mesh limit. That keeps a single
-    top-level query from emitting hundreds of warnings when the
-    admitted-MT list is large; users who want per-MT granularity
-    can inspect the summary or call the leaf reader directly.
-
-    Users normally pass `above_range=...` to a top-level API
-    function in `endf_userpy.quantities`; that function opens this
-    context manager internally so every descendant call to
-    `compute_cross_section` picks the same policy up. Reach for
-    this context manager directly only when calling a leaf reader
-    (`mf3_interpretation.compute_cross_section` or
-    `mf10_interpretation.compute_cross_section`) outside of the
-    top-level API surface.
-    """
-    if policy not in _ABOVE_RANGE_POLICIES:
-        raise ValueError(
-            f"above_range must be one of {_ABOVE_RANGE_POLICIES}; "
-            f"got {policy!r}"
-        )
-    policy_token = _above_range_var.set(policy)
-    accum = {} if policy in ('warn_nan', 'warn_zero') else None
-    accum_token = _above_range_accum.set(accum)
-    try:
-        yield
-    finally:
-        _above_range_var.reset(policy_token)
-        _above_range_accum.reset(accum_token)
-        if accum:  # non-empty dict
-            fill_word = 'NaN' if policy == 'warn_nan' else '0'
-            n_mts = len(accum)
-            total_above = sum(n_above for _, n_above, _ in accum.values())
-            mt_summary = ', '.join(
-                f'MT={mt} (max {e_max:.6g} eV, {n_above} pts)'
-                for mt, (e_max, n_above, _) in
-                sorted(accum.items())
-            )
-            warnings.warn(
-                f'above_range: {total_above} out-of-mesh points across '
-                f'{n_mts} MTs returned as {fill_word}: {mt_summary}. '
-                f'Cross section is undefined above the evaluation range.',
-                UserWarning, stacklevel=2,
-            )
-
-
-def _handle_above_range(policy, mt, e_max, above_mask, energies_in):
+def _handle_above_range(policy, mt, e_max, above_mask, energies_in, hits=None):
     """Common implementation of the `above_range` policy shared by
     every XS reader (see issue #28). Returns the numeric-fill value
     the caller should place at `above_mask` positions in its result
     array (`0.0` or `np.nan`), after either raising per the policy
-    or recording the hit in the per-query accumulator for a summary
-    warning to emit on `above_range_ctx.__exit__`.
+    or recording the hit in the caller-provided ``hits``
+    accumulator (issue #143).
 
-    Callers pass the already-computed boolean `above_mask` (True at
-    positions where `energies_in > e_max`) rather than re-deriving
-    it, so the mask never has to be built twice. When no
-    `above_range_ctx` is active, the accumulator is `None` and
-    warn-mode falls back to a per-call warning so the leaf reader
-    stays usable in isolation.
+    ``hits`` is a :class:`_WarningHits` instance threaded down by
+    top-level :mod:`endf_userpy.quantities` entry points, or
+    ``None`` for direct leaf callers -- in which case ``warn_*``
+    variants fall back to a per-call UserWarning so the leaf stays
+    usable in isolation.
     """
     if policy not in _ABOVE_RANGE_POLICIES:
         raise ValueError(
@@ -291,14 +200,14 @@ def _handle_above_range(policy, mt, e_max, above_mask, energies_in):
             f'is undefined above the evaluation range.'
         )
     if policy in ('warn_nan', 'warn_zero'):
-        accum = _above_range_accum.get()
-        if accum is not None:
-            # Inside above_range_ctx: record for a summary warning
-            # on context exit. Keep the largest n_above per MT if
-            # the same MT is queried more than once in the ctx.
-            prev = accum.get(mt)
+        if hits is not None:
+            # Inside a top-level call: record for the summary
+            # UserWarning that _emit_summary_warnings drains on
+            # the way back out. Keep the largest n_above per MT if
+            # the same MT is queried more than once.
+            prev = hits.above_range.get(mt)
             if prev is None or n_above > prev[1]:
-                accum[mt] = (e_max, n_above, len(energies_in))
+                hits.above_range[mt] = (e_max, n_above, len(energies_in))
         else:
             # Called outside a ctx (leaf reader used directly).
             # Emit a per-call warning so the caller still sees a
@@ -406,8 +315,8 @@ def get_reactions(endf_dict):
 
 
 def compute_cross_section(
-    endf_dict, mt, energies_in, above_range=None, resonance_range=None,
-    xp=None,
+    endf_dict, mt, energies_in, above_range='warn_nan',
+    resonance_range='warn', xp=None, _warnings=None,
 ):
     """Cross section for MT evaluated on `energies_in`.
 
@@ -453,10 +362,6 @@ def compute_cross_section(
     from ..primitives import array_ns
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    if above_range is None:
-        above_range = _above_range_var.get()
-    if resonance_range is None:
-        resonance_range = _resonance_range_var.get()
     sec = endf_dict[3][mt]
     xstab = sec['xstable']
     # Route the mesh through xp so a tracer stored at ``xstab['E'][idx]``
@@ -501,7 +406,7 @@ def compute_cross_section(
     einc_arr = np.asarray(energies_in, dtype=float)
     above_mask = einc_arr > e_max
     fill_value = _handle_above_range(
-        above_range, mt, e_max, above_mask, einc_arr,
+        above_range, mt, e_max, above_mask, einc_arr, hits=_warnings,
     )
     if above_mask.any() and fill_value != 0.0:
         xs = np.where(above_mask, fill_value, xs)
@@ -513,7 +418,7 @@ def compute_cross_section(
     rrr_ranges = get_resolved_resonance_ranges(endf_dict)
     if rrr_ranges:
         in_rrr_mask, rrr_fill = _handle_resonance_range(
-            resonance_range, mt, einc_arr, rrr_ranges,
+            resonance_range, mt, einc_arr, rrr_ranges, hits=_warnings,
         )
         if in_rrr_mask is not None and rrr_fill is not None:
             # Only overwrite positions that are NOT already

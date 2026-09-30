@@ -4,6 +4,22 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config):
+    """Silence the one-shot ``backend='auto'`` no-numba fallback
+    warning at session start (issue #143). It is a real signal to
+    real users on numba-less installs but noise inside the test
+    suite, which is deterministic about which backends it
+    exercises via explicit ``options=RunOptions(backend=...)``.
+    Test files that specifically exercise the fallback path (e.g.
+    ``test_run_options.py``) reset the flag in-fixture as needed.
+    """
+    try:
+        from endf_userpy import run_options as ro
+        ro._WARNED_MISSING_NUMBA_ON_AUTO = True
+    except Exception:
+        pass
+
+
 def pytest_addoption(parser):
     parser.addoption("--endfdir", action="store", default="data")
     parser.addoption("--endffile", action="store", default=None)

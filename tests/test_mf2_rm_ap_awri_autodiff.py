@@ -1,6 +1,6 @@
 """``jax.grad`` wrt MF2/MT151 LRU=1 LRF=3 (Reich-Moore) file-side
 scalar leaves through the top-level
-``get_reaction_xs(include_resonance=True)`` API.
+``get_reaction_xs(options=RunOptions(include_resonance=True))`` API.
 
 Complements the MLBW AP/AWRI autodiff pinned in PR #249. R-M's
 per-L scattering radius ``APL`` and channel mass-ratio ``AWRI``
@@ -25,6 +25,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_reaction_xs
+from endf_userpy.run_options import RunOptions
 
 
 def _jax_available():
@@ -51,7 +52,7 @@ def _get_lg(endf_dict):
 
 def test_grad_wrt_rm_APL_matches_fd(pb208_endf_dict):
     """Perturb the L=0 per-L scattering radius APL and confirm
-    ``jax.grad`` through ``get_reaction_xs(include_resonance=True)``
+    ``jax.grad`` through ``get_reaction_xs(options=RunOptions(include_resonance=True))``
     matches central FD.
 
     Pb-208 populates APL for every L (0.967 and 0.975 in the two
@@ -73,10 +74,7 @@ def test_grad_wrt_rm_APL_matches_fd(pb208_endf_dict):
         _get_lg(d_t)[1]['APL'] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_reaction_xs(
-                d_t, '(n,total)', ein,
-                include_resonance=True, xp=xp_jax,
-            )
+            r = get_reaction_xs(d_t, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)
@@ -97,7 +95,7 @@ def test_grad_wrt_rm_APL_matches_fd(pb208_endf_dict):
 
 def test_grad_wrt_rm_AWRI_matches_fd(pb208_endf_dict):
     """Perturb the L=0 per-L AWRI (channel mass ratio) and confirm
-    ``jax.grad`` through ``get_reaction_xs(include_resonance=True)``
+    ``jax.grad`` through ``get_reaction_xs(options=RunOptions(include_resonance=True))``
     matches central FD.
     """
     import jax
@@ -113,10 +111,7 @@ def test_grad_wrt_rm_AWRI_matches_fd(pb208_endf_dict):
         _get_lg(d_t)[1]['AWRI'] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_reaction_xs(
-                d_t, '(n,total)', ein,
-                include_resonance=True, xp=xp_jax,
-            )
+            r = get_reaction_xs(d_t, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)

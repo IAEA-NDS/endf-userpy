@@ -34,6 +34,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.quantities import get_reaction_xs
 from endf_userpy.primitives import array_ns
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_nb93, resolve_al27
 
@@ -58,17 +59,12 @@ def al27_endf_dict():
     return EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
 
 
-def _get_xs_jax(d, reaction, E, resonance_backend='jax'):
+def _get_xs_jax(d, reaction, E):
     """Wrapper: get_reaction_xs under xp=jax with resonance
     composition on. ``resonance_backend='jax'`` keeps the whole
     reconstruction on jax so the E tracer threads through."""
     xp_jx = array_ns.get_backend('jax')
-    return get_reaction_xs(
-        d, reaction, E,
-        include_resonance=True,
-        resonance_backend=resonance_backend,
-        xp=xp_jx,
-    )
+    return get_reaction_xs(d, reaction, E, options=RunOptions(include_resonance=True, backend=xp_jx))
 
 
 def _fd5(loss, E_val, h):
@@ -100,14 +96,8 @@ def test_mlbw_numpy_jax_parity_inside_rrr(nb93_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     ein = np.array([1e-3, 1.0, 35.0, 100.0, 500.0, 2000.0])
 
-    xs_np = np.asarray(get_reaction_xs(
-        nb93_endf_dict, '(n,total)', ein,
-        include_resonance=True, xp=xp_np,
-    ))
-    xs_jx = np.asarray(get_reaction_xs(
-        nb93_endf_dict, '(n,total)', jnp.asarray(ein),
-        include_resonance=True, resonance_backend='jax', xp=xp_jx,
-    ))
+    xs_np = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_np)))
+    xs_jx = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', jnp.asarray(ein), options=RunOptions(include_resonance=True, backend=xp_jx)))
     np.testing.assert_allclose(xs_np, xs_jx, rtol=1e-9, atol=1e-30)
 
 
@@ -192,14 +182,8 @@ def test_reichmoore_numpy_jax_parity_inside_rrr(al27_endf_dict):
         # include_resonance=True composes it. No warning expected,
         # but silence any leftover for robustness.
         warnings.simplefilter('ignore', UserWarning)
-        xs_np = np.asarray(get_reaction_xs(
-            al27_endf_dict, '(n,total)', ein,
-            include_resonance=True, xp=xp_np,
-        ))
-        xs_jx = np.asarray(get_reaction_xs(
-            al27_endf_dict, '(n,total)', jnp.asarray(ein),
-            include_resonance=True, resonance_backend='jax', xp=xp_jx,
-        ))
+        xs_np = np.asarray(get_reaction_xs(al27_endf_dict, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_np)))
+        xs_jx = np.asarray(get_reaction_xs(al27_endf_dict, '(n,total)', jnp.asarray(ein), options=RunOptions(include_resonance=True, backend=xp_jx)))
     np.testing.assert_allclose(xs_np, xs_jx, rtol=1e-9, atol=1e-30)
 
 

@@ -28,6 +28,7 @@ from endf_parserpy import EndfParserCpp
 from endf_userpy.primitives import array_ns
 from endf_userpy.mfsec_interpretation import mf6_interpretation_subsecs as mf6subsec
 from endf_userpy.quantities import get_particle_production_ddxs
+from endf_userpy.run_options import RunOptions
 
 
 def _jax_available():
@@ -111,10 +112,7 @@ def test_law7_top_level_ei_mesh_matches_fd(h2_endf_dict):
         d_t[6][16]['subsection'][1]['E'][idx] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_particle_production_ddxs(
-                d_t, '(n,2n)', 'n', np.array([ein_val]), eout, mu,
-                xp=xp_jax,
-            )
+            r = get_particle_production_ddxs(d_t, '(n,2n)', 'n', np.array([ein_val]), eout, mu, options=RunOptions(backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)
@@ -152,10 +150,7 @@ def test_law7_top_level_ei_mesh_jit_composability(h2_endf_dict):
         d_t[6][16]['subsection'][1]['E'][idx] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_particle_production_ddxs(
-                d_t, '(n,2n)', 'n', np.array([ein_val]), eout, mu,
-                xp=xp_jax,
-            )
+            r = get_particle_production_ddxs(d_t, '(n,2n)', 'n', np.array([ein_val]), eout, mu, options=RunOptions(backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)

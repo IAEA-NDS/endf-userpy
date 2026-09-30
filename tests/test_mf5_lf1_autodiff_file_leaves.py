@@ -32,6 +32,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_particle_production_dxs_dE
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_nb93
 
@@ -76,10 +77,7 @@ def test_grad_wrt_mf5_lf1_mesh_knot_matches_fd(nb93_endf_dict):
         d_t[5][91]['contribution'][1]['E'][idx] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_particle_production_dxs_dE(
-                d_t, '(n,n_c)', 'n', np.array([ein_val]), eout,
-                xp=xp_jax,
-            )
+            r = get_particle_production_dxs_dE(d_t, '(n,n_c)', 'n', np.array([ein_val]), eout, options=RunOptions(backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)
@@ -130,10 +128,7 @@ def test_grad_wrt_mf5_lf1_g_leaf_matches_fd(nb93_endf_dict):
         d_t[5][91]['contribution'][1]['spectrum'][ein_row]['g'][g_idx] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_particle_production_dxs_dE(
-                d_t, '(n,n_c)', 'n', np.array([ein_val]), eout,
-                xp=xp_jax,
-            )
+            r = get_particle_production_dxs_dE(d_t, '(n,n_c)', 'n', np.array([ein_val]), eout, options=RunOptions(backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)

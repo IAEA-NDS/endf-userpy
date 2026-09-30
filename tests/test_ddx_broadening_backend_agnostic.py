@@ -6,8 +6,7 @@ dispatchers (issue #169 tier-2 follow-up to PR #181):
 - ``ddx_broadening.compute_ddx_continuous_broadened_summed``
 
 Composition-layer callers in ``endf_userpy.quantities`` forward ``xp``
-to these three, so ``get_particle_production_dxs_dE(..., broadening=,
-xp=jax)`` and ``get_particle_production_ddxs(..., broadening=, xp=jax)``
+to these three, so ``get_particle_production_dxs_dE(..., broadening=, options=RunOptions(backend=jax))`` and ``get_particle_production_ddxs(..., broadening=, options=RunOptions(backend=jax))``
 now trace through the FFT convolution to file-side leaves and to the
 ``kernel`` closure's parameters.
 
@@ -37,6 +36,7 @@ from endf_userpy.quantities import (
 )
 
 from _corpus import resolve_al27
+from endf_userpy.run_options import RunOptions
 
 
 def _jax_available():
@@ -125,14 +125,8 @@ def test_get_particle_production_dxs_dE_broadened_parity(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        a = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,2n)', 'n', ein, eout,
-            broadening=SIGMA, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,2n)', 'n', ein, eout,
-            broadening=SIGMA, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,2n)', 'n', ein, eout, broadening=SIGMA, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,2n)', 'n', ein, eout, broadening=SIGMA, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-14)
 
 
@@ -146,14 +140,8 @@ def test_get_particle_production_ddxs_broadened_parity(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        a = np.asarray(get_particle_production_ddxs(
-            al27_endf_dict, '(n,2n)', 'n', ein, eout, mus,
-            broadening=SIGMA, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_ddxs(
-            al27_endf_dict, '(n,2n)', 'n', ein, eout, mus,
-            broadening=SIGMA, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_ddxs(al27_endf_dict, '(n,2n)', 'n', ein, eout, mus, broadening=SIGMA, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_ddxs(al27_endf_dict, '(n,2n)', 'n', ein, eout, mus, broadening=SIGMA, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-14)
 
 
@@ -180,11 +168,7 @@ def test_jax_grad_wrt_broadening_sigma_top_level(al27_endf_dict):
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            return jnp.sum(get_particle_production_dxs_dE(
-                al27_endf_dict, '(n,2n)', 'n', ein, eout,
-                broadening=(kernel, 5e4),
-                xp=xp_jx,
-            ))
+            return jnp.sum(get_particle_production_dxs_dE(al27_endf_dict, '(n,2n)', 'n', ein, eout, broadening=(kernel, 5e4), options=RunOptions(backend=xp_jx)))
 
     sv = jnp.array(5e4)
     val = float(loss(sv))

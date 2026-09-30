@@ -23,6 +23,7 @@ import pytest
 from endf_parserpy import EndfParserCpp
 
 from endf_userpy.quantities import get_reaction_xs
+from endf_userpy.run_options import RunOptions
 
 from _corpus import (
     resolve_rh103,
@@ -51,9 +52,7 @@ _RTOL = 0.15
 def _thermal_xs(d, reaction):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        return float(get_reaction_xs(
-            d, reaction, THERMAL, include_resonance=True,
-        ))
+        return float(get_reaction_xs(d, reaction, THERMAL, options=RunOptions(include_resonance=True)))
 
 
 def test_rh103_thermal_capture():
@@ -143,9 +142,7 @@ def test_rh103_capture_resonance_peak_at_1p26eV():
     ein = np.linspace(0.5, 2.5, 401)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        xs = np.asarray(get_reaction_xs(
-            d, '(n,g)', ein, include_resonance=True,
-        ))
+        xs = np.asarray(get_reaction_xs(d, '(n,g)', ein, options=RunOptions(include_resonance=True)))
     peak_idx = int(np.argmax(xs))
     e_peak = float(ein[peak_idx])
     xs_peak = float(xs[peak_idx])
@@ -166,9 +163,7 @@ def test_pu239_fission_resonance_peak_below_1eV():
     ein = np.linspace(0.1, 0.7, 601)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        xs = np.asarray(get_reaction_xs(
-            d, '(n,fission)', ein, include_resonance=True,
-        ))
+        xs = np.asarray(get_reaction_xs(d, '(n,fission)', ein, options=RunOptions(include_resonance=True)))
     peak_idx = int(np.argmax(xs))
     e_peak = float(ein[peak_idx])
     xs_peak = float(xs[peak_idx])

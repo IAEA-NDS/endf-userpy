@@ -1,5 +1,3 @@
-import contextlib
-import contextvars
 import numpy as np
 from ..primitives import properties
 from ..primitives import reactions as reaction
@@ -157,22 +155,23 @@ def compute_yields(
     return yields
 
 
-def compute_xs_mt5_contrib(endf_dict, mt, energies_in, xp=None):
+def compute_xs_mt5_contrib(
+    endf_dict, mt, energies_in, *, options=None, _warnings=None,
+):
     """MT5 backfill contribution for reactions with a unique-path-to-
     residual. Returns the redistributed cross section ``y(E) * σ_MT5(E)``
     where ``y`` is the MF6/MT=5 yield for the residual uniquely
     identified by ``mt``, or zeros if the file has no MF6/MT=5 or the
     reaction isn't unique-path-to-residual.
 
-    Backend-agnostic via ``xp`` (issue #215): tracers on
-    ``energies_in`` propagate through the yield reconstruction (which
-    is already xp-native) and through the MF3 cross-section
-    reconstruction; the returned array is xp-native. ``xp=None``
-    (default) is numpy and bit-identical to the pre-port behaviour.
+    Runtime policies + backend live on ``options``; the accumulator
+    (``_warnings``) is threaded to the leaf reader so above-range
+    hits contribute to the top-level summary UserWarning.
     """
-    from ..primitives import array_ns
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
+    from ..run_options import RunOptions, resolve_backend
+    if options is None:
+        options = RunOptions()
+    xp = resolve_backend(options, is_resonance_call=False)
     zero_xs_result = xp.zeros_like(xp.asarray(energies_in), dtype=xp.float64)
     if not properties.has_mf6_mt(endf_dict, 5):
         return zero_xs_result
@@ -199,109 +198,130 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in, xp=None):
     )
     xs_mt5 = mf3_interp.compute_cross_section(
         endf_dict, mt5, energies_in, xp=xp,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
     )
     return xs_mt5 * yield_mt5
 
 
-# Context-inherited flag: when True, `compute_xs` returns the
-# physical cross section including MF2 resolved-resonance
-# reconstruction (composed with MF3 as an additive background), on
-# whichever backend was set via `resonance_backend_ctx`. Set by the
-# top-level `get_*` APIs when the user passes `include_resonance=True`;
-# defaults to False everywhere else so legacy callers keep the raw
-# MF3 behaviour and the resonance-range policy machinery in
-# `mf3_interpretation`.
-_include_resonance_var = contextvars.ContextVar(
-    '_include_resonance', default=False,
-)
-_resonance_backend_var = contextvars.ContextVar(
-    '_resonance_backend', default=None,
-)
-_urr_quadrature_var = contextvars.ContextVar(
-    '_urr_quadrature', default='gauss_legendre_32',
-)
-
-
-@contextlib.contextmanager
-def resonance_reconstruction_ctx(include, backend=None,
-                                 urr_quadrature='gauss_legendre_32'):
-    """Context manager toggling MF2 resonance reconstruction inside
-    every :func:`compute_xs` call in the ``with`` block. ``backend``
-    is a backend name understood by
-    :func:`endf_userpy.primitives.array_ns.get_backend`
-    (``'numpy'`` / ``'numba'`` / ``'jax'``); ``None`` means numpy.
-    ``urr_quadrature`` selects the LRU=2 fluctuation-integral
-    quadrature; see
-    :func:`endf_userpy.mfsec_interpretation.mf2_interpretation_urr.reconstruct`
-    for the supported values and their accuracy characteristics
-    (issue #299).
-    """
-    tok_i = _include_resonance_var.set(bool(include))
-    tok_b = _resonance_backend_var.set(backend)
-    tok_q = _urr_quadrature_var.set(urr_quadrature)
-    try:
-        yield
-    finally:
-        _include_resonance_var.reset(tok_i)
-        _resonance_backend_var.reset(tok_b)
-        _urr_quadrature_var.reset(tok_q)
-
-
-def compute_xs(endf_dict, mt, energies_in, xp=None):
+def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
     """Cross section for one MT.
 
-    Backend-agnostic (issue #169): ``xp=None`` (default) is numpy
-    and preserves the pre-port behaviour (raw MF3 returned as
-    numpy, resonance composition returned as numpy via
-    ``np.asarray`` at the boundary). Passing a JAX adapter, when
-    combined with ``resonance_reconstruction_ctx(include=True,
-    backend='jax')``, keeps the composed cross section xp-native
-    so ``jax.grad`` reaches file-side leaves (MF2 dict-stored
-    resonance parameters) through this entry.
+    ``options`` (see :class:`endf_userpy.run_options.RunOptions`)
+    carries every runtime policy: ``above_range``, ``resonance_range``,
+    ``include_resonance``, ``backend`` (with ``'auto'`` resolving
+    to numba on resonance calls when available), and
+    ``urr_quadrature``. ``options=None`` resolves to a default
+    :class:`RunOptions` instance, so leaf callers get sensible
+    physics-first defaults if they invoke this directly.
 
-    Note: only the resonance composition is xp-native today; the
-    raw MF3 branch (used when ``include_resonance=False``) stays
-    numpy internally and returns numpy. See tier-2 remaining work
-    under issue #169 for the MF3 xp port.
+    ``_warnings`` is the private
+    :class:`~endf_userpy.mfsec_interpretation.mf3_interpretation._WarningHits`
+    accumulator the top-level ``endf_userpy.quantities`` entry
+    points thread through internal callers so ONE summary
+    UserWarning fires per top-level query (issue #143). ``None``
+    (default) makes leaf readers fall back to per-call warnings.
     """
-    from ..primitives import array_ns
-    if _include_resonance_var.get():
-        # Prefer the caller-provided xp; fall back to the legacy
-        # ``resonance_backend`` context so pre-port callers keep
-        # working. If both are set the caller's xp wins.
-        if xp is None:
-            backend_name = _resonance_backend_var.get() or 'numpy'
-            xp_res = array_ns.get_backend(backend_name)
-        else:
-            xp_res = xp
+    from ..run_options import RunOptions, resolve_backend
+    if options is None:
+        options = RunOptions()
+    if options.include_resonance:
+        xp_res = resolve_backend(options, is_resonance_call=True)
         result = _res_comp.compute_reconstructed_cross_section(
             endf_dict, mt, energies_in, xp_res,
-            urr_quadrature=_urr_quadrature_var.get(),
+            urr_quadrature=options.urr_quadrature,
         )
+        # The composition layer uses ``compute_cross_section_agnostic``
+        # so it bypasses the MF3 policy machinery. Reapply the
+        # above_range policy at the composed level so a top-level
+        # ``options=RunOptions(above_range=...)`` still governs
+        # what happens above the file's Ein mesh. The
+        # ``resonance_range`` policy is intentionally a no-op here:
+        # the whole point of ``include_resonance=True`` is that the
+        # composed XS in the RRR is physical, so warning about it
+        # would be misleading. If MT is not in MF3 at all (JENDL-5
+        # MT3 shape, no MF3 entry) skip the mask -- composition
+        # returns the pure MF2 contribution and there is no mesh
+        # to bound.
+        if mt in endf_dict.get(3, {}):
+            from ..mfsec_interpretation.mf3_interpretation import (
+                _handle_above_range,
+            )
+            e_mesh = np.asarray(endf_dict[3][mt]['xstable']['E'], dtype=float)
+            e_max = float(e_mesh.max())
+            # Under jax the tracer energies_in cannot be numpified;
+            # do the mask xp-natively. The _handle_above_range hook
+            # still needs a concrete count for the accumulator; on
+            # tracers we skip that (no summary warning fires under
+            # jit anyway).
+            einc_xp = xp_res.asarray(energies_in)
+            above_mask_xp = einc_xp > e_max
+            # Concrete-path warning + raise policy live inside
+            # ``_handle_above_range``. Only skip that call when
+            # ``energies_in`` is a jax tracer (can't materialise).
+            # Distinguish tracer via a targeted probe rather than
+            # a broad ``except Exception`` which would swallow the
+            # legitimate ``ValueError`` raised by policy='raise'.
+            try:
+                einc_arr = np.asarray(energies_in, dtype=float)
+            except (TypeError, ValueError):
+                einc_arr = None
+            if einc_arr is not None:
+                above_mask_np = einc_arr > e_max
+                fill = _handle_above_range(
+                    options.above_range, mt, e_max,
+                    above_mask_np, einc_arr, hits=_warnings,
+                )
+            else:
+                # tracer path: pick the fill from the policy name
+                if options.above_range in ('warn_nan', 'nan'):
+                    fill = float('nan')
+                else:
+                    fill = 0.0
+            if options.above_range in ('warn_nan', 'nan'):
+                result = xp_res.where(above_mask_xp, fill, result)
+            elif options.above_range in ('warn_zero', 'zero'):
+                result = xp_res.where(above_mask_xp, 0.0, result)
+            # 'raise' already raised inside _handle_above_range on
+            # the concrete path; no fill to apply here.
         # Preserve pre-port behaviour on the numpy path (return
         # numpy); on non-numpy xp keep the tracer alive so autodiff
         # works end-to-end.
         if xp_res.name == 'numpy':
             return np.asarray(result)
         return result
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp)
-    if xp is not None and xp.name != 'numpy':
+    xp = resolve_backend(options, is_resonance_call=False)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        xp=xp, _warnings=_warnings,
+    )
+    if xp.name != 'numpy':
         return xp.asarray(xs)
     return xs
 
 
-def compute_prodxs(endf_dict, mt, zap, energies_in, xp=None):
+def compute_prodxs(
+    endf_dict, mt, zap, energies_in, *, options=None, _warnings=None,
+):
     """Particle-production cross section for one (MT, ZAP).
 
-    ``xp=None`` (default) preserves the pre-port numpy behaviour.
-    Passing a JAX adapter promotes the numpy sub-components (MF13
-    fast-path XS or MF3 x yields) to xp-native at the boundary so
-    downstream callers on JAX see xp arrays. MF3 / MF6 yields stay
-    numpy internally (their own port is tier-2).
+    Runtime policies + backend live on ``options`` (issue #143).
+    ``options=None`` resolves to a physics-first
+    :class:`~endf_userpy.run_options.RunOptions`.
+
+    ``_warnings`` is the private ``_WarningHits`` accumulator
+    threaded from the top-level entry points so above-range /
+    resonance-range hits populate the ONE summary UserWarning per
+    top-level query. ``None`` (default) triggers per-call warnings
+    from the leaf.
     """
-    from ..primitives import array_ns
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
+    from ..run_options import RunOptions, resolve_backend
+    if options is None:
+        options = RunOptions()
+    xp = resolve_backend(options, is_resonance_call=False)
     if (
         zap == get_zap_for_particle('g')
         and mt not in endf_dict.get(3, {})
@@ -313,7 +333,12 @@ def compute_prodxs(endf_dict, mt, zap, energies_in, xp=None):
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     )
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        xp=xp, _warnings=_warnings,
+    )
     return yields * xp.asarray(xs)
 
 
@@ -333,21 +358,18 @@ def _is_mf13_only_gamma(endf_dict, mt, zap):
 
 
 def compute_daxs(
-    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True, xp=None,
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True,
+    *, options=None, _warnings=None,
 ):
     """Angular-differential cross section ``d sigma / d mu`` for one
     (MT, ZAP).
 
-    ``xp=None`` (default) is numpy. Passing a JAX adapter threads
-    tracers through the angular-distribution reconstruction (MF4 or
-    MF6 LAW=2 kernels) so ``jax.grad`` reaches file-side leaves.
-    MF3 XS and yields stay numpy internally (their own xp port is
-    tier-2); they are materialised at the boundary via
-    ``xp.asarray`` before multiplication.
+    Runtime policies + backend live on ``options`` (issue #143).
     """
-    from ..primitives import array_ns
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
+    from ..run_options import RunOptions, resolve_backend
+    if options is None:
+        options = RunOptions()
+    xp = resolve_backend(options, is_resonance_call=False)
     if _is_mf13_only_gamma(endf_dict, mt, zap):
         prodxs = mf13_interp.compute_total_photon_production_xs(
             endf_dict, mt, energies_in, xp=xp,
@@ -359,7 +381,12 @@ def compute_daxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in, xp=xp,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
+    ).reshape(-1, 1)
     angdist = compute_angdist_values(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
     )
@@ -367,22 +394,18 @@ def compute_daxs(
 
 
 def compute_dexs(
-    endf_dict, mt, zap, energies_in, energies_out, to_lab=True, xp=None,
+    endf_dict, mt, zap, energies_in, energies_out, to_lab=True,
+    *, options=None, _warnings=None,
 ):
     """Energy-differential cross section ``d sigma / d E'`` for one
     (MT, ZAP).
 
-    ``xp=None`` (default) is numpy. Passing a JAX adapter threads
-    tracers through the energy-distribution reconstruction
-    (composition layer -> MF6 LAW=1 integrator) so ``jax.grad``
-    reaches file-side leaves. MF3 cross-section and MF6 yields
-    stay numpy internally (their own xp port is tier-2 in issue
-    #169's sequencing); they are converted at the boundary via
-    ``xp.asarray`` before multiplication.
+    Runtime policies + backend live on ``options`` (issue #143).
     """
-    from ..primitives import array_ns
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
+    from ..run_options import RunOptions, resolve_backend
+    if options is None:
+        options = RunOptions()
+    xp = resolve_backend(options, is_resonance_call=False)
     module_logger.debug(f'compute dexs for MT={mt} and ZAP={zap}')
     # MF13-only gamma fast path (issue #130).
     if _is_mf13_only_gamma(endf_dict, mt, zap):
@@ -396,7 +419,12 @@ def compute_dexs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in, xp=xp,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
+    ).reshape(-1, 1)
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
     )
@@ -406,19 +434,16 @@ def compute_dexs(
 
 def compute_ddxs(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
-    to_lab=True, xp=None,
+    to_lab=True, *, options=None, _warnings=None,
 ):
     """Double-differential cross section for one (MT, ZAP).
 
-    ``xp=None`` (default) is numpy. Passing a JAX adapter threads
-    tracers through the double-differential reconstruction (MF6
-    LAW=1/2/6/7 or the MF4 x MF5 product) so ``jax.grad`` reaches
-    file-side leaves. MF3 XS and yields stay numpy internally
-    (materialised at the boundary via ``xp.asarray``).
+    Runtime policies + backend live on ``options`` (issue #143).
     """
-    from ..primitives import array_ns
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
+    from ..run_options import RunOptions, resolve_backend
+    if options is None:
+        options = RunOptions()
+    xp = resolve_backend(options, is_resonance_call=False)
     if _is_mf13_only_gamma(endf_dict, mt, zap):
         n_einc = np.asarray(energies_in).size
         n_eout = np.asarray(energies_out).size
@@ -427,7 +452,12 @@ def compute_ddxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False, xp=xp,
     ).reshape(-1, 1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1, 1)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in, xp=xp,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
+    ).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
         to_lab, xp=xp,
@@ -437,7 +467,7 @@ def compute_ddxs(
 
 def compute_ddxs_from_mf15_mf14(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
-    to_lab=True, xp=None,
+    to_lab=True, *, options=None, _warnings=None,
 ):
     """Unbroadened DDX contribution from MF15 continuum gamma
     spectrum + MF14 angular. Gamma-only peer of
@@ -465,19 +495,17 @@ def compute_ddxs_from_mf15_mf14(
     convention as the 1D dxs/dE path from issue #103; the warning
     from that path fires for the same file).
 
-    ``xp=None`` (default) is numpy; passing an xp adapter threads
-    tracers through MF12/MF13/MF14/MF15 leaves so ``jax.grad``
-    reaches the gamma-composition file-side parameters. MF3 xs
-    stays numpy internally.
+    Runtime policies + backend live on ``options`` (issue #143).
 
     Returns
     -------
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``. Same units
     and shape as ``compute_ddxs``.
     """
-    from ..primitives import array_ns
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
+    from ..run_options import RunOptions, resolve_backend
+    if options is None:
+        options = RunOptions()
+    xp = resolve_backend(options, is_resonance_call=False)
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF15 continuum unbroadened DDX is gamma-only; got '
@@ -520,6 +548,9 @@ def compute_ddxs_from_mf15_mf14(
         y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)   # (n_einc,)
         xs = mf3_interp.compute_cross_section(
             endf_dict, mt, energies_in,
+            above_range=options.above_range,
+            resonance_range=options.resonance_range,
+            _warnings=_warnings,
         )   # (n_einc,), numpy
         weight = xp.asarray(xs) * y_cont
 
@@ -565,9 +596,13 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwar
         mt_list = get_reaction_mt_numbers(endf_dict)
     else:
         mt_list = mts
-    # ``select`` predicates take (endf_dict, mt, zap, ...) and do
-    # not accept ``xp``. Strip it before passing.
-    select_kwargs = {k: v for k, v in kwargs.items() if k != 'xp'}
+    # ``select`` predicates take (endf_dict, mt, zap, ...) positional
+    # only and do not accept ``xp`` / ``options`` / ``_warnings``.
+    # Strip them before passing.
+    select_kwargs = {
+        k: v for k, v in kwargs.items()
+        if k not in ('xp', 'options', '_warnings')
+    }
     is_first = True
     cum_res = None
     for mt in mt_list:
@@ -587,33 +622,54 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwar
     return cum_res
 
 
-def _compute_residual_xs_for_lfs(endf_dict, mt, za_residual, lfs, energies_in):
+def _compute_residual_xs_for_lfs(
+    endf_dict, mt, za_residual, lfs, energies_in,
+    *, options=None, _warnings=None,
+):
+    from ..run_options import RunOptions
+    if options is None:
+        options = RunOptions()
     lmf = mf8_interp.get_mf_switch(endf_dict, mt, za_residual, lfs)
+    _mf3_kw = dict(
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
+    )
     if lmf == 3:
-        return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        return mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in, **_mf3_kw,
+        )
     if lmf == 6:
-        xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        xs = mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in, **_mf3_kw,
+        )
         y = mf6_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in,
             include_discrete=True, level=lfs,
         )
         return xs * y
     if lmf == 9:
-        xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        xs = mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in, **_mf3_kw,
+        )
         y = mf9_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in, level=lfs
         )
         return xs * y
     if lmf == 10:
         return mf10_interp.compute_cross_section(
-            endf_dict, mt, za_residual, energies_in, level=lfs
+            endf_dict, mt, za_residual, energies_in, level=lfs,
+            above_range=options.above_range, _warnings=_warnings,
         )
     raise ValueError(
         f'unsupported LMF={lmf} in MF8/MT={mt} for ZAP={za_residual}, LFS={lfs}'
     )
 
 
-def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
+def compute_residual_xs(
+    endf_dict, mt, za_residual, lfs, energies_in,
+    *, options=None, _warnings=None,
+):
     """Cross section for producing (za_residual, lfs) via reaction MT.
 
     Dispatches via MF8 LMF: 3 (MF3 only, no isomer split), 6
@@ -623,11 +679,23 @@ def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
 
     If `lfs` is None, sums contributions from all LFS values present
     in MF8/MT for this ZAP.
+
+    Runtime policies live on ``options`` (issue #143).
     """
+    from ..run_options import RunOptions
+    if options is None:
+        options = RunOptions()
+    _mf3_kw = dict(
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
+    )
     if not (8 in endf_dict and mt in endf_dict[8]):
         if (6 in endf_dict and mt in endf_dict[6]
                 and mf6_help.contains_zap(endf_dict, mt, za_residual)):
-            xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+            xs = mf3_interp.compute_cross_section(
+                endf_dict, mt, energies_in, **_mf3_kw,
+            )
             y = mf6_interp.compute_yields(
                 endf_dict, mt, za_residual, energies_in,
                 include_discrete=True, level=lfs,
@@ -638,7 +706,9 @@ def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
                 f'no MF8 information for MT={mt}, cannot resolve isomer level '
                 f'(requested LFS={lfs})'
             )
-        return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        return mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in, **_mf3_kw,
+        )
 
     available_lfs = sorted({
         sub['LFS'] for sub in endf_dict[8][mt]['subsection'].values()
@@ -651,12 +721,14 @@ def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
         if lfs not in available_lfs:
             return np.zeros_like(energies_in, dtype=float)
         return _compute_residual_xs_for_lfs(
-            endf_dict, mt, za_residual, lfs, energies_in
+            endf_dict, mt, za_residual, lfs, energies_in,
+            options=options, _warnings=_warnings,
         )
 
     total = np.zeros_like(energies_in, dtype=float)
     for cur_lfs in available_lfs:
         total = total + _compute_residual_xs_for_lfs(
-            endf_dict, mt, za_residual, cur_lfs, energies_in
+            endf_dict, mt, za_residual, cur_lfs, energies_in,
+            options=options, _warnings=_warnings,
         )
     return total

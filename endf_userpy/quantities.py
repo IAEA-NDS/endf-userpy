@@ -1,11 +1,10 @@
-import contextlib
 import numpy as np
 import warnings
-from .primitives import array_ns
 from .primitives import physical_constants as physconst
 from .primitives import properties as prop
 from .primitives import reactions as reac
 from .primitives.helpers import unpack_za
+from .run_options import RunOptions, resolve_backend
 from .quantities_mt_zap import quantities as quant_mt_zap
 from .quantities_mt_zap import selectors
 from .quantities_mt_zap import ddx_broadening as ddxb
@@ -21,8 +20,7 @@ from .mfsec_interpretation import mf12_interpretation as mf12interp
 from .mfsec_interpretation import mf13_interpretation as mf13interp
 from .mfsec_interpretation import mf15_interpretation as mf15interp
 from .mfsec_interpretation.mf3_interpretation import (
-    above_range_ctx,
-    resonance_range_ctx,
+    _WarningHits, _emit_summary_warnings,
 )
 
 
@@ -31,11 +29,6 @@ from .mfsec_interpretation.mf3_interpretation import (
 # than once per call. id() can be reused after garbage collection but
 # the worst case is a missed warning, never a wrong result.
 _isomer_warning_seen = set()
-
-
-@contextlib.contextmanager
-def _noop_ctx():
-    yield
 
 
 def _warn_if_missing_isomer_routing(
@@ -296,84 +289,32 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
 
 
 def get_reaction_xs(
-    endf_dict, reaction, energies_in, mt5_contrib=True,
-    above_range='warn_nan', resonance_range='warn',
-    include_resonance=False, resonance_backend=None, xp=None,
-    urr_quadrature='gauss_legendre_32',
+    endf_dict, reaction, energies_in, *, options=None,
 ):
     """Cross section for `reaction` on the incident energy grid.
 
-    `above_range` (default ``'warn_nan'``) controls how the library
-    handles incident energies above the file's upper Ein boundary.
-    See ``mfsec_interpretation.mf3_interpretation.compute_cross_section``
-    for the full set of policies (``'warn_nan' | 'nan' | 'warn_zero' |
-    'zero' | 'raise'``). The setting is inherited by every internal
-    call to ``compute_cross_section`` for the duration of this call.
-
-    `resonance_range` (default ``'warn'``) controls the handling of
-    Ein points inside the file's resolved-resonance region (LRU=1
-    in MF2/MT151). MF3 there is a subtractive background that must
-    be added to the resonance reconstruction from MF2; see
-    ``include_resonance`` below to do that composition here.
-    Otherwise raw MF3 in the RRR is not the physical cross section
-    and can be negative (issue #84). Policies:
-    ``'warn' | 'warn_nan' | 'nan' | 'raise'``. Silent on files
-    without an LRU=1 range.
-
-    `include_resonance` (default ``False``): when True, the MF2
-    resolved-resonance reconstruction (MLBW / Reich-Moore, per
-    ``quantities_mt_zap.resonance_composition``) is added to the
-    MF3 background wherever the query energy falls inside an
-    LRU=1 range, giving the physical cross section directly. In
-    this mode the ``resonance_range`` policy is inactive (there
-    is no "raw MF3 in RRR" to warn about). Unresolved-resonance
-    ranges (LRU=2), LRF=4 Adler-Adler, and LRF=7 R-matrix limited
-    ranges are not reconstructed yet and contribute zero.
-
-    `resonance_backend` (default ``None``: numpy): backend name
-    understood by :func:`endf_userpy.primitives.array_ns.get_backend`
-    for the resonance reconstruction. ``'numba'`` is typically
-    30-40x faster on real actinide files after the first-call
-    warm-up; ``'jax'`` enables autodiff through the resonance
-    parameters.
-
-    `xp` (default ``None``: numpy): optional backend adapter that
-    threads through the whole reaction-xs computation (issue #169
-    tier-2). When combined with ``include_resonance=True`` and a
-    JAX adapter, ``jax.grad`` reaches file-side MF2 dict-stored
-    resonance parameters end-to-end. The MT5 fallback path stays
-    numpy internally and gets materialised at the boundary; its
-    autodiff support is tracked as remaining tier-2 work.
-
-    `urr_quadrature` (default ``'gauss_legendre_32'``): only
-    effective when ``include_resonance=True`` and the file has an
-    LSSF=0 URR range. Selects the fluctuation-integral quadrature;
-    see
-    :func:`~endf_userpy.mfsec_interpretation.mf2_interpretation_urr.reconstruct`
-    for the supported values and their accuracy characteristics
-    (issue #299). Pass ``'ross_10'`` for NJOY-unresr cross-validation.
+    Runtime policies (backend, above-range fill, resonance-range
+    handling, resonance composition, MT5 catch-all redistribution,
+    URR quadrature, JIT mesh bounds) live on
+    :class:`endf_userpy.run_options.RunOptions`. Pass
+    ``options=RunOptions(...)`` to override any of them; the
+    default ``options=None`` resolves to the physics-first default
+    ``RunOptions()`` (see its docstring). Issue #143.
     """
-    ctx = (
-        quant_mt_zap.resonance_reconstruction_ctx(
-            include_resonance, resonance_backend,
-            urr_quadrature=urr_quadrature,
-        )
-        if include_resonance
-        else _noop_ctx()
-    )
-    with above_range_ctx(above_range), \
-            resonance_range_ctx(resonance_range), \
-            ctx:
-        return _get_reaction_xs_impl(
-            endf_dict, reaction, energies_in, mt5_contrib, xp=xp,
-        )
+    if options is None:
+        options = RunOptions()
+    hits = _WarningHits()
+    result = _get_reaction_xs_impl(
+            endf_dict, reaction, energies_in, options=options,
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_reaction_xs_impl(
-    endf_dict, reaction, energies_in, mt5_contrib, xp=None,
+    endf_dict, reaction, energies_in, *, options, _warnings=None,
 ):
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
+    xp = resolve_backend(options, is_resonance_call=options.include_resonance)
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
     iter_mts = avail_mts.copy()
@@ -393,19 +334,20 @@ def _get_reaction_xs_impl(
             # resonance-composition branch; MF3-only branch materialises
             # numpy and gets promoted via xp.asarray inside compute_xs.
             cur_xs = quant_mt_zap.compute_xs(
-                endf_dict, mt, energies_in, xp=xp,
+                endf_dict, mt, energies_in,
+                options=options, _warnings=_warnings,
             )
             xs = xs + cur_xs
 
         # MT5 fallback component: adds a redistributed MT5
         # contribution at Es where the direct MT is zero. Only
         # relevant when the file actually carries MF6/MT=5 data.
-        # Under xp=jax the fallback now stays xp-native end-to-end
-        # (issue #215): ``compute_xs_mt5_contrib`` accepts xp, and
-        # the "only backfill where direct MT is zero" mask uses
+        # Under jax the fallback stays xp-native end-to-end (issue
+        # #215): ``compute_xs_mt5_contrib`` derives xp from options,
+        # and the "only backfill where direct MT is zero" mask uses
         # ``xp.where`` so tracers survive.
         if (mt in user_mts
-                and mt5_contrib
+                and options.mt5_contrib
                 and 5 not in user_mts
                 and not reac.any_ancestor_in_mts(5, user_mts)
                 and reac.is_unique_path_to_residual(proj, mt)
@@ -418,7 +360,8 @@ def _get_reaction_xs_impl(
             else:
                 cur_xs_ref = cur_xs
             mt5_xs_all = quant_mt_zap.compute_xs_mt5_contrib(
-                endf_dict, mt, energies_in, xp=xp,
+                endf_dict, mt, energies_in,
+                options=options, _warnings=_warnings,
             )
             # Backfill: add mt5_xs_all where the direct MT gave zero
             # (or wasn't selected), leave xs unchanged where the
@@ -440,51 +383,42 @@ def _get_reaction_xs_impl(
 
 
 def get_residual_production_xs(
-    endf_dict, residual_nucleus, energies_in, mt5_contrib=True,
-    above_range='warn_nan', resonance_range='warn',
-    include_resonance=False, resonance_backend=None,
-    urr_quadrature='gauss_legendre_32',
+    endf_dict, residual_nucleus, energies_in, *, options=None,
 ):
     """Residual-production cross section for `residual_nucleus`.
 
-    `above_range` (default ``'warn_nan'``), `resonance_range`
-    (default ``'warn'``), `include_resonance` (default ``False``),
-    `resonance_backend` (default ``None``: numpy) and
-    `urr_quadrature` (default ``'gauss_legendre_32'``) match
-    :func:`get_reaction_xs`; see its docstring.
+    Runtime policies live on
+    :class:`endf_userpy.run_options.RunOptions`; see
+    :func:`get_reaction_xs`.
     """
-    ctx = (
-        quant_mt_zap.resonance_reconstruction_ctx(
-            include_resonance, resonance_backend,
-            urr_quadrature=urr_quadrature,
-        )
-        if include_resonance
-        else _noop_ctx()
-    )
-    with above_range_ctx(above_range), \
-            resonance_range_ctx(resonance_range), \
-            ctx:
-        return _get_residual_production_xs_impl(
-            endf_dict, residual_nucleus, energies_in, mt5_contrib,
-        )
+    if options is None:
+        options = RunOptions()
+    hits = _WarningHits()
+    result = _get_residual_production_xs_impl(
+            endf_dict, residual_nucleus, energies_in, options=options,
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_residual_production_xs_impl(
-    endf_dict, residual_nucleus, energies_in, mt5_contrib,
+    endf_dict, residual_nucleus, energies_in, *, options, _warnings=None,
 ):
     za_residual, level = physconst.get_za_for_residual_nucleus(residual_nucleus)
     if level is not None:
         module_logger.debug(f'user requested isomeric state LFS={level}')
     if level not in (None, 0):
         _warn_if_missing_isomer_routing(
-            endf_dict, residual_nucleus, za_residual, level, mt5_contrib
+            endf_dict, residual_nucleus, za_residual, level,
+            options.mt5_contrib,
         )
     xs = quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt: quant_mt_zap.compute_residual_xs(
-            endf_dict, mt, za_residual, level, energies_in
+            endf_dict, mt, za_residual, level, energies_in,
+            options=options, _warnings=_warnings,
         ),
         lambda endf_dict, mt: (
-            (mt5_contrib or mt != 5) and
+            (options.mt5_contrib or mt != 5) and
             selectors.contains_residual_za_and_lfs(
                 endf_dict, mt, za_residual, level
             ) and
@@ -509,43 +443,26 @@ def _get_residual_production_xs_impl(
 
 
 def get_particle_production_xs(
-    endf_dict, reaction, particle, energies_in,
-    above_range='warn_nan', resonance_range='warn',
-    include_resonance=False, resonance_backend=None, xp=None,
-    urr_quadrature='gauss_legendre_32',
+    endf_dict, reaction, particle, energies_in, *, options=None,
 ):
     """Particle-production cross section on the incident energy grid.
 
-    `above_range` (default ``'warn_nan'``), `resonance_range`
-    (default ``'warn'``), `include_resonance` (default ``False``),
-    `resonance_backend` (default ``None``: numpy) and
-    `urr_quadrature` (default ``'gauss_legendre_32'``) match
-    :func:`get_reaction_xs`; see its docstring.
-
-    ``xp`` (issue #169 tier-2): default numpy; passing a JAX
-    adapter threads tracers through the sub-XS sum. MF3 XS and MF6
-    yields stay numpy internally and are materialised at the
-    boundary; the MF12/MF13/MF15 photon-path fast-paths likewise
-    stay numpy pending their own tier-2 ports.
+    Runtime policies live on
+    :class:`endf_userpy.run_options.RunOptions`; see
+    :func:`get_reaction_xs`.
     """
-    ctx = (
-        quant_mt_zap.resonance_reconstruction_ctx(
-            include_resonance, resonance_backend,
-            urr_quadrature=urr_quadrature,
-        )
-        if include_resonance
-        else _noop_ctx()
-    )
-    with above_range_ctx(above_range), \
-            resonance_range_ctx(resonance_range), \
-            ctx:
-        return _get_particle_production_xs_impl(
-            endf_dict, reaction, particle, energies_in, xp=xp,
-        )
+    if options is None:
+        options = RunOptions()
+    hits = _WarningHits()
+    result = _get_particle_production_xs_impl(
+            endf_dict, reaction, particle, energies_in, options=options,
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_particle_production_xs_impl(
-    endf_dict, reaction, particle, energies_in, xp=None,
+    endf_dict, reaction, particle, energies_in, *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
@@ -555,92 +472,68 @@ def _get_particle_production_xs_impl(
     # cumulative-sum iteration (issue #130). Non-gamma queries
     # over the wider list are still filtered correctly by contains_zap.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    extra = {'xp': xp} if xp is not None else {}
+    warnings_hits = _warnings
     return quant_mt_zap.compute_cumulative_quantity(
-        quant_mt_zap.compute_prodxs,
+        lambda endf_dict, mt, zap, einc: quant_mt_zap.compute_prodxs(
+            endf_dict, mt, zap, einc,
+            options=options, _warnings=warnings_hits,
+        ),
         lambda endf_dict, mt, zap, energies_in: (
             selectors.satisfies_particle_production_select(
                 endf_dict, mt, user_mts, zap,
             )
             and selectors.contains_zap(endf_dict, mt, zap)
         ),
-        endf_dict, zap, energies_in, mts=mts, **extra,
+        endf_dict, zap, energies_in, mts=mts,
     )
 
 
 def get_particle_production_dxs_dE(
-    endf_dict, reaction, particle, energies_in, energies_out,
-    broadening=None, above_range='warn_nan', resonance_range='warn',
-    xp=None, broadening_mesh_bounds=None,
+    endf_dict, reaction, particle, energies_in, energies_out, *,
+    broadening=None, options=None,
 ):
     """Energy-differential cross section for particle production.
 
     Parameters
     ----------
     endf_dict, reaction, particle, energies_in, energies_out
-        As before.
+        Physics arguments (dict, MT/particle strings, query axes).
     broadening : None or float or (callable, float), optional
-        If None (default), behaviour is unchanged: discrete-level
-        channels appear as the kinematic-box shape produced by the
-        Jacobian transformation in `compute_dexs`, and MF6/LAW=1
-        ND>0 / MF12 / MF13 discrete gamma lines are dropped from
-        the output (their Dirac deltas integrate to zero on any
-        finite E_out grid). A UserWarning names the dropped MTs.
-        If broadening is supplied, the same kernel is applied to
-        every admitted MT along E_out, including discrete and
-        continuum channels alike, which smooths the box-edge
-        singularities and lets the spectrum be compared with
-        finite-resolution measurements. Pass `broadening=0` to
-        explicitly acknowledge the drop and suppress the warnings
-        (same numeric result as `broadening=None`; different only
-        in whether the warnings fire).
-
-        Same accepted forms as `get_particle_production_ddxs`.
-    above_range : str, default ``'warn_nan'``
-        Policy for incident energies above the file's upper Ein
-        boundary. Matches ``get_reaction_xs``; see its docstring.
-    resonance_range : str, default ``'warn'``
-        Policy for incident energies inside the file's
-        resolved-resonance region. Matches ``get_reaction_xs``.
-    xp : optional backend adapter (issue #169). ``xp=None`` (default)
-        resolves to numpy and is bit-identical to the pre-port
-        behaviour. Passing ``xp=array_ns.get_backend('jax')`` threads
-        the reconstruction through JAX so ``jax.grad`` reaches
-        file-side leaves (e.g. MF6 LAW=1 ``b`` coefficients) end-
-        to-end. Broadened paths are numpy-only in this PR and are
-        materialised to xp-native at the return boundary.
-    broadening_mesh_bounds : (float, float), optional
-        Static ``(emin, emax)`` for the internal
-        :func:`~endf_userpy.primitives.convolution.adaptive_convolve`
-        mesh. Required when ``energies_out`` is a jax tracer (i.e.
-        the caller took ``jax.grad`` wrt ``energies_out``, or is
-        inside ``@jax.jit`` with a tracer ``energies_out``): the mesh
-        shape must be static at trace time and cannot be derived
-        from a tracer's ``.min()`` / ``.max()``. Include the
-        ``n_kernel_widths * kernel_width`` margin on both sides; see
-        ``adaptive_convolve`` docstring for details. Ignored when
-        no broadening is applied.
+        Measurement-resolution kernel (per-call physics knob; not
+        a run-time policy). Same accepted forms as
+        :func:`get_particle_production_ddxs`. If None (default),
+        Dirac-delta discrete-line content is dropped with a
+        UserWarning naming the affected MTs; pass ``broadening=0``
+        to suppress that warning while keeping the drop.
+    options : RunOptions, optional
+        Runtime policies (backend, above-range fill,
+        resonance-range handling, MT5 catch-all, URR quadrature,
+        broadening-mesh bounds for jit safety). Default None
+        resolves to a physics-first
+        :class:`endf_userpy.run_options.RunOptions`.
+        ``broadening_mesh_bounds`` on the options object is
+        required when ``energies_out`` is a jax tracer (see
+        Phase 5 of #290).
     """
-    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
-        return _get_particle_production_dxs_dE_impl(
+    if options is None:
+        options = RunOptions()
+    hits = _WarningHits()
+    result = _get_particle_production_dxs_dE_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
-            broadening, xp=xp,
-            broadening_mesh_bounds=broadening_mesh_bounds,
-        )
+            broadening, options=options,
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_particle_production_dxs_dE_impl(
     endf_dict, reaction, particle, energies_in, energies_out, broadening,
-    xp=None, broadening_mesh_bounds=None,
+    *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    # ``xp`` may be None here (default = numpy). Pass it through as-is
-    # so downstream cumulative-quantity dispatchers keep their existing
-    # ``{'xp': xp} if xp is not None else {}`` guard: functions that
-    # do not accept an xp kwarg still get called without one when the
-    # caller did not opt in to a specific backend. ``_normalize_broadening``
-    # handles ``xp=None`` internally (falls back to numpy).
+    xp = resolve_backend(options, is_resonance_call=False)
+    broadening_mesh_bounds = options.broadening_mesh_bounds
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
@@ -660,21 +553,22 @@ def _get_particle_production_dxs_dE_impl(
                 endf_dict, zap, user_mts,
                 'get_particle_production_dxs_dE',
             )
-        # Only forward ``xp`` when the caller explicitly set it, so
-        # downstream ``func`` stubs written against the pre-port
-        # signature (no ``xp`` kwarg) still work on the default
-        # numpy path.
-        extra = {'xp': xp} if xp is not None else {}
         return quant_mt_zap.compute_cumulative_quantity(
-            quant_mt_zap.compute_dexs, select,
+            lambda endf_dict, mt, zap, einc, eouts:
+                quant_mt_zap.compute_dexs(
+                    endf_dict, mt, zap, einc, eouts,
+                    options=options, _warnings=_warnings,
+                ),
+            select,
             endf_dict, zap, energies_in, energies_out,
-            mts=mts, **extra,
+            mts=mts,
         )
 
     def cont_compute(endf_dict, mt, zap, einc, eouts):
         return ddxb.compute_dxs_dE_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            options=options, _warnings=_warnings,
             mesh_bounds=broadening_mesh_bounds,
         )
 
@@ -737,6 +631,7 @@ def _get_particle_production_dxs_dE_impl(
             endf_dict, admitted_cont_mts, zap,
             energies_in, energies_out,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            options=options, _warnings=_warnings,
             mesh_bounds=broadening_mesh_bounds,
         )
     else:
@@ -770,124 +665,82 @@ def _get_particle_production_dxs_dE_impl(
 
 
 def get_particle_production_dxs_dmu(
-    endf_dict, reaction, particle, energies_in, angle_cosines_out,
-    above_range='warn_nan', resonance_range='warn', xp=None,
+    endf_dict, reaction, particle, energies_in, angle_cosines_out, *,
+    options=None,
 ):
     """Angle-differential cross section for particle production.
 
-    `above_range` (default ``'warn_nan'``) and `resonance_range`
-    (default ``'warn'``) match ``get_reaction_xs``; see its
-    docstring for the policy sets.
-
-    ``xp`` (issue #169 tier-2): default numpy; passing a JAX adapter
-    threads tracers through the underlying angular reconstruction
-    (MF4 or MF6 LAW=2) so ``jax.grad`` reaches file-side leaves
-    end-to-end. MF3 XS and yields stay numpy internally
-    (materialised at the boundary).
+    Runtime policies live on
+    :class:`endf_userpy.run_options.RunOptions`; see
+    :func:`get_reaction_xs`.
     """
-    with (
-        above_range_ctx(above_range),
-        resonance_range_ctx(resonance_range),
-    ):
-        return _get_particle_production_dxs_dmu_impl(
+    if options is None:
+        options = RunOptions()
+    hits = _WarningHits()
+    result = _get_particle_production_dxs_dmu_impl(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,
-            xp=xp,
-        )
+            options=options,
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_particle_production_dxs_dmu_impl(
-    endf_dict, reaction, particle, energies_in, angle_cosines_out, xp=None,
+    endf_dict, reaction, particle, energies_in, angle_cosines_out, *,
+    options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    extra = {'xp': xp} if xp is not None else {}
     return quant_mt_zap.compute_cumulative_quantity(
-        quant_mt_zap.compute_daxs,
+        lambda endf_dict, mt, zap, einc, mus:
+            quant_mt_zap.compute_daxs(
+                endf_dict, mt, zap, einc, mus,
+                options=options, _warnings=_warnings,
+            ),
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
         ),
         endf_dict, zap, energies_in, angle_cosines_out,
-        mts=mts, **extra,
+        mts=mts,
     )
 
 
 def get_particle_production_ddxs(
-    endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out,
-    broadening=None, above_range='warn_nan', resonance_range='warn', xp=None,
-    broadening_mesh_bounds=None,
+    endf_dict, reaction, particle, energies_in, energies_out,
+    angle_cosines_out, *, broadening=None, options=None,
 ):
     """Double-differential cross section for particle production.
 
     Parameters
     ----------
     endf_dict, reaction, particle, energies_in, energies_out, angle_cosines_out
-        As before.
+        Physics arguments (dict, MT/particle strings, query axes).
     broadening : None or float or (callable, float), optional
-        If None (default), only channels with a true continuous
-        (E_out, mu) distribution contribute: MF6/LAW=1 continuum,
-        LAW=6, LAW=7, or MF4+MF5. Discrete two-body channels (MT 2
-        elastic, MT 51..90 discrete inelastic) carry their outgoing
-        energy as a kinematic delta at ``E' = E'_kin(mu, E_in)``
-        which cannot be represented on the caller's finite E_out
-        grid; those MTs are excluded from the sum and a UserWarning
-        names them (issue #21). MF12 / MF13 discrete gamma-line
-        content is excluded on the same grounds and gets its own
-        UserWarning (issue #266). Pass a `broadening=` to include
-        their peaks.
-
-        If broadening is provided, the result sums (i) the continuous
-        DDX folded with the kernel along E_out, and (ii) the discrete
-        two-body channels with the kinematic delta replaced by the
-        kernel, plus (iii) the MF6/LAW=1 discrete-line channels and
-        (iv) the MF12 discrete-line gamma channels.
-
-        Accepted forms:
-          - `None` (default) -> drop discrete deltas, emit
-            UserWarnings naming the affected MTs.
-          - `0` -> same numeric result as None (drop the deltas),
-            but suppress the UserWarnings. Use this once you have
-            deliberately chosen the continuum-only view.
-          - scalar `sigma` (eV) -> Gaussian kernel of that width.
-          - tuple `(kernel_callable, width)` -> custom kernel; the
-            callable is `kernel(delta_E)` and `width` is its
-            characteristic scale (passed to the FFT mesh control).
-    above_range : str, default ``'warn_nan'``
-        Policy for incident energies above the file's upper Ein
-        boundary. Matches ``get_reaction_xs``; see its docstring.
-    resonance_range : str, default ``'warn'``
-        Policy for incident energies inside the file's
-        resolved-resonance region. Matches ``get_reaction_xs``.
-    xp : optional backend adapter (issue #169). ``xp=None`` (default)
-        resolves to numpy and is bit-identical to the pre-port
-        behaviour. Passing ``xp=array_ns.get_backend('jax')`` threads
-        the unbroadened continuous DDX reconstruction through JAX so
-        ``jax.grad`` reaches file-side leaves. Broadened kernels are
-        FFT-based numpy-only in this PR and are materialised to
-        xp-native at the return boundary.
-    broadening_mesh_bounds : (float, float), optional
-        Static ``(emin, emax)`` for the internal
-        :func:`~endf_userpy.primitives.convolution.adaptive_convolve`
-        mesh. Required when ``energies_out`` is a jax tracer (i.e.
-        the caller took ``jax.grad`` wrt ``energies_out``, or is
-        inside ``@jax.jit`` with a tracer ``energies_out``). Include
-        the ``n_kernel_widths * kernel_width`` margin on both sides.
-        See :func:`get_particle_production_dxs_dE` for the same
-        parameter's semantics; ignored when no broadening is applied.
+        Measurement-resolution kernel (per-call physics knob). Same
+        accepted forms as :func:`get_particle_production_dxs_dE`.
+    options : RunOptions, optional
+        Runtime policies. Default None resolves to a physics-first
+        :class:`endf_userpy.run_options.RunOptions`.
+        ``broadening_mesh_bounds`` on the options object is
+        required when ``energies_out`` is a jax tracer (Phase 5 of
+        #290).
     """
-    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
-        return _get_particle_production_ddxs_impl(
+    if options is None:
+        options = RunOptions()
+    hits = _WarningHits()
+    result = _get_particle_production_ddxs_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
-            angle_cosines_out, broadening, xp=xp,
-            broadening_mesh_bounds=broadening_mesh_bounds,
-        )
+            angle_cosines_out, broadening, options=options,
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def get_particle_production_discrete_gamma_lines(
     endf_dict, reaction, energies_in, *,
-    angle_cosines_out=None, xp=None,
-    above_range='warn_nan', resonance_range='warn',
+    angle_cosines_out=None, options=None,
 ):
     """Return the discrete photon-line content for ``reaction``
     that the unbroadened DDX / dxs_dE paths drop.
@@ -931,26 +784,28 @@ def get_particle_production_discrete_gamma_lines(
         this wrapper handles reaction-string resolution and the
         ``above_range`` / ``resonance_range`` policy contexts.
     """
+    if options is None:
+        options = RunOptions()
+    xp = resolve_backend(options, is_resonance_call=False)
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    with above_range_ctx(above_range), resonance_range_ctx(resonance_range):
-        return discrete_gamma.extract_discrete_gamma_lines(
-            endf_dict, mts, user_mts, energies_in,
-            angle_cosines_out=angle_cosines_out, xp=xp,
-        )
+    hits = _WarningHits()
+    result = discrete_gamma.extract_discrete_gamma_lines(
+        endf_dict, mts, user_mts, energies_in,
+        angle_cosines_out=angle_cosines_out, xp=xp,
+    )
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_particle_production_ddxs_impl(
     endf_dict, reaction, particle, energies_in, energies_out,
-    angle_cosines_out, broadening, xp=None,
-    broadening_mesh_bounds=None,
+    angle_cosines_out, broadening, *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    # ``xp`` may be None (default numpy); see sibling comment in
-    # ``_get_particle_production_dxs_dE_impl`` for why we do not
-    # resolve it early here.
-    # Widened MT iteration (issue #130).
+    xp = resolve_backend(options, is_resonance_call=False)
+    broadening_mesh_bounds = options.broadening_mesh_bounds
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
 
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
@@ -971,26 +826,33 @@ def _get_particle_production_ddxs_impl(
         # return zero from that branch. Sum in a separate MF15+MF14
         # contribution the same way the broadened dispatcher does
         # for compute_ddx_mf15_continuum_broadened.
-        cont_extra = {'xp': xp} if xp is not None else {}
         cont_unbroad = quant_mt_zap.compute_cumulative_quantity(
-            quant_mt_zap.compute_ddxs,
+            lambda endf_dict, mt, zap, einc, eouts, mus:
+                quant_mt_zap.compute_ddxs(
+                    endf_dict, mt, zap, einc, eouts, mus,
+                    options=options, _warnings=_warnings,
+                ),
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
                 selectors.has_continuous_ddx(endf_dict, mt, zap) and
                 selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
-            mts=mts, **cont_extra,
+            mts=mts,
         )
         mf15_unbroad = quant_mt_zap.compute_cumulative_quantity(
-            quant_mt_zap.compute_ddxs_from_mf15_mf14,
+            lambda endf_dict, mt, zap, einc, eouts, mus:
+                quant_mt_zap.compute_ddxs_from_mf15_mf14(
+                    endf_dict, mt, zap, einc, eouts, mus,
+                    options=options, _warnings=_warnings,
+                ),
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
                 selectors.has_mf15_continuum(endf_dict, mt, zap) and
                 selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
             ),
             endf_dict, zap, energies_in, energies_out, angle_cosines_out,
-            mts=mts, **cont_extra,
+            mts=mts,
         )
         parts = [p for p in (cont_unbroad, mf15_unbroad) if p is not None]
         if not parts:

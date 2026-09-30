@@ -18,8 +18,7 @@ Ported here:
 
 Composition-layer dispatch: `_get_particle_production_dxs_dE_impl`
 and `_get_particle_production_ddxs_impl` in ``quantities.py`` forward
-``xp`` to each of the above so ``get_particle_production_dxs_dE(...,
-broadening=, xp=jax)`` and ``get_particle_production_ddxs(...)``
+``xp`` to each of the above so ``get_particle_production_dxs_dE(..., broadening=, options=RunOptions(backend=jax))`` and ``get_particle_production_ddxs(...)``
 trace end-to-end regardless of which specific MT layout the file
 carries.
 
@@ -49,6 +48,7 @@ from endf_userpy.quantities import (
 )
 
 from _corpus import resolve_al27
+from endf_userpy.run_options import RunOptions
 
 
 def _jax_available():
@@ -80,10 +80,7 @@ def test_gamma_dxs_dE_broadened_default_matches_xp_numpy(al27_endf_dict):
         a = np.asarray(get_particle_production_dxs_dE(
             al27_endf_dict, '(n,g)', 'g', ein, eout, broadening=SIGMA,
         ))
-        b = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,g)', 'g', ein, eout,
-            broadening=SIGMA, xp=xp_np,
-        ))
+        b = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,g)', 'g', ein, eout, broadening=SIGMA, options=RunOptions(backend=xp_np)))
     np.testing.assert_array_equal(a, b)
 
 
@@ -97,14 +94,8 @@ def test_gamma_dxs_dE_broadened_numpy_jax_parity(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        a = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,g)', 'g', ein, eout,
-            broadening=SIGMA, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_dxs_dE(
-            al27_endf_dict, '(n,g)', 'g', ein, eout,
-            broadening=SIGMA, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,g)', 'g', ein, eout, broadening=SIGMA, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_dxs_dE(al27_endf_dict, '(n,g)', 'g', ein, eout, broadening=SIGMA, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-14)
 
 
@@ -120,14 +111,8 @@ def test_gamma_ddxs_broadened_numpy_jax_parity(al27_endf_dict):
     xp_jx = array_ns.get_backend('jax')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        a = np.asarray(get_particle_production_ddxs(
-            al27_endf_dict, '(n,g)', 'g', ein, eout, mus,
-            broadening=SIGMA, xp=xp_np,
-        ))
-        b = np.asarray(get_particle_production_ddxs(
-            al27_endf_dict, '(n,g)', 'g', ein, eout, mus,
-            broadening=SIGMA, xp=xp_jx,
-        ))
+        a = np.asarray(get_particle_production_ddxs(al27_endf_dict, '(n,g)', 'g', ein, eout, mus, broadening=SIGMA, options=RunOptions(backend=xp_np)))
+        b = np.asarray(get_particle_production_ddxs(al27_endf_dict, '(n,g)', 'g', ein, eout, mus, broadening=SIGMA, options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-14)
 
 
@@ -152,10 +137,7 @@ def test_jax_grad_wrt_kernel_sigma_through_discrete_line_path(al27_endf_dict):
             )
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            return jnp.sum(get_particle_production_dxs_dE(
-                al27_endf_dict, '(n,g)', 'g', ein, eout,
-                broadening=(kt, 3e4), xp=xp_jx,
-            ))
+            return jnp.sum(get_particle_production_dxs_dE(al27_endf_dict, '(n,g)', 'g', ein, eout, broadening=(kt, 3e4), options=RunOptions(backend=xp_jx)))
 
     sv = jnp.array(3e4)
     val = float(loss(sv))
@@ -188,10 +170,7 @@ def test_jax_grad_wrt_kernel_sigma_ddxs_law1_disc_path(al27_endf_dict):
             )
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            return jnp.sum(get_particle_production_ddxs(
-                al27_endf_dict, '(n,2n)', 'n', ein, eout, mus,
-                broadening=(kt, 5e4), xp=xp_jx,
-            ))
+            return jnp.sum(get_particle_production_ddxs(al27_endf_dict, '(n,2n)', 'n', ein, eout, mus, broadening=(kt, 5e4), options=RunOptions(backend=xp_jx)))
 
     sv = jnp.array(5e4)
     val = float(loss(sv))

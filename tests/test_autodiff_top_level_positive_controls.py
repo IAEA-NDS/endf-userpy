@@ -48,6 +48,7 @@ from endf_userpy.quantities import (
 )
 
 from _corpus import resolve_al27
+from endf_userpy.run_options import RunOptions
 
 
 DATA_DIR = Path(__file__).parent / 'data'
@@ -113,9 +114,7 @@ def test_top_level_ddxs_grad_wrt_mf6_law1_b(al27_endf_dict):
     def loss(theta):
         d_t = copy.deepcopy(al27_endf_dict)
         d_t[6][91]['subsection'][1]['b'][panel][ep_row][coef] = theta
-        out = get_particle_production_ddxs(
-            d_t, '(n,n_c)', 'n', ein, eout, mu, xp=xp_jax,
-        )
+        out = get_particle_production_ddxs(d_t, '(n,n_c)', 'n', ein, eout, mu, options=RunOptions(backend=xp_jax))
         return jnp.sum(out)
 
     val = float(loss(jnp.array(original)))
@@ -157,9 +156,7 @@ def test_top_level_dxs_dmu_grad_wrt_mf6_law2_A(al27_endf_dict):
     def loss(theta):
         d_t = copy.deepcopy(al27_endf_dict)
         d_t[6][51]['subsection'][1]['A'][row][coef] = theta
-        out = get_particle_production_dxs_dmu(
-            d_t, '(n,n_1)', 'n', ein, mu, xp=xp_jax,
-        )
+        out = get_particle_production_dxs_dmu(d_t, '(n,n_1)', 'n', ein, mu, options=RunOptions(backend=xp_jax))
         return jnp.sum(out)
 
     val = float(loss(jnp.array(original)))
@@ -198,9 +195,7 @@ def test_top_level_dxs_dmu_grad_wrt_mf4_ltt1_a(be9_endf_dict):
     def loss(theta):
         d_t = copy.deepcopy(be9_endf_dict)
         d_t[4][2]['a'][row][coef] = theta
-        out = get_particle_production_dxs_dmu(
-            d_t, '(n,n_0)', 'n', ein, mu, xp=xp_jax,
-        )
+        out = get_particle_production_dxs_dmu(d_t, '(n,n_0)', 'n', ein, mu, options=RunOptions(backend=xp_jax))
         return jnp.sum(out)
 
     val = float(loss(jnp.array(original)))
@@ -233,7 +228,7 @@ def test_jax_jit_accepts_static_endf_dict_wrapper(h1_endf_dict):
     w = wrap_endf_dict(h1_endf_dict)
 
     def pipeline(wrapped, ein):
-        return get_reaction_xs(wrapped, '(n,g)', ein, xp=xp_jax)
+        return get_reaction_xs(wrapped, '(n,g)', ein, options=RunOptions(backend=xp_jax))
 
     pipeline_jit = jax.jit(pipeline, static_argnums=(0,))
     ein1 = jnp.array([1e4, 1e5, 1e6])
@@ -245,9 +240,7 @@ def test_jax_jit_accepts_static_endf_dict_wrapper(h1_endf_dict):
     assert np.all(np.isfinite(r2))
 
     # Numeric parity with the raw (non-jit) path.
-    r1_ref = np.asarray(get_reaction_xs(
-        h1_endf_dict, '(n,g)', np.asarray(ein1), xp=xp_jax,
-    ))
+    r1_ref = np.asarray(get_reaction_xs(h1_endf_dict, '(n,g)', np.asarray(ein1), options=RunOptions(backend=xp_jax)))
     np.testing.assert_allclose(r1, r1_ref, rtol=1e-5, atol=0)
 
     # A different wrapper around the same underlying dict has

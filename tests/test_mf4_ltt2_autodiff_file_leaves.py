@@ -35,6 +35,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_particle_production_dxs_dmu
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_al27
 
@@ -79,10 +80,7 @@ def test_grad_wrt_mf4_ltt2_mesh_knot_matches_fd(al27_endf_dict):
         d_t[4][2]['E'][idx] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_particle_production_dxs_dmu(
-                d_t, '(n,n_0)', 'n', np.array([ein_val]), mu_query,
-                xp=xp_jax,
-            )
+            r = get_particle_production_dxs_dmu(d_t, '(n,n_0)', 'n', np.array([ein_val]), mu_query, options=RunOptions(backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)
@@ -131,10 +129,7 @@ def test_grad_wrt_mf4_ltt2_f_leaf_matches_fd(al27_endf_dict):
         d_t[4][2]['angtable'][row_key]['f'][f_idx] = theta
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r = get_particle_production_dxs_dmu(
-                d_t, '(n,n_0)', 'n', np.array([ein_val]), mu_query,
-                xp=xp_jax,
-            )
+            r = get_particle_production_dxs_dmu(d_t, '(n,n_0)', 'n', np.array([ein_val]), mu_query, options=RunOptions(backend=xp_jax))
         return jnp.sum(r)
 
     theta = jnp.array(original)

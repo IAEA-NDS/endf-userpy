@@ -33,9 +33,9 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.mfsec_interpretation import mf3_interpretation as mf3
 from endf_userpy.mfsec_interpretation.mf3_interpretation import (
-    above_range_ctx,
     _ABOVE_RANGE_POLICIES,
 )
+from endf_userpy.run_options import RunOptions
 from endf_userpy.quantities import (
     get_reaction_xs,
     get_particle_production_xs,
@@ -181,41 +181,18 @@ def test_leaf_all_inside_mesh_no_signal_no_change():
 
 
 # ============================================================
-# Context manager: nested calls, isolated policy per block.
+# One-warning-per-top-level-call summary property (issue #143
+# moved this from ctx-manager-driven to RunOptions-driven via
+# the private _warning_summary_ctx installed by every top-level
+# entry point).
 # ============================================================
 
 
-def test_above_range_ctx_sets_policy_seen_by_leaf():
-    """When above_range_ctx is entered, the leaf reader picks up
-    the context policy when its own kwarg is None."""
-    d = _synthetic_mf3(e_max=1e7)
-    E = np.array([1e5, 2e7])
-    with above_range_ctx('nan'), warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter('always')
-        r = mf3.compute_cross_section(d, 102, E)  # above_range=None
-    assert np.isnan(r[-1])
-    assert len(w) == 0  # ctx=nan is silent
-
-
-def test_above_range_ctx_restores_previous_on_exit():
-    d = _synthetic_mf3(e_max=1e7)
-    E = np.array([1e5, 2e7])
-    with above_range_ctx('zero'):
-        with above_range_ctx('nan'):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                inner = mf3.compute_cross_section(d, 102, E)
-        # After inner ctx exits, outer 'zero' is restored.
-        outer = mf3.compute_cross_section(d, 102, E)
-    assert np.isnan(inner[-1])
-    assert outer[-1] == 0.0
-
-
-def test_above_range_ctx_summary_warning_lists_every_mt(al27):
-    """The primary UX property this PR delivers: one summary
-    UserWarning per top-level call listing every affected MT and
-    the exceeded mesh limit -- not one warning per MT (~150 for
-    a fully-summed file)."""
+def test_summary_warning_lists_every_mt(al27):
+    """The primary UX property: one summary UserWarning per top-
+    level call listing every affected MT and the exceeded mesh
+    limit -- not one warning per MT (~150 for a fully-summed
+    file)."""
     E = np.array([1e6, 2e8])  # 200 MeV > Al-27's 150 MeV cap
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter('always')
@@ -223,16 +200,13 @@ def test_above_range_ctx_summary_warning_lists_every_mt(al27):
     # Exactly one summary warning (not ~150).
     assert len(w) == 1
     msg = str(w[0].message)
-    # Summary mentions at least one MT and the exceeded limit.
     assert 'MT=' in msg
     assert '1.5e+08' in msg
-    # NaN was placed at the above-range point.
     assert np.isnan(xs[-1])
-    # Finite at the below-cap point.
     assert np.isfinite(xs[0])
 
 
-def test_above_range_ctx_no_warning_when_all_inside(al27):
+def test_no_warning_when_all_inside(al27):
     """When every incident energy is inside the mesh (Al-27 max is
     150 MeV; user queries up to 20 MeV), no summary warning fires."""
     E = np.linspace(1e6, 2e7, 5)
@@ -254,7 +228,7 @@ def test_get_reaction_xs_zero_silent(al27):
     E = np.array([1e6, 2e8])
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter('always')
-        xs = get_reaction_xs(al27, '(n,total)', E, above_range='zero')
+        xs = get_reaction_xs(al27, '(n,total)', E, options=RunOptions(above_range='zero'))
     assert xs[-1] == 0.0
     assert len(w) == 0
 
@@ -262,7 +236,7 @@ def test_get_reaction_xs_zero_silent(al27):
 def test_get_reaction_xs_raise_propagates(al27):
     E = np.array([1e6, 2e8])
     with pytest.raises(ValueError, match=r'MT=.*upper mesh energy'):
-        get_reaction_xs(al27, '(n,total)', E, above_range='raise')
+        get_reaction_xs(al27, '(n,total)', E, options=RunOptions(above_range='raise'))
 
 
 def test_get_particle_production_xs_takes_above_range(al27):
@@ -271,9 +245,7 @@ def test_get_particle_production_xs_takes_above_range(al27):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         xs_nan = get_particle_production_xs(al27, '(n,total)', 'n', E)
-        xs_zero = get_particle_production_xs(
-            al27, '(n,total)', 'n', E, above_range='zero',
-        )
+        xs_zero = get_particle_production_xs(al27, '(n,total)', 'n', E, options=RunOptions(above_range='zero'))
     if xs_nan is not None:
         assert np.isnan(xs_nan[-1]) or xs_nan[-1] == 0.0
     if xs_zero is not None:
@@ -288,22 +260,19 @@ def test_get_residual_production_xs_takes_above_range(al27):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         xs_nan = get_residual_production_xs(al27, 'Al-27', E)
-        xs_zero = get_residual_production_xs(
-            al27, 'Al-27', E, above_range='zero',
-        )
+        xs_zero = get_residual_production_xs(al27, 'Al-27', E, options=RunOptions(above_range='zero'))
     assert np.isnan(xs_nan[-1])
     assert xs_zero[-1] == 0.0
     # Below-mesh point unchanged.
     np.testing.assert_allclose(xs_nan[0], xs_zero[0], atol=1e-12)
 
 
-def test_differential_apis_accept_above_range_kwarg():
-    """The three differential entry points forward the `above_range`
-    kwarg to the context manager, same as the XS APIs. Signature
-    check: the parameter is present and has the documented default.
-    Full end-to-end differential behaviour on above-range queries
-    is out of scope here (the pipeline has other latent issues
-    with out-of-mesh incident energies) and left for a follow-up."""
+def test_differential_apis_accept_run_options_with_above_range():
+    """The three differential entry points route `above_range`
+    through RunOptions, same as the XS APIs. Signature check: each
+    accepts ``options=``; RunOptions default matches
+    ``'warn_nan'``. Full end-to-end differential behaviour on
+    above-range queries is out of scope here."""
     import inspect
     for func in (
         get_particle_production_dxs_dE,
@@ -311,12 +280,10 @@ def test_differential_apis_accept_above_range_kwarg():
         get_particle_production_ddxs,
     ):
         sig = inspect.signature(func)
-        assert 'above_range' in sig.parameters, (
-            f'{func.__name__} missing `above_range` kwarg'
+        assert 'options' in sig.parameters, (
+            f'{func.__name__} missing `options` kwarg'
         )
-        assert sig.parameters['above_range'].default == 'warn_nan', (
-            f'{func.__name__} default policy is not warn_nan'
-        )
+    assert RunOptions().above_range == 'warn_nan'
 
 
 # ============================================================

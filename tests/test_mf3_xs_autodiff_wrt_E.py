@@ -41,6 +41,7 @@ from endf_parserpy import EndfParserCpp
 
 from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_reaction_xs
+from endf_userpy.run_options import RunOptions
 
 from _corpus import resolve_al27
 
@@ -72,12 +73,8 @@ def test_get_reaction_xs_numpy_jax_parity_elastic(be9_endf_dict):
     energies = np.array(
         [1e-3, 1e0, 1e3, 1e5, 1e6, 5e6, 1.5e7], dtype=np.float64,
     )
-    xs_np = np.asarray(get_reaction_xs(
-        be9_endf_dict, '(n,n)', energies, xp=xp_np,
-    ))
-    xs_jx = np.asarray(get_reaction_xs(
-        be9_endf_dict, '(n,n)', jnp.asarray(energies), xp=xp_jx,
-    ))
+    xs_np = np.asarray(get_reaction_xs(be9_endf_dict, '(n,n)', energies, options=RunOptions(backend=xp_np)))
+    xs_jx = np.asarray(get_reaction_xs(be9_endf_dict, '(n,n)', jnp.asarray(energies), options=RunOptions(backend=xp_jx)))
     np.testing.assert_allclose(xs_np, xs_jx, rtol=1e-10, atol=1e-30)
 
 
@@ -92,13 +89,8 @@ def test_get_reaction_xs_numpy_jax_parity_ngamma_mt5_off(be9_endf_dict):
     energies = np.array(
         [1e-3, 1e0, 1e3, 1e5, 1e6, 5e6, 1.5e7], dtype=np.float64,
     )
-    xs_np = np.asarray(get_reaction_xs(
-        be9_endf_dict, '(n,g)', energies, mt5_contrib=False, xp=xp_np,
-    ))
-    xs_jx = np.asarray(get_reaction_xs(
-        be9_endf_dict, '(n,g)', jnp.asarray(energies),
-        mt5_contrib=False, xp=xp_jx,
-    ))
+    xs_np = np.asarray(get_reaction_xs(be9_endf_dict, '(n,g)', energies, options=RunOptions(mt5_contrib=False, backend=xp_np)))
+    xs_jx = np.asarray(get_reaction_xs(be9_endf_dict, '(n,g)', jnp.asarray(energies), options=RunOptions(mt5_contrib=False, backend=xp_jx)))
     np.testing.assert_allclose(xs_np, xs_jx, rtol=1e-10, atol=1e-30)
 
 
@@ -129,10 +121,7 @@ def test_grad_wrt_E_matches_fd(
     xp_jx = array_ns.get_backend('jax')
 
     def loss(E):
-        return get_reaction_xs(
-            be9_endf_dict, reaction, E,
-            mt5_contrib=mt5_contrib, xp=xp_jx,
-        ).sum()
+        return get_reaction_xs(be9_endf_dict, reaction, E, options=RunOptions(mt5_contrib=mt5_contrib, backend=xp_jx)).sum()
 
     E0 = jnp.array([E_val])
     grad = float(jax.grad(lambda e: loss(e))(E0)[0])
@@ -161,9 +150,7 @@ def test_grad_wrt_E_ngamma_mt5_default_works_on_file_without_mt5(be9_endf_dict):
     xp_jx = array_ns.get_backend('jax')
 
     def loss(E):
-        return get_reaction_xs(
-            be9_endf_dict, '(n,g)', E, xp=xp_jx,
-        ).sum()
+        return get_reaction_xs(be9_endf_dict, '(n,g)', E, options=RunOptions(backend=xp_jx)).sum()
 
     grad = float(jax.grad(lambda e: loss(e))(jnp.array([1e2]))[0])
     assert np.isfinite(grad)
@@ -189,9 +176,7 @@ def test_grad_wrt_E_vector_matches_fd_elementwise(be9_endf_dict):
         # (n,n) is not classified as unique-path-to-residual, so
         # the MT5 fallback path does not fire; keep the default
         # mt5_contrib=True to also exercise the fallback-guard.
-        return get_reaction_xs(
-            be9_endf_dict, '(n,n)', E, xp=xp_jx,
-        ).sum()
+        return get_reaction_xs(be9_endf_dict, '(n,n)', E, options=RunOptions(backend=xp_jx)).sum()
 
     grad_vec = np.asarray(jax.grad(loss)(Es))
     assert grad_vec.shape == (len(Es_np),)
@@ -232,15 +217,9 @@ def test_get_reaction_xs_numpy_jax_parity_n3n_mt5_backfill_al27():
     xp_jx = array_ns.get_backend('jax')
 
     E = np.array([2e7, 3e7, 5e7], dtype=np.float64)
-    xs_np_on = np.asarray(get_reaction_xs(
-        d, '(n,3n)', E, mt5_contrib=True, xp=xp_np,
-    ))
-    xs_jx_on = np.asarray(get_reaction_xs(
-        d, '(n,3n)', jnp.asarray(E), mt5_contrib=True, xp=xp_jx,
-    ))
-    xs_np_off = np.asarray(get_reaction_xs(
-        d, '(n,3n)', E, mt5_contrib=False, xp=xp_np,
-    ))
+    xs_np_on = np.asarray(get_reaction_xs(d, '(n,3n)', E, options=RunOptions(mt5_contrib=True, backend=xp_np)))
+    xs_jx_on = np.asarray(get_reaction_xs(d, '(n,3n)', jnp.asarray(E), options=RunOptions(mt5_contrib=True, backend=xp_jx)))
+    xs_np_off = np.asarray(get_reaction_xs(d, '(n,3n)', E, options=RunOptions(mt5_contrib=False, backend=xp_np)))
     # Bit-exact numpy / jax parity.
     np.testing.assert_allclose(xs_np_on, xs_jx_on, rtol=1e-10, atol=1e-30)
     # Backfill is real: mt5_contrib=True picks up XS at Es where
@@ -270,10 +249,7 @@ def test_grad_wrt_E_n3n_mt5_backfill_al27_finite():
     xp_jx = array_ns.get_backend('jax')
 
     def loss(E_scalar):
-        return get_reaction_xs(
-            d, '(n,3n)', jnp.array([E_scalar]),
-            mt5_contrib=True, xp=xp_jx,
-        ).sum()
+        return get_reaction_xs(d, '(n,3n)', jnp.array([E_scalar]), options=RunOptions(mt5_contrib=True, backend=xp_jx)).sum()
 
     for E_val in (3e7, 5e7):
         g = float(jax.grad(loss)(jnp.array(E_val)))

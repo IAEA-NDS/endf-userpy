@@ -13,7 +13,7 @@ Coverage:
 4. Nb-93: outside the RRR, composition equals raw MF3.
 5. U-235 (Reich-Moore): composition sums for MT=1 equals the R-M
    ``tot`` + MF3(mt=1); numpy vs numba backend equivalence.
-6. Top-level ``get_reaction_xs(..., include_resonance=True)`` returns
+6. Top-level ``get_reaction_xs(..., options=RunOptions(include_resonance=True))`` returns
    the composed cross section, and equals the same call composed
    through :func:`compute_reconstructed_cross_section` directly for
    MT=2 elastic on Nb-93.
@@ -41,6 +41,7 @@ from endf_userpy.mfsec_interpretation import (
 )
 
 from _corpus import resolve_nb93, resolve_u235, resolve_nd143
+from endf_userpy.run_options import RunOptions
 
 
 def _numba_available():
@@ -352,7 +353,7 @@ def test_nb93_mt16_untouched_by_include_resonance(nb93_dict):
 def test_nb93_get_reaction_xs_include_resonance_matches_composition(
     nb93_dict,
 ):
-    """``get_reaction_xs(..., include_resonance=True)`` must
+    """``get_reaction_xs(..., options=RunOptions(include_resonance=True))`` must
     produce the same array as calling
     :func:`compute_reconstructed_cross_section` directly for the
     same MT (single-MT reaction: elastic = MT=2)."""
@@ -362,7 +363,7 @@ def test_nb93_get_reaction_xs_include_resonance_matches_composition(
         warnings.simplefilter('ignore', UserWarning)
         via_api = user_api.get_reaction_xs(
             nb93_dict, '(n,n_0)', e_query,
-            include_resonance=True,
+            options=RunOptions(include_resonance=True),
         )
         via_direct = res_comp.compute_reconstructed_cross_section(
             nb93_dict, 2, e_query, xp,
