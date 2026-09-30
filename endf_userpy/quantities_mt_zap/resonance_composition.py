@@ -166,7 +166,8 @@ def _reconstruct_lru1_range(endf_dict, iso_i, rng_i, rng, energies, xp):
     return None, None
 
 
-def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp):
+def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp,
+                           urr_quadrature='gauss_legendre_32'):
     """Preprocess + reconstruct a single LRU=2 LSSF=0 URR range.
     Returns ``(recon_dict, mt_to_keys_map)`` on success, or
     ``(None, reason_str)`` on failure (caller propagates the
@@ -194,13 +195,16 @@ def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp):
     except Exception as exc:
         return None, f'preproc failed: {type(exc).__name__}: {exc}'
     try:
-        recon = mf2_interpretation_urr.reconstruct(data, energies, xp)
+        recon = mf2_interpretation_urr.reconstruct(
+            data, energies, xp, quadrature=urr_quadrature,
+        )
     except Exception as exc:
         return None, f'kernel failed: {type(exc).__name__}: {exc}'
     return recon, _URR_MT_TO_KEYS
 
 
-def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
+def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
+                             urr_quadrature='gauss_legendre_32'):
     """MF2 partial-XS contribution for ``mt``, summed over every
     supported resonance range in ``endf_dict``. Zero at query
     energies outside every range: each range is treated as the
@@ -313,6 +317,7 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
             continue
         recon, err = _reconstruct_urr_range(
             endf_dict, iso_i, rng_i, rng, e, xp,
+            urr_quadrature=urr_quadrature,
         )
         if recon is None:
             urr_unsupported.append((iso_i, rng_i, err))
@@ -344,6 +349,7 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None):
 
 def compute_reconstructed_cross_section(
     endf_dict, mt, energies_in, xp=None,
+    urr_quadrature='gauss_legendre_32',
 ):
     """Physical cross section for ``mt`` per ENDF-6:
 
@@ -393,5 +399,6 @@ def compute_reconstructed_cross_section(
     )
     resonance_xs = reconstruct_resonance_xs(
         endf_dict, mt, energies_in, xp,
+        urr_quadrature=urr_quadrature,
     )
     return xp.asarray(mf3_xs) + xp.asarray(resonance_xs)

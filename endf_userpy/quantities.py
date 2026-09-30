@@ -299,6 +299,7 @@ def get_reaction_xs(
     endf_dict, reaction, energies_in, mt5_contrib=True,
     above_range='warn_nan', resonance_range='warn',
     include_resonance=False, resonance_backend=None, xp=None,
+    urr_quadrature='gauss_legendre_32',
 ):
     """Cross section for `reaction` on the incident energy grid.
 
@@ -343,10 +344,19 @@ def get_reaction_xs(
     resonance parameters end-to-end. The MT5 fallback path stays
     numpy internally and gets materialised at the boundary; its
     autodiff support is tracked as remaining tier-2 work.
+
+    `urr_quadrature` (default ``'gauss_legendre_32'``): only
+    effective when ``include_resonance=True`` and the file has an
+    LSSF=0 URR range. Selects the fluctuation-integral quadrature;
+    see
+    :func:`~endf_userpy.mfsec_interpretation.mf2_interpretation_urr.reconstruct`
+    for the supported values and their accuracy characteristics
+    (issue #299). Pass ``'ross_10'`` for NJOY-unresr cross-validation.
     """
     ctx = (
         quant_mt_zap.resonance_reconstruction_ctx(
             include_resonance, resonance_backend,
+            urr_quadrature=urr_quadrature,
         )
         if include_resonance
         else _noop_ctx()
@@ -433,17 +443,20 @@ def get_residual_production_xs(
     endf_dict, residual_nucleus, energies_in, mt5_contrib=True,
     above_range='warn_nan', resonance_range='warn',
     include_resonance=False, resonance_backend=None,
+    urr_quadrature='gauss_legendre_32',
 ):
     """Residual-production cross section for `residual_nucleus`.
 
     `above_range` (default ``'warn_nan'``), `resonance_range`
-    (default ``'warn'``), `include_resonance` (default ``False``)
-    and `resonance_backend` (default ``None``: numpy) match
+    (default ``'warn'``), `include_resonance` (default ``False``),
+    `resonance_backend` (default ``None``: numpy) and
+    `urr_quadrature` (default ``'gauss_legendre_32'``) match
     :func:`get_reaction_xs`; see its docstring.
     """
     ctx = (
         quant_mt_zap.resonance_reconstruction_ctx(
             include_resonance, resonance_backend,
+            urr_quadrature=urr_quadrature,
         )
         if include_resonance
         else _noop_ctx()
@@ -499,12 +512,14 @@ def get_particle_production_xs(
     endf_dict, reaction, particle, energies_in,
     above_range='warn_nan', resonance_range='warn',
     include_resonance=False, resonance_backend=None, xp=None,
+    urr_quadrature='gauss_legendre_32',
 ):
     """Particle-production cross section on the incident energy grid.
 
     `above_range` (default ``'warn_nan'``), `resonance_range`
-    (default ``'warn'``), `include_resonance` (default ``False``)
-    and `resonance_backend` (default ``None``: numpy) match
+    (default ``'warn'``), `include_resonance` (default ``False``),
+    `resonance_backend` (default ``None``: numpy) and
+    `urr_quadrature` (default ``'gauss_legendre_32'``) match
     :func:`get_reaction_xs`; see its docstring.
 
     ``xp`` (issue #169 tier-2): default numpy; passing a JAX
@@ -516,6 +531,7 @@ def get_particle_production_xs(
     ctx = (
         quant_mt_zap.resonance_reconstruction_ctx(
             include_resonance, resonance_backend,
+            urr_quadrature=urr_quadrature,
         )
         if include_resonance
         else _noop_ctx()
