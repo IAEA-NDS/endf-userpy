@@ -217,23 +217,34 @@ _include_resonance_var = contextvars.ContextVar(
 _resonance_backend_var = contextvars.ContextVar(
     '_resonance_backend', default=None,
 )
+_urr_quadrature_var = contextvars.ContextVar(
+    '_urr_quadrature', default='gauss_legendre_32',
+)
 
 
 @contextlib.contextmanager
-def resonance_reconstruction_ctx(include, backend=None):
+def resonance_reconstruction_ctx(include, backend=None,
+                                 urr_quadrature='gauss_legendre_32'):
     """Context manager toggling MF2 resonance reconstruction inside
     every :func:`compute_xs` call in the ``with`` block. ``backend``
     is a backend name understood by
     :func:`endf_userpy.primitives.array_ns.get_backend`
     (``'numpy'`` / ``'numba'`` / ``'jax'``); ``None`` means numpy.
+    ``urr_quadrature`` selects the LRU=2 fluctuation-integral
+    quadrature; see
+    :func:`endf_userpy.mfsec_interpretation.mf2_interpretation_urr.reconstruct`
+    for the supported values and their accuracy characteristics
+    (issue #299).
     """
     tok_i = _include_resonance_var.set(bool(include))
     tok_b = _resonance_backend_var.set(backend)
+    tok_q = _urr_quadrature_var.set(urr_quadrature)
     try:
         yield
     finally:
         _include_resonance_var.reset(tok_i)
         _resonance_backend_var.reset(tok_b)
+        _urr_quadrature_var.reset(tok_q)
 
 
 def compute_xs(endf_dict, mt, energies_in, xp=None):
@@ -265,6 +276,7 @@ def compute_xs(endf_dict, mt, energies_in, xp=None):
             xp_res = xp
         result = _res_comp.compute_reconstructed_cross_section(
             endf_dict, mt, energies_in, xp_res,
+            urr_quadrature=_urr_quadrature_var.get(),
         )
         # Preserve pre-port behaviour on the numpy path (return
         # numpy); on non-numpy xp keep the tracer alive so autodiff
