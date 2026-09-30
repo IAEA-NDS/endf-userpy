@@ -1,6 +1,6 @@
 import numpy as np
 from ..primitives.interpolation import endf_interp1d
-from .mf3_interpretation import _handle_above_range, _above_range_policy
+from .mf3_interpretation import _handle_above_range
 
 
 def find_subsec_nums(endf_dict, mt, zap, level=None):
@@ -22,19 +22,24 @@ def get_subsecs(endf_dict, mt, zap, level=None):
 
 
 def compute_cross_section(
-    endf_dict, mt, zap, energies_in, level=None, above_range=None,
+    endf_dict, mt, zap, energies_in, level=None,
+    above_range='warn_nan', _warnings=None,
 ):
     """Residual-production cross section from MF10.
 
-    ``above_range=None`` (default) reads the active policy from the
-    private ``_above_range_policy`` contextvar populated by
-    :func:`endf_userpy.mfsec_interpretation.mf3_interpretation._warning_summary_ctx`
-    for the duration of a top-level ``endf_userpy.quantities`` call;
-    falls back to ``'warn_nan'`` when the leaf is called outside
-    that context.
+    ``above_range`` (default ``'warn_nan'``) follows the same
+    convention as :func:`mf3_interpretation.compute_cross_section`.
+    The top-level ``endf_userpy.quantities`` entry points thread
+    the effective policy from ``options.above_range`` explicitly
+    (issue #143); direct callers of this leaf get the
+    ``'warn_nan'`` default.
+
+    ``_warnings`` is the private :class:`_WarningHits` accumulator
+    the top-level entry points thread through internal callers so
+    ONE summary UserWarning fires per top-level query instead of
+    one per (MT, call). ``_warnings=None`` (the leaf's default)
+    falls back to a per-call warning for direct leaf usage.
     """
-    if above_range is None:
-        above_range = _above_range_policy.get()
     subsecs = get_subsecs(endf_dict, mt, zap, level)
     if len(subsecs) == 0:
         levelstr = f', level={level}' if level is not None else ''
@@ -55,7 +60,7 @@ def compute_cross_section(
     e_max = float(np.asarray(en_mesh, dtype=float).max())
     above_mask = en_out > e_max
     fill_value = _handle_above_range(
-        above_range, mt, e_max, above_mask, en_out,
+        above_range, mt, e_max, above_mask, en_out, hits=_warnings,
     )
     xs = endf_interp1d(en_out, en_mesh, xs_mesh, intarr, nbtarr, outside_value=0.0)
     if above_mask.any() and fill_value != 0.0:

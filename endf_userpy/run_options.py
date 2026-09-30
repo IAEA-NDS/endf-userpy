@@ -120,36 +120,62 @@ class RunOptions:
     urr_quadrature: str = 'gauss_legendre_32'
 
     def __post_init__(self):
+        # Validate policy strings at construction so users see the
+        # error immediately when they build the RunOptions rather
+        # than deep inside a leaf reader mid-query.
+        from .mfsec_interpretation.mf3_interpretation import (
+            _ABOVE_RANGE_POLICIES, _RESONANCE_RANGE_POLICIES,
+        )
+        if self.above_range not in _ABOVE_RANGE_POLICIES:
+            raise ValueError(
+                f"above_range must be one of {_ABOVE_RANGE_POLICIES}; "
+                f"got {self.above_range!r}"
+            )
+        if self.resonance_range not in _RESONANCE_RANGE_POLICIES:
+            raise ValueError(
+                f"resonance_range must be one of "
+                f"{_RESONANCE_RANGE_POLICIES}; got {self.resonance_range!r}"
+            )
         # Resolve explicit string aliases at construction time so
         # missing-optional-dependency errors surface early. 'auto'
-        # is deliberately deferred to first-use (resolve_backend);
-        # otherwise every RunOptions() would trigger a numba probe.
+        # is deliberately deferred to first-use (see
+        # :func:`resolve_backend`); otherwise every RunOptions()
+        # would trigger a numba probe.
         b = self.backend
         if isinstance(b, str) and b != 'auto':
             from .primitives.array_ns import get_backend
             object.__setattr__(self, 'backend', get_backend(b))
 
-    def resolve_backend(self, *, is_resonance_call: bool):
-        """Return the concrete array-ns adapter for the current
-        call. Called by ``compute_xs`` (and any other site that
-        needs to hand ``xp`` down to the leaves).
 
-        If the field was already resolved to an adapter object in
-        ``__post_init__``, return it. If it is the string
-        ``'auto'``, pick numba on a resonance call when available,
-        else numpy; emit the one-shot missing-numba warning only
-        when numba was actually the preferred choice.
-        """
-        b = self.backend
-        if not isinstance(b, str):
-            return b
-        # Only 'auto' should remain as a string past __post_init__.
-        assert b == 'auto', f'unexpected string backend: {b!r}'
-        from .primitives.array_ns import get_backend
-        if is_resonance_call:
-            try:
-                return get_backend('numba')
-            except Exception:
-                _warn_auto_backend_numba_missing_once()
-                return get_backend('numpy')
-        return get_backend('numpy')
+def resolve_backend(options, *, is_resonance_call):
+    """Resolve ``options.backend`` to a concrete ``array_ns``
+    adapter for the current call.
+
+    Standalone helper rather than a method on :class:`RunOptions`
+    so the policy dataclass stays pure config: the resolution
+    needs caller-site context (``is_resonance_call``) that
+    ``RunOptions`` itself does not have, and it emits a warning
+    (side effect) which does not belong on a frozen policy
+    object.
+
+    If ``options.backend`` was already resolved to an adapter
+    object at construction time (explicit ``'numpy'`` / ``'numba'``
+    / ``'jax'`` string, or an adapter passed directly), it is
+    returned unchanged. If it is still the string ``'auto'``,
+    numba is chosen for resonance calls when installed, else
+    numpy; the one-shot missing-numba warning fires only when
+    numba was the preferred choice for this call.
+    """
+    b = options.backend
+    if not isinstance(b, str):
+        return b
+    # Only 'auto' should remain as a string past __post_init__.
+    assert b == 'auto', f'unexpected string backend: {b!r}'
+    from .primitives.array_ns import get_backend
+    if is_resonance_call:
+        try:
+            return get_backend('numba')
+        except Exception:
+            _warn_auto_backend_numba_missing_once()
+            return get_backend('numpy')
+    return get_backend('numpy')

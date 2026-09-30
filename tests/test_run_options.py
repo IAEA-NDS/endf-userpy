@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from endf_userpy.run_options import RunOptions
+from endf_userpy.run_options import RunOptions, resolve_backend
 
 
 def test_defaults_are_physics_first():
@@ -61,7 +61,7 @@ def test_resolve_backend_auto_non_resonance_call_gives_numpy():
     opts = RunOptions()
     with warnings.catch_warnings():
         warnings.simplefilter('error')
-        resolved = opts.resolve_backend(is_resonance_call=False)
+        resolved = resolve_backend(opts, is_resonance_call=False)
     assert resolved.name == 'numpy'
 
 
@@ -83,11 +83,11 @@ def test_resolve_backend_auto_resonance_call_prefers_numba_when_available():
     if numba_available:
         with warnings.catch_warnings():
             warnings.simplefilter('error')  # no warnings expected
-            resolved = opts.resolve_backend(is_resonance_call=True)
+            resolved = resolve_backend(opts, is_resonance_call=True)
         assert resolved.name == 'numba'
     else:
         with pytest.warns(UserWarning, match=r"backend='auto' fell back to numpy"):
-            resolved = opts.resolve_backend(is_resonance_call=True)
+            resolved = resolve_backend(opts, is_resonance_call=True)
         assert resolved.name == 'numpy'
 
 
@@ -102,11 +102,11 @@ def test_auto_backend_missing_numba_warning_is_one_shot():
         pass
     opts = RunOptions()
     with pytest.warns(UserWarning):
-        opts.resolve_backend(is_resonance_call=True)
+        resolve_backend(opts, is_resonance_call=True)
     # Second call must not re-emit.
     with warnings.catch_warnings():
         warnings.simplefilter('error')
-        opts.resolve_backend(is_resonance_call=True)
+        resolve_backend(opts, is_resonance_call=True)
 
 
 def test_explicit_numba_raises_when_missing():
@@ -141,5 +141,5 @@ def test_adapter_object_passes_through():
     opts = RunOptions(backend=numpy_backend)
     assert opts.backend is numpy_backend
     # resolve_backend is a pass-through for non-string.
-    assert opts.resolve_backend(is_resonance_call=True) is numpy_backend
-    assert opts.resolve_backend(is_resonance_call=False) is numpy_backend
+    assert resolve_backend(opts, is_resonance_call=True) is numpy_backend
+    assert resolve_backend(opts, is_resonance_call=False) is numpy_backend

@@ -155,7 +155,10 @@ def compute_yields(
     return yields
 
 
-def compute_xs_mt5_contrib(endf_dict, mt, energies_in, xp=None):
+def compute_xs_mt5_contrib(
+    endf_dict, mt, energies_in, xp=None,
+    above_range='warn_nan', resonance_range='warn', _warnings=None,
+):
     """MT5 backfill contribution for reactions with a unique-path-to-
     residual. Returns the redistributed cross section ``y(E) * σ_MT5(E)``
     where ``y`` is the MF6/MT=5 yield for the residual uniquely
@@ -197,27 +200,35 @@ def compute_xs_mt5_contrib(endf_dict, mt, energies_in, xp=None):
     )
     xs_mt5 = mf3_interp.compute_cross_section(
         endf_dict, mt5, energies_in, xp=xp,
+        above_range=above_range, resonance_range=resonance_range,
+        _warnings=_warnings,
     )
     return xs_mt5 * yield_mt5
 
 
-def compute_xs(endf_dict, mt, energies_in, *, options=None):
+def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
     """Cross section for one MT.
 
     ``options`` (see :class:`endf_userpy.run_options.RunOptions`)
-    carries every runtime policy formerly plumbed via contextvars
-    (issue #143 migration): ``above_range``, ``resonance_range``,
+    carries every runtime policy: ``above_range``, ``resonance_range``,
     ``include_resonance``, ``backend`` (with ``'auto'`` resolving
     to numba on resonance calls when available), and
     ``urr_quadrature``. ``options=None`` resolves to a default
     :class:`RunOptions` instance, so leaf callers get sensible
     physics-first defaults if they invoke this directly.
+
+    ``_warnings`` is the private
+    :class:`~endf_userpy.mfsec_interpretation.mf3_interpretation._WarningHits`
+    accumulator the top-level ``endf_userpy.quantities`` entry
+    points thread through internal callers so ONE summary
+    UserWarning fires per top-level query (issue #143). ``None``
+    (default) makes leaf readers fall back to per-call warnings.
     """
-    from ..run_options import RunOptions
+    from ..run_options import RunOptions, resolve_backend
     if options is None:
         options = RunOptions()
     if options.include_resonance:
-        xp_res = options.resolve_backend(is_resonance_call=True)
+        xp_res = resolve_backend(options, is_resonance_call=True)
         result = _res_comp.compute_reconstructed_cross_section(
             endf_dict, mt, energies_in, xp_res,
             urr_quadrature=options.urr_quadrature,
@@ -247,14 +258,23 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None):
             # jit anyway).
             einc_xp = xp_res.asarray(energies_in)
             above_mask_xp = einc_xp > e_max
+            # Concrete-path warning + raise policy live inside
+            # ``_handle_above_range``. Only skip that call when
+            # ``energies_in`` is a jax tracer (can't materialise).
+            # Distinguish tracer via a targeted probe rather than
+            # a broad ``except Exception`` which would swallow the
+            # legitimate ``ValueError`` raised by policy='raise'.
             try:
                 einc_arr = np.asarray(energies_in, dtype=float)
+            except (TypeError, ValueError):
+                einc_arr = None
+            if einc_arr is not None:
                 above_mask_np = einc_arr > e_max
                 fill = _handle_above_range(
                     options.above_range, mt, e_max,
-                    above_mask_np, einc_arr,
+                    above_mask_np, einc_arr, hits=_warnings,
                 )
-            except Exception:
+            else:
                 # tracer path: pick the fill from the policy name
                 if options.above_range in ('warn_nan', 'nan'):
                     fill = float('nan')
@@ -272,12 +292,12 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None):
         if xp_res.name == 'numpy':
             return np.asarray(result)
         return result
-    xp = options.resolve_backend(is_resonance_call=False)
+    xp = resolve_backend(options, is_resonance_call=False)
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
         above_range=options.above_range,
         resonance_range=options.resonance_range,
-        xp=xp,
+        xp=xp, _warnings=_warnings,
     )
     if xp.name != 'numpy':
         return xp.asarray(xs)
@@ -286,7 +306,7 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None):
 
 def compute_prodxs(
     endf_dict, mt, zap, energies_in, xp=None,
-    above_range='warn_nan', resonance_range='warn',
+    above_range='warn_nan', resonance_range='warn', _warnings=None,
 ):
     """Particle-production cross section for one (MT, ZAP).
 
@@ -317,7 +337,7 @@ def compute_prodxs(
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
         above_range=above_range, resonance_range=resonance_range,
-        xp=xp,
+        xp=xp, _warnings=_warnings,
     )
     return yields * xp.asarray(xs)
 
@@ -339,6 +359,7 @@ def _is_mf13_only_gamma(endf_dict, mt, zap):
 
 def compute_daxs(
     endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True, xp=None,
+    above_range='warn_nan', resonance_range='warn', _warnings=None,
 ):
     """Angular-differential cross section ``d sigma / d mu`` for one
     (MT, ZAP).
@@ -364,7 +385,11 @@ def compute_daxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in, xp=xp,
+        above_range=above_range, resonance_range=resonance_range,
+        _warnings=_warnings,
+    ).reshape(-1, 1)
     angdist = compute_angdist_values(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
     )
@@ -373,6 +398,7 @@ def compute_daxs(
 
 def compute_dexs(
     endf_dict, mt, zap, energies_in, energies_out, to_lab=True, xp=None,
+    above_range='warn_nan', resonance_range='warn', _warnings=None,
 ):
     """Energy-differential cross section ``d sigma / d E'`` for one
     (MT, ZAP).
@@ -401,7 +427,11 @@ def compute_dexs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in, xp=xp,
+        above_range=above_range, resonance_range=resonance_range,
+        _warnings=_warnings,
+    ).reshape(-1, 1)
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
     )
@@ -412,6 +442,7 @@ def compute_dexs(
 def compute_ddxs(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
     to_lab=True, xp=None,
+    above_range='warn_nan', resonance_range='warn', _warnings=None,
 ):
     """Double-differential cross section for one (MT, ZAP).
 
@@ -432,7 +463,11 @@ def compute_ddxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False, xp=xp,
     ).reshape(-1, 1, 1)
-    xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in, xp=xp).reshape(-1, 1, 1)
+    xs = mf3_interp.compute_cross_section(
+        endf_dict, mt, energies_in, xp=xp,
+        above_range=above_range, resonance_range=resonance_range,
+        _warnings=_warnings,
+    ).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
         to_lab, xp=xp,
@@ -443,6 +478,7 @@ def compute_ddxs(
 def compute_ddxs_from_mf15_mf14(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
     to_lab=True, xp=None,
+    above_range='warn_nan', resonance_range='warn', _warnings=None,
 ):
     """Unbroadened DDX contribution from MF15 continuum gamma
     spectrum + MF14 angular. Gamma-only peer of
@@ -525,6 +561,8 @@ def compute_ddxs_from_mf15_mf14(
         y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)   # (n_einc,)
         xs = mf3_interp.compute_cross_section(
             endf_dict, mt, energies_in,
+            above_range=above_range, resonance_range=resonance_range,
+            _warnings=_warnings,
         )   # (n_einc,), numpy
         weight = xp.asarray(xs) * y_cont
 
@@ -595,33 +633,50 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwar
     return cum_res
 
 
-def _compute_residual_xs_for_lfs(endf_dict, mt, za_residual, lfs, energies_in):
+def _compute_residual_xs_for_lfs(
+    endf_dict, mt, za_residual, lfs, energies_in,
+    above_range='warn_nan', resonance_range='warn', _warnings=None,
+):
     lmf = mf8_interp.get_mf_switch(endf_dict, mt, za_residual, lfs)
+    _mf3_kw = dict(
+        above_range=above_range, resonance_range=resonance_range,
+        _warnings=_warnings,
+    )
     if lmf == 3:
-        return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        return mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in, **_mf3_kw,
+        )
     if lmf == 6:
-        xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        xs = mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in, **_mf3_kw,
+        )
         y = mf6_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in,
             include_discrete=True, level=lfs,
         )
         return xs * y
     if lmf == 9:
-        xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        xs = mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in, **_mf3_kw,
+        )
         y = mf9_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in, level=lfs
         )
         return xs * y
     if lmf == 10:
         return mf10_interp.compute_cross_section(
-            endf_dict, mt, za_residual, energies_in, level=lfs
+            endf_dict, mt, za_residual, energies_in, level=lfs,
+            above_range=above_range, _warnings=_warnings,
         )
     raise ValueError(
         f'unsupported LMF={lmf} in MF8/MT={mt} for ZAP={za_residual}, LFS={lfs}'
     )
 
 
-def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
+def compute_residual_xs(
+    endf_dict, mt, za_residual, lfs, energies_in,
+    above_range='warn_nan', resonance_range='warn', _warnings=None,
+):
     """Cross section for producing (za_residual, lfs) via reaction MT.
 
     Dispatches via MF8 LMF: 3 (MF3 only, no isomer split), 6
@@ -632,10 +687,16 @@ def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
     If `lfs` is None, sums contributions from all LFS values present
     in MF8/MT for this ZAP.
     """
+    _mf3_kw = dict(
+        above_range=above_range, resonance_range=resonance_range,
+        _warnings=_warnings,
+    )
     if not (8 in endf_dict and mt in endf_dict[8]):
         if (6 in endf_dict and mt in endf_dict[6]
                 and mf6_help.contains_zap(endf_dict, mt, za_residual)):
-            xs = mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+            xs = mf3_interp.compute_cross_section(
+                endf_dict, mt, energies_in, **_mf3_kw,
+            )
             y = mf6_interp.compute_yields(
                 endf_dict, mt, za_residual, energies_in,
                 include_discrete=True, level=lfs,
@@ -646,7 +707,9 @@ def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
                 f'no MF8 information for MT={mt}, cannot resolve isomer level '
                 f'(requested LFS={lfs})'
             )
-        return mf3_interp.compute_cross_section(endf_dict, mt, energies_in)
+        return mf3_interp.compute_cross_section(
+            endf_dict, mt, energies_in, **_mf3_kw,
+        )
 
     available_lfs = sorted({
         sub['LFS'] for sub in endf_dict[8][mt]['subsection'].values()
@@ -659,12 +722,16 @@ def compute_residual_xs(endf_dict, mt, za_residual, lfs, energies_in):
         if lfs not in available_lfs:
             return np.zeros_like(energies_in, dtype=float)
         return _compute_residual_xs_for_lfs(
-            endf_dict, mt, za_residual, lfs, energies_in
+            endf_dict, mt, za_residual, lfs, energies_in,
+            above_range=above_range, resonance_range=resonance_range,
+            _warnings=_warnings,
         )
 
     total = np.zeros_like(energies_in, dtype=float)
     for cur_lfs in available_lfs:
         total = total + _compute_residual_xs_for_lfs(
-            endf_dict, mt, za_residual, cur_lfs, energies_in
+            endf_dict, mt, za_residual, cur_lfs, energies_in,
+            above_range=above_range, resonance_range=resonance_range,
+            _warnings=_warnings,
         )
     return total

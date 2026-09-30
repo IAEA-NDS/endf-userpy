@@ -4,7 +4,7 @@ from .primitives import physical_constants as physconst
 from .primitives import properties as prop
 from .primitives import reactions as reac
 from .primitives.helpers import unpack_za
-from .run_options import RunOptions
+from .run_options import RunOptions, resolve_backend
 from .quantities_mt_zap import quantities as quant_mt_zap
 from .quantities_mt_zap import selectors
 from .quantities_mt_zap import ddx_broadening as ddxb
@@ -19,7 +19,9 @@ from .mfsec_interpretation import mf8_interpretation as mf8interp
 from .mfsec_interpretation import mf12_interpretation as mf12interp
 from .mfsec_interpretation import mf13_interpretation as mf13interp
 from .mfsec_interpretation import mf15_interpretation as mf15interp
-from .mfsec_interpretation.mf3_interpretation import _warning_summary_ctx
+from .mfsec_interpretation.mf3_interpretation import (
+    _WarningHits, _emit_summary_warnings,
+)
 
 
 # Cache of (id(endf_dict), mt, zap, lfs) tuples we have already warned
@@ -301,16 +303,18 @@ def get_reaction_xs(
     """
     if options is None:
         options = RunOptions()
-    with _warning_summary_ctx(options):
-        return _get_reaction_xs_impl(
+    hits = _WarningHits()
+    result = _get_reaction_xs_impl(
             endf_dict, reaction, energies_in, options=options,
-        )
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_reaction_xs_impl(
-    endf_dict, reaction, energies_in, *, options,
+    endf_dict, reaction, energies_in, *, options, _warnings=None,
 ):
-    xp = options.resolve_backend(is_resonance_call=options.include_resonance)
+    xp = resolve_backend(options, is_resonance_call=options.include_resonance)
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
     iter_mts = avail_mts.copy()
@@ -330,7 +334,8 @@ def _get_reaction_xs_impl(
             # resonance-composition branch; MF3-only branch materialises
             # numpy and gets promoted via xp.asarray inside compute_xs.
             cur_xs = quant_mt_zap.compute_xs(
-                endf_dict, mt, energies_in, options=options,
+                endf_dict, mt, energies_in,
+                options=options, _warnings=_warnings,
             )
             xs = xs + cur_xs
 
@@ -356,6 +361,9 @@ def _get_reaction_xs_impl(
                 cur_xs_ref = cur_xs
             mt5_xs_all = quant_mt_zap.compute_xs_mt5_contrib(
                 endf_dict, mt, energies_in, xp=xp,
+                above_range=options.above_range,
+                resonance_range=options.resonance_range,
+                _warnings=_warnings,
             )
             # Backfill: add mt5_xs_all where the direct MT gave zero
             # (or wasn't selected), leave xs unchanged where the
@@ -387,14 +395,16 @@ def get_residual_production_xs(
     """
     if options is None:
         options = RunOptions()
-    with _warning_summary_ctx(options):
-        return _get_residual_production_xs_impl(
+    hits = _WarningHits()
+    result = _get_residual_production_xs_impl(
             endf_dict, residual_nucleus, energies_in, options=options,
-        )
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_residual_production_xs_impl(
-    endf_dict, residual_nucleus, energies_in, *, options,
+    endf_dict, residual_nucleus, energies_in, *, options, _warnings=None,
 ):
     za_residual, level = physconst.get_za_for_residual_nucleus(residual_nucleus)
     if level is not None:
@@ -406,7 +416,10 @@ def _get_residual_production_xs_impl(
         )
     xs = quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt: quant_mt_zap.compute_residual_xs(
-            endf_dict, mt, za_residual, level, energies_in
+            endf_dict, mt, za_residual, level, energies_in,
+            above_range=options.above_range,
+            resonance_range=options.resonance_range,
+            _warnings=_warnings,
         ),
         lambda endf_dict, mt: (
             (options.mt5_contrib or mt != 5) and
@@ -444,18 +457,20 @@ def get_particle_production_xs(
     """
     if options is None:
         options = RunOptions()
-    with _warning_summary_ctx(options):
-        return _get_particle_production_xs_impl(
+    hits = _WarningHits()
+    result = _get_particle_production_xs_impl(
             endf_dict, reaction, particle, energies_in, options=options,
-        )
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_particle_production_xs_impl(
-    endf_dict, reaction, particle, energies_in, *, options,
+    endf_dict, reaction, particle, energies_in, *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    xp = options.resolve_backend(is_resonance_call=False)
+    xp = resolve_backend(options, is_resonance_call=False)
     ar = options.above_range
     rr = options.resonance_range
     # Widened iteration (union of MF3+MF12+MF13+MF15 keys) so MTs
@@ -464,10 +479,12 @@ def _get_particle_production_xs_impl(
     # cumulative-sum iteration (issue #130). Non-gamma queries
     # over the wider list are still filtered correctly by contains_zap.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
+    warnings_hits = _warnings
     return quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt, zap, einc, xp=None: quant_mt_zap.compute_prodxs(
             endf_dict, mt, zap, einc, xp=xp,
             above_range=ar, resonance_range=rr,
+            _warnings=warnings_hits,
         ),
         lambda endf_dict, mt, zap, energies_in: (
             selectors.satisfies_particle_production_select(
@@ -508,20 +525,22 @@ def get_particle_production_dxs_dE(
     """
     if options is None:
         options = RunOptions()
-    with _warning_summary_ctx(options):
-        return _get_particle_production_dxs_dE_impl(
+    hits = _WarningHits()
+    result = _get_particle_production_dxs_dE_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             broadening, options=options,
-        )
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_particle_production_dxs_dE_impl(
     endf_dict, reaction, particle, energies_in, energies_out, broadening,
-    *, options,
+    *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    xp = options.resolve_backend(is_resonance_call=False)
+    xp = resolve_backend(options, is_resonance_call=False)
     broadening_mesh_bounds = options.broadening_mesh_bounds
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
@@ -543,7 +562,14 @@ def _get_particle_production_dxs_dE_impl(
                 'get_particle_production_dxs_dE',
             )
         return quant_mt_zap.compute_cumulative_quantity(
-            quant_mt_zap.compute_dexs, select,
+            lambda endf_dict, mt, zap, einc, eouts, xp=None:
+                quant_mt_zap.compute_dexs(
+                    endf_dict, mt, zap, einc, eouts, xp=xp,
+                    above_range=options.above_range,
+                    resonance_range=options.resonance_range,
+                    _warnings=_warnings,
+                ),
+            select,
             endf_dict, zap, energies_in, energies_out,
             mts=mts, xp=xp,
         )
@@ -658,23 +684,31 @@ def get_particle_production_dxs_dmu(
     """
     if options is None:
         options = RunOptions()
-    with _warning_summary_ctx(options):
-        return _get_particle_production_dxs_dmu_impl(
+    hits = _WarningHits()
+    result = _get_particle_production_dxs_dmu_impl(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,
             options=options,
-        )
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_particle_production_dxs_dmu_impl(
     endf_dict, reaction, particle, energies_in, angle_cosines_out, *,
-    options,
+    options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    xp = options.resolve_backend(is_resonance_call=False)
+    xp = resolve_backend(options, is_resonance_call=False)
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
     return quant_mt_zap.compute_cumulative_quantity(
-        quant_mt_zap.compute_daxs,
+        lambda endf_dict, mt, zap, einc, mus, xp=None:
+            quant_mt_zap.compute_daxs(
+                endf_dict, mt, zap, einc, mus, xp=xp,
+                above_range=options.above_range,
+                resonance_range=options.resonance_range,
+                _warnings=_warnings,
+            ),
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
             selectors.satisfies_particle_production_select(endf_dict, mt, user_mts, zap)
@@ -706,11 +740,13 @@ def get_particle_production_ddxs(
     """
     if options is None:
         options = RunOptions()
-    with _warning_summary_ctx(options):
-        return _get_particle_production_ddxs_impl(
+    hits = _WarningHits()
+    result = _get_particle_production_ddxs_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             angle_cosines_out, broadening, options=options,
-        )
+         _warnings=hits)
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def get_particle_production_discrete_gamma_lines(
@@ -761,23 +797,25 @@ def get_particle_production_discrete_gamma_lines(
     """
     if options is None:
         options = RunOptions()
-    xp = options.resolve_backend(is_resonance_call=False)
+    xp = resolve_backend(options, is_resonance_call=False)
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    with _warning_summary_ctx(options):
-        return discrete_gamma.extract_discrete_gamma_lines(
-            endf_dict, mts, user_mts, energies_in,
-            angle_cosines_out=angle_cosines_out, xp=xp,
-        )
+    hits = _WarningHits()
+    result = discrete_gamma.extract_discrete_gamma_lines(
+        endf_dict, mts, user_mts, energies_in,
+        angle_cosines_out=angle_cosines_out, xp=xp,
+    )
+    _emit_summary_warnings(hits, options)
+    return result
 
 
 def _get_particle_production_ddxs_impl(
     endf_dict, reaction, particle, energies_in, energies_out,
-    angle_cosines_out, broadening, *, options,
+    angle_cosines_out, broadening, *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    xp = options.resolve_backend(is_resonance_call=False)
+    xp = resolve_backend(options, is_resonance_call=False)
     broadening_mesh_bounds = options.broadening_mesh_bounds
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
 
@@ -800,7 +838,13 @@ def _get_particle_production_ddxs_impl(
         # contribution the same way the broadened dispatcher does
         # for compute_ddx_mf15_continuum_broadened.
         cont_unbroad = quant_mt_zap.compute_cumulative_quantity(
-            quant_mt_zap.compute_ddxs,
+            lambda endf_dict, mt, zap, einc, eouts, mus, xp=None:
+                quant_mt_zap.compute_ddxs(
+                    endf_dict, mt, zap, einc, eouts, mus, xp=xp,
+                    above_range=options.above_range,
+                    resonance_range=options.resonance_range,
+                    _warnings=_warnings,
+                ),
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
                 selectors.has_continuous_ddx(endf_dict, mt, zap) and
@@ -810,7 +854,13 @@ def _get_particle_production_ddxs_impl(
             mts=mts, xp=xp,
         )
         mf15_unbroad = quant_mt_zap.compute_cumulative_quantity(
-            quant_mt_zap.compute_ddxs_from_mf15_mf14,
+            lambda endf_dict, mt, zap, einc, eouts, mus, xp=None:
+                quant_mt_zap.compute_ddxs_from_mf15_mf14(
+                    endf_dict, mt, zap, einc, eouts, mus, xp=xp,
+                    above_range=options.above_range,
+                    resonance_range=options.resonance_range,
+                    _warnings=_warnings,
+                ),
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
                 selectors.has_mf15_continuum(endf_dict, mt, zap) and
