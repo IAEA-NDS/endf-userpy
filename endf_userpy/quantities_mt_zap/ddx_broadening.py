@@ -30,7 +30,6 @@ The dispatchers that combine these into the public API live in
 `endf_userpy.quantities`.
 """
 import numpy as np
-from ..mfsec_interpretation import mf3_interpretation as mf3_interp
 from ..mfsec_interpretation import mf4_interpretation as mf4_interp
 from ..mfsec_interpretation import mf6_interpretation as mf6_interp
 from ..mfsec_interpretation import mf6_interpretation_helpers as mf6_help
@@ -60,7 +59,7 @@ from ..primitives.properties import (
     has_mf15_mt,
 )
 from .distribution2d import compute_dist2d_values
-from .quantities import compute_yields, compute_dexs
+from .quantities import compute_yields, compute_dexs, compute_xs
 import logging
 
 
@@ -181,11 +180,11 @@ def compute_ddx_continuous_broadened(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False, xp=xp,
     ).reshape(-1, 1, 1)
-    xs = mf3_interp.compute_cross_section(
+    # Route through compute_xs for MF2 composition under
+    # include_resonance=True (issue #304).
+    xs = compute_xs(
         endf_dict, mt, energies_in,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+        options=options, _warnings=_warnings,
     ).reshape(-1, 1, 1)
     # DDX of a physical distribution is non-negative; FFT roundoff in
     # adaptive_convolve can produce sub-eps negatives at the tails,
@@ -255,13 +254,13 @@ def compute_ddx_continuous_broadened_summed(
         y = compute_yields(
             endf_dict, mt, zap, einc, include_discrete=False, xp=xp,
         )
-        xs = mf3_interp.compute_cross_section(
+        # Route through compute_xs for MF2 composition under
+        # include_resonance=True (issue #304).
+        xs = compute_xs(
             endf_dict, mt, einc,
-            above_range=options.above_range,
-            resonance_range=options.resonance_range,
-            _warnings=_warnings,
+            options=options, _warnings=_warnings,
         )
-        scales.append((y * xp.asarray(xs)).reshape(-1, 1, 1))
+        scales.append((y * xs).reshape(-1, 1, 1))
 
     def f_summed(eout_internal):
         total = None
@@ -579,11 +578,11 @@ def compute_ddx_discrete_broadened(
     yields = _compute_discrete_yields(
         endf_dict, mt, zap, energies_in,
     ).reshape(-1, 1, 1)
-    xs = mf3_interp.compute_cross_section(
+    # Route through compute_xs for MF2 composition under
+    # include_resonance=True (issue #304).
+    xs = compute_xs(
         endf_dict, mt, energies_in,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+        options=options, _warnings=_warnings,
     ).reshape(-1, 1, 1)
     return (
         kernel_vals * angdist_b
@@ -678,11 +677,11 @@ def compute_ddx_law1_discrete_broadened(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1, 1)
-    xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in, xp=xp,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+    # Route through compute_xs for MF2 composition under
+    # include_resonance=True (issue #304).
+    xs = compute_xs(
+        endf_dict, mt, energies_in,
+        options=options, _warnings=_warnings,
     ).reshape(-1, 1, 1)
     return ddx * yields * xs / (2 * np.pi)
 
@@ -773,11 +772,11 @@ def compute_ddx_mf12_discrete_broadened(
     disc_idcs = np.where(disc_mask)[0]
     yields_disc = yields_all[:, disc_idcs]  # (n_einc, n_disc)
 
-    xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in, xp=xp,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+    # Route through compute_xs for MF2 composition under
+    # include_resonance=True (issue #304).
+    xs = compute_xs(
+        endf_dict, mt, energies_in,
+        options=options, _warnings=_warnings,
     )  # (n_einc,), xp-native
     weight_E = yields_disc * xs[:, None]  # (n_einc, n_disc)
 
@@ -900,11 +899,11 @@ def compute_dxs_dE_mf12_discrete_broadened(
     disc_idcs = np.where(disc_mask)[0]
     yields_disc = yields_all[:, disc_idcs]  # (n_einc, n_disc_lines)
 
-    xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in, xp=xp,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+    # Route through compute_xs for MF2 composition under
+    # include_resonance=True (issue #304).
+    xs = compute_xs(
+        endf_dict, mt, energies_in,
+        options=options, _warnings=_warnings,
     )  # (n_einc,), xp-native
     weight = yields_disc * xs[:, None]  # (n_einc, n_disc_lines)
 
@@ -1191,11 +1190,11 @@ def compute_ddx_mf15_continuum_broadened(
         )
         cont_idcs = np.where(cont_mask)[0]
         y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)   # (n_einc,)
-        xs = mf3_interp.compute_cross_section(
-            endf_dict, mt, energies_in, xp=xp,
-            above_range=options.above_range,
-            resonance_range=options.resonance_range,
-            _warnings=_warnings,
+        # Route through compute_xs for MF2 composition under
+        # include_resonance=True (issue #304).
+        xs = compute_xs(
+            endf_dict, mt, energies_in,
+            options=options, _warnings=_warnings,
         )   # (n_einc,), xp-native
         weight = xs * y_cont
         # NOTE on normalisation: the 1D dxs/dE path composes
@@ -1260,6 +1259,7 @@ def compute_dxs_dE_law1_discrete_broadened(
     to_lab=True,
     n_mu_internal=64,
     xp=None,
+    *, options=None, _warnings=None,
 ):
     """1D analogue of `compute_ddx_law1_discrete_broadened`: DDX of
     MF6/LAW=1 ND>0 discrete lines with the kinematic delta replaced
@@ -1300,6 +1300,7 @@ def compute_dxs_dE_law1_discrete_broadened(
         endf_dict, mt, zap,
         energies_in, energies_out, mus,
         kernel, to_lab=to_lab, xp=xp,
+        options=options, _warnings=_warnings,
     )
     # trapezoid over mu. Use xp.trapezoid on JAX (traced arrays cannot
     # go through numpy's trapezoid without materialising); the numpy

@@ -196,11 +196,14 @@ def compute_xs_mt5_contrib(
         endf_dict, mt5, za_residual, energies_in, include_discrete=True,
         xp=xp,
     )
-    xs_mt5 = mf3_interp.compute_cross_section(
-        endf_dict, mt5, energies_in, xp=xp,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+    # Route through compute_xs for consistency (issue #304). MT5 is
+    # a catch-all and doesn't carry an MF2 resonance range, so this
+    # degenerates to raw MF3 in practice; keeping the composed path
+    # means every XS read in the mid-layer goes through the same
+    # door.
+    xs_mt5 = compute_xs(
+        endf_dict, mt5, energies_in,
+        options=options, _warnings=_warnings,
     )
     return xs_mt5 * yield_mt5
 
@@ -332,13 +335,16 @@ def compute_prodxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     )
-    xs = mf3_interp.compute_cross_section(
+    # Route through compute_xs so include_resonance=True composes
+    # the MF2 reconstruction on top of MF3 (issue #304). On files
+    # without MF2 this is a no-op; on MF2-bearing files inside the
+    # resolved-resonance region it switches from raw-MF3 background
+    # to the physical composed cross section.
+    xs = compute_xs(
         endf_dict, mt, energies_in,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        xp=xp, _warnings=_warnings,
+        options=options, _warnings=_warnings,
     )
-    return yields * xp.asarray(xs)
+    return yields * xs
 
 
 def _is_mf13_only_gamma(endf_dict, mt, zap):
@@ -380,16 +386,16 @@ def compute_daxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
-    xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in, xp=xp,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+    # Route through compute_xs for MF2 composition under
+    # include_resonance=True (issue #304).
+    xs = compute_xs(
+        endf_dict, mt, energies_in,
+        options=options, _warnings=_warnings,
     ).reshape(-1, 1)
     angdist = compute_angdist_values(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
     )
-    return angdist * yields * xp.asarray(xs) / (2 * np.pi)
+    return angdist * yields * xs / (2 * np.pi)
 
 
 def compute_dexs(
@@ -418,17 +424,17 @@ def compute_dexs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=True, xp=xp,
     ).reshape(-1, 1)
-    xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in, xp=xp,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+    # Route through compute_xs for MF2 composition under
+    # include_resonance=True (issue #304).
+    xs = compute_xs(
+        endf_dict, mt, energies_in,
+        options=options, _warnings=_warnings,
     ).reshape(-1, 1)
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
     )
     module_logger.debug(f'average yield for MT={mt} and ZAP={zap}')
-    return energydist * yields * xp.asarray(xs)
+    return energydist * yields * xs
 
 
 def compute_ddxs(
@@ -451,17 +457,17 @@ def compute_ddxs(
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False, xp=xp,
     ).reshape(-1, 1, 1)
-    xs = mf3_interp.compute_cross_section(
-        endf_dict, mt, energies_in, xp=xp,
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
+    # Route through compute_xs for MF2 composition under
+    # include_resonance=True (issue #304).
+    xs = compute_xs(
+        endf_dict, mt, energies_in,
+        options=options, _warnings=_warnings,
     ).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
         to_lab, xp=xp,
     )
-    return f * yields * xp.asarray(xs) / (2 * np.pi)
+    return f * yields * xs / (2 * np.pi)
 
 
 def compute_ddxs_from_mf15_mf14(
@@ -545,13 +551,13 @@ def compute_ddxs_from_mf15_mf14(
         )
         cont_idcs = np.where(cont_mask)[0]
         y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)   # (n_einc,)
-        xs = mf3_interp.compute_cross_section(
+        # Route through compute_xs for MF2 composition under
+        # include_resonance=True (issue #304).
+        xs = compute_xs(
             endf_dict, mt, energies_in,
-            above_range=options.above_range,
-            resonance_range=options.resonance_range,
-            _warnings=_warnings,
-        )   # (n_einc,), numpy
-        weight = xp.asarray(xs) * y_cont
+            options=options, _warnings=_warnings,
+        )   # (n_einc,), xp-native
+        weight = xs * y_cont
 
     # Continuum angular from MF14 Eg=0 entry (LI=0), else isotropic.
     if properties.has_mf14_mt(endf_dict, mt) and endf_dict[14][mt]['LI'] == 0:
@@ -629,18 +635,20 @@ def _compute_residual_xs_for_lfs(
     if options is None:
         options = RunOptions()
     lmf = mf8_interp.get_mf_switch(endf_dict, mt, za_residual, lfs)
-    _mf3_kw = dict(
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
-    )
+    # LMF 3/6/9 all source the base cross section from MF3 (plus a
+    # yield multiplier in LMF 6/9); route through compute_xs so MF2
+    # composition applies under include_resonance=True (issue #304).
+    # LMF 10 reads from MF10 directly (per-residual XS), which has
+    # no MF2 composition pathway in the current scope.
     if lmf == 3:
-        return mf3_interp.compute_cross_section(
-            endf_dict, mt, energies_in, **_mf3_kw,
+        return compute_xs(
+            endf_dict, mt, energies_in,
+            options=options, _warnings=_warnings,
         )
     if lmf == 6:
-        xs = mf3_interp.compute_cross_section(
-            endf_dict, mt, energies_in, **_mf3_kw,
+        xs = compute_xs(
+            endf_dict, mt, energies_in,
+            options=options, _warnings=_warnings,
         )
         y = mf6_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in,
@@ -648,8 +656,9 @@ def _compute_residual_xs_for_lfs(
         )
         return xs * y
     if lmf == 9:
-        xs = mf3_interp.compute_cross_section(
-            endf_dict, mt, energies_in, **_mf3_kw,
+        xs = compute_xs(
+            endf_dict, mt, energies_in,
+            options=options, _warnings=_warnings,
         )
         y = mf9_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in, level=lfs
@@ -684,16 +693,16 @@ def compute_residual_xs(
     from ..run_options import RunOptions
     if options is None:
         options = RunOptions()
-    _mf3_kw = dict(
-        above_range=options.above_range,
-        resonance_range=options.resonance_range,
-        _warnings=_warnings,
-    )
+    # Route cross-section reads through compute_xs so MF2 composition
+    # applies under include_resonance=True (issue #304). The MF8
+    # dispatch below only kicks in when MF8/MT exists; the two
+    # non-MF8 branches handled first here are the only MF3 reads.
     if not (8 in endf_dict and mt in endf_dict[8]):
         if (6 in endf_dict and mt in endf_dict[6]
                 and mf6_help.contains_zap(endf_dict, mt, za_residual)):
-            xs = mf3_interp.compute_cross_section(
-                endf_dict, mt, energies_in, **_mf3_kw,
+            xs = compute_xs(
+                endf_dict, mt, energies_in,
+                options=options, _warnings=_warnings,
             )
             y = mf6_interp.compute_yields(
                 endf_dict, mt, za_residual, energies_in,
@@ -705,8 +714,9 @@ def compute_residual_xs(
                 f'no MF8 information for MT={mt}, cannot resolve isomer level '
                 f'(requested LFS={lfs})'
             )
-        return mf3_interp.compute_cross_section(
-            endf_dict, mt, energies_in, **_mf3_kw,
+        return compute_xs(
+            endf_dict, mt, energies_in,
+            options=options, _warnings=_warnings,
         )
 
     available_lfs = sorted({

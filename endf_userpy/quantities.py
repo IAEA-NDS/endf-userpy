@@ -585,6 +585,7 @@ def _get_particle_production_dxs_dE_impl(
         return ddxb.compute_dxs_dE_law1_discrete_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, xp=xp,
+            options=options, _warnings=_warnings,
         )
 
     def law1_disc_select(endf_dict, mt, zap, einc, eouts):
