@@ -106,6 +106,7 @@ def compute_ddx_continuous_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
+    *, options=None, _warnings=None,
     **convolve_kwargs,
 ):
     """DDX of (MT, ZAP) convolved with `kernel` along E_out.
@@ -147,8 +148,11 @@ def compute_ddx_continuous_broadened(
         `compute_ddxs`.
     """
     from ..primitives import array_ns
+    from ..run_options import RunOptions
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    if options is None:
+        options = RunOptions()
     energies_in = np.asarray(energies_in, dtype=float)
     energies_out = np.asarray(energies_out, dtype=float)
     angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
@@ -179,6 +183,9 @@ def compute_ddx_continuous_broadened(
     ).reshape(-1, 1, 1)
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
     ).reshape(-1, 1, 1)
     # DDX of a physical distribution is non-negative; FFT roundoff in
     # adaptive_convolve can produce sub-eps negatives at the tails,
@@ -195,6 +202,7 @@ def compute_ddx_continuous_broadened_summed(
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
+    *, options=None, _warnings=None,
     **convolve_kwargs,
 ):
     """DDX of `sum_{MT in mts}` convolved with `kernel` along E_out
@@ -225,8 +233,11 @@ def compute_ddx_continuous_broadened_summed(
     ddx : ndarray of shape `(n_einc, n_eouts, n_mus)`.
     """
     from ..primitives import array_ns
+    from ..run_options import RunOptions
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    if options is None:
+        options = RunOptions()
     einc = np.asarray(energies_in, dtype=float)
     eouts = np.asarray(energies_out, dtype=float)
     mus = np.asarray(angle_cosines_out, dtype=float)
@@ -244,7 +255,12 @@ def compute_ddx_continuous_broadened_summed(
         y = compute_yields(
             endf_dict, mt, zap, einc, include_discrete=False, xp=xp,
         )
-        xs = mf3_interp.compute_cross_section(endf_dict, mt, einc)
+        xs = mf3_interp.compute_cross_section(
+            endf_dict, mt, einc,
+            above_range=options.above_range,
+            resonance_range=options.resonance_range,
+            _warnings=_warnings,
+        )
         scales.append((y * xp.asarray(xs)).reshape(-1, 1, 1))
 
     def f_summed(eout_internal):
@@ -491,6 +507,7 @@ def compute_ddx_discrete_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel,
     to_lab=True, xp=None,
+    *, options=None, _warnings=None,
 ):
     """DDX of the 2-body discrete-level part of (MT, ZAP), with the
     kinematic delta delta(E_out - E_out_kin(E_in, mu)) replaced by
@@ -527,8 +544,11 @@ def compute_ddx_discrete_broadened(
         units as `compute_ddxs`.
     """
     from ..primitives import array_ns
+    from ..run_options import RunOptions
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    if options is None:
+        options = RunOptions()
     energies_in = np.asarray(energies_in, dtype=float)
     energies_out = np.asarray(energies_out, dtype=float)
     angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
@@ -561,6 +581,9 @@ def compute_ddx_discrete_broadened(
     ).reshape(-1, 1, 1)
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
     ).reshape(-1, 1, 1)
     return (
         kernel_vals * angdist_b
@@ -574,6 +597,7 @@ def compute_ddx_law1_discrete_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel,
     to_lab=True, xp=None,
+    *, options=None, _warnings=None,
 ):
     """DDX contribution from MF6/LAW=1 discrete-energy lines (ND>0),
     with the kinematic delta at each line replaced by `kernel`.
@@ -613,9 +637,12 @@ def compute_ddx_law1_discrete_broadened(
     ddx : ndarray of shape (n_einc, n_eouts, n_mus).
     """
     from ..primitives import array_ns
+    from ..run_options import RunOptions
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    if options is None:
+        options = RunOptions()
     # Skip numpy normalisation for tracers -- see the sibling comment
     # in ``compute_dxs_dE_broadened``.
     if not _is_jax_tracer(energies_in):
@@ -653,6 +680,9 @@ def compute_ddx_law1_discrete_broadened(
     ).reshape(-1, 1, 1)
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in, xp=xp,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
     ).reshape(-1, 1, 1)
     return ddx * yields * xs / (2 * np.pi)
 
@@ -662,6 +692,7 @@ def compute_ddx_mf12_discrete_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel,
     xp=None,
+    *, options=None, _warnings=None,
 ):
     """DDX contribution from MF12 discrete photon lines with the MF14
     angular distribution factored in, and each Dirac peak at Eg_i
@@ -702,9 +733,12 @@ def compute_ddx_mf12_discrete_broadened(
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``.
     """
     from ..primitives import array_ns
+    from ..run_options import RunOptions
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    if options is None:
+        options = RunOptions()
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF12 discrete-line broadening is gamma-only; got '
@@ -741,6 +775,9 @@ def compute_ddx_mf12_discrete_broadened(
 
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in, xp=xp,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
     )  # (n_einc,), xp-native
     weight_E = yields_disc * xs[:, None]  # (n_einc, n_disc)
 
@@ -787,6 +824,7 @@ def compute_ddx_mf12_discrete_broadened(
 
 def compute_dxs_dE_mf12_discrete_broadened(
     endf_dict, mt, zap, energies_in, energies_out, kernel, xp=None,
+    *, options=None, _warnings=None,
 ):
     """1D dxs/dE contribution from discrete photon lines declared in
     MF12, with each Dirac peak at Eg_i replaced by ``kernel``.
@@ -822,9 +860,12 @@ def compute_dxs_dE_mf12_discrete_broadened(
     ``sigma * y_i`` line by line.
     """
     from ..primitives import array_ns
+    from ..run_options import RunOptions
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    if options is None:
+        options = RunOptions()
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF12 discrete-line broadening is gamma-only; got '
@@ -861,6 +902,9 @@ def compute_dxs_dE_mf12_discrete_broadened(
 
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in, xp=xp,
+        above_range=options.above_range,
+        resonance_range=options.resonance_range,
+        _warnings=_warnings,
     )  # (n_einc,), xp-native
     weight = yields_disc * xs[:, None]  # (n_einc, n_disc_lines)
 
@@ -1038,6 +1082,7 @@ def compute_ddx_mf15_continuum_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
+    *, options=None, _warnings=None,
     **convolve_kwargs,
 ):
     """DDX contribution from the MF15 continuous gamma spectrum,
@@ -1090,9 +1135,12 @@ def compute_ddx_mf15_continuum_broadened(
     `compute_ddx_continuous_broadened`: barn / eV / sr.
     """
     from ..primitives import array_ns
+    from ..run_options import RunOptions
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    if options is None:
+        options = RunOptions()
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF15 continuum broadening is gamma-only; got '
@@ -1145,6 +1193,9 @@ def compute_ddx_mf15_continuum_broadened(
         y_cont = xp.sum(yields_all[:, cont_idcs], axis=1)   # (n_einc,)
         xs = mf3_interp.compute_cross_section(
             endf_dict, mt, energies_in, xp=xp,
+            above_range=options.above_range,
+            resonance_range=options.resonance_range,
+            _warnings=_warnings,
         )   # (n_einc,), xp-native
         weight = xs * y_cont
         # NOTE on normalisation: the 1D dxs/dE path composes
