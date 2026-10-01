@@ -598,6 +598,7 @@ def _get_particle_production_dxs_dE_impl(
         return ddxb.compute_dxs_dE_mf12_discrete_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, xp=xp,
+            options=options, _warnings=_warnings,
         )
 
     def mf12_disc_select(endf_dict, mt, zap, einc, eouts):
@@ -866,6 +867,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_continuous_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            options=options, _warnings=_warnings,
             mesh_bounds=broadening_mesh_bounds,
         )
 
@@ -880,6 +882,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, xp=xp,
+            options=options, _warnings=_warnings,
         )
 
     def disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -893,6 +896,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_law1_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, xp=xp,
+            options=options, _warnings=_warnings,
         )
 
     def law1_disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -906,6 +910,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_mf12_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, xp=xp,
+            options=options, _warnings=_warnings,
         )
 
     def mf12_disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -932,6 +937,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_mf15_continuum_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            options=options, _warnings=_warnings,
             mesh_bounds=broadening_mesh_bounds,
         )
 
@@ -958,6 +964,7 @@ def _get_particle_production_ddxs_impl(
             endf_dict, cont_mts, zap,
             energies_in, energies_out, angle_cosines_out,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
+            options=options, _warnings=_warnings,
             mesh_bounds=broadening_mesh_bounds,
         )
     else:

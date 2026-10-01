@@ -271,8 +271,8 @@ def test_differential_apis_accept_run_options_with_above_range():
     """The three differential entry points route `above_range`
     through RunOptions, same as the XS APIs. Signature check: each
     accepts ``options=``; RunOptions default matches
-    ``'warn_nan'``. Full end-to-end differential behaviour on
-    above-range queries is out of scope here."""
+    ``'warn_nan'``. End-to-end behaviour exercised in the
+    broadening-path tests below."""
     import inspect
     for func in (
         get_particle_production_dxs_dE,
@@ -284,6 +284,64 @@ def test_differential_apis_accept_run_options_with_above_range():
             f'{func.__name__} missing `options` kwarg'
         )
     assert RunOptions().above_range == 'warn_nan'
+
+
+# ============================================================
+# Issue #303: policy propagates through broadening folders.
+# ============================================================
+#
+# The seven direct `mf3_interp.compute_cross_section` call sites
+# inside `ddx_broadening.py` used to apply the leaf's default
+# policy regardless of what the top-level user requested. These
+# tests pin the fix: a top-level `above_range='raise'` must raise
+# when a broadened query touches above-range Ein. Before #303
+# these calls would silently return NaN-filled arrays instead.
+
+
+def test_broadened_dxs_dE_above_range_raise_propagates(al27):
+    """`get_particle_production_dxs_dE(..., broadening=sigma)` with
+    `above_range='raise'` must raise on Ein above the file mesh.
+    Pins the invariant end-to-end on the 1D path; the DDX
+    sibling tests below provide the stricter per-folder coverage
+    (dxs_dE's continuous folder was already threaded in #301, so a
+    stashed-fix run of this test still raises via that folder before
+    the mf12-discrete folder is reached)."""
+    E = np.array([1e6, 2e8])     # 200 MeV is above Al-27's 150 MeV mesh
+    Eo = np.linspace(1e5, 1e7, 32)
+    opts = RunOptions(above_range='raise')
+    with pytest.raises(ValueError, match=r'exceed.*upper mesh energy'):
+        get_particle_production_dxs_dE(
+            al27, '(n,g)', 'g', E, Eo, broadening=1e3, options=opts,
+        )
+
+
+def test_broadened_ddx_above_range_raise_propagates(al27):
+    """`get_particle_production_ddxs(..., broadening=sigma)` with
+    `above_range='raise'` must raise on Ein above the file mesh.
+    Exercises `compute_ddx_continuous_broadened`, `_mf12_discrete_`,
+    and `_mf15_continuum_` folders in a single query."""
+    E = np.array([1e6, 2e8])
+    Eo = np.linspace(1e5, 1e7, 16)
+    mu = np.linspace(-1.0, 1.0, 8)
+    opts = RunOptions(above_range='raise')
+    with pytest.raises(ValueError, match=r'exceed.*upper mesh energy'):
+        get_particle_production_ddxs(
+            al27, '(n,g)', 'g', E, Eo, mu, broadening=1e3, options=opts,
+        )
+
+
+def test_broadened_neutron_ddx_above_range_raise_propagates(al27):
+    """Neutron-production DDX hits `compute_ddx_continuous_broadened`
+    (and `_summed` if multiple MTs admit) via a neutron query. Same
+    `above_range='raise'` propagation invariant."""
+    E = np.array([1e6, 2e8])
+    Eo = np.linspace(1e5, 1e7, 16)
+    mu = np.linspace(-1.0, 1.0, 8)
+    opts = RunOptions(above_range='raise')
+    with pytest.raises(ValueError, match=r'exceed.*upper mesh energy'):
+        get_particle_production_ddxs(
+            al27, '(n,n)', 'n', E, Eo, mu, broadening=1e3, options=opts,
+        )
 
 
 # ============================================================
