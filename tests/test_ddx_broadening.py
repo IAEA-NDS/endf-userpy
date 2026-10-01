@@ -74,7 +74,14 @@ def patched_environment(monkeypatch):
     monkeypatch.setattr(
         ddxb.mf6_interp, 'compute_law1_discrete_lines', fake_law1_lines
     )
-    monkeypatch.setattr(ddxb.mf3_interp, 'compute_cross_section', fake_xs)
+    # Post-#304 the broadening folders read cross sections via
+    # ``compute_xs`` (which routes through MF2 composition under
+    # ``include_resonance=True``) rather than calling
+    # ``mf3_interp.compute_cross_section`` directly. The fixture
+    # patches ``compute_xs`` at the import site in ``ddxb`` so the
+    # same ``fake_xs(endf_dict, mt, einc, **_)`` shim intercepts
+    # every XS read from the broadening path.
+    monkeypatch.setattr(ddxb, 'compute_xs', fake_xs)
     monkeypatch.setattr(
         ddxb.mf4_interp, 'compute_angdist_values', fake_angdist_mf4
     )
