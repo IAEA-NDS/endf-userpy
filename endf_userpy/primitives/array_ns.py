@@ -1,8 +1,8 @@
 """Array-namespace adapter for the resonance module.
 
-Small (~150 LoC) abstraction so the same physics core runs with
-numpy, JAX, or (planned) numba as the linear-algebra backend. The
-goal is that a MLBW / Reich-Moore / RML reconstruction is written
+Small (~200 LoC) abstraction so the same physics core runs with
+numpy, JAX, or (opportunistically) numba as the linear-algebra backend.
+The goal is that a MLBW / Reich-Moore / RML reconstruction is written
 ONCE against this adapter -- no `if backend == 'jax': lax.switch(...)
 else: np.select(...)` sprinkled through the physics.
 
@@ -27,22 +27,55 @@ Design principles:
   input arrays at their boundary (typically at the preprocessing
   stage) so the physics core still sees natural sizes.
 
-Currently: numpy, JAX, and numba. The numba backend is a **signal**
-backend: its adapter surface is numpy's (numba doesn't expose ops
-individually), but its ``.name`` triggers physics modules to route
-to their dedicated ``@njit`` kernels (see e.g.
-:mod:`endf_userpy.mfsec_interpretation.mf2_interpretation_mlbw_numba`).
+**Algebra vs accelerator.** Numpy and JAX are *algebras* (array
+semantics). Numba is an *accelerator* (JIT of functions already
+written against numpy semantics). The adapter classes encode both
+axes jointly in their class identity so inconsistent combinations
+("jax algebra + numba required") are not spellable.
+
+Each backend class exposes three accelerator-policy methods
+(see each method's docstring for semantics):
+
+- ``wants_accelerator(name)``: does this backend take the
+  accelerator branch when the accelerator is available?
+- ``accelerator_available(name)``: pure runtime probe for whether
+  the accelerator is importable.
+- ``raise_if_needed_but_missing(name)``: no-op or raise, depending
+  on whether this backend's contract requires the accelerator.
+
+Resonance-reconstruction dispatch sites use the three-method API
+rather than branching on ``xp.name``; see
+:mod:`endf_userpy.quantities_mt_zap.resonance_composition`.
 """
 from __future__ import annotations
+
+
+_SUPPORTED_ACCELERATORS = ('numba',)
+
+
+def _validate_accelerator(name: str) -> None:
+    if name not in _SUPPORTED_ACCELERATORS:
+        raise ValueError(
+            f'unknown accelerator {name!r}; '
+            f'supported: {_SUPPORTED_ACCELERATORS}'
+        )
+
+
+def _numba_importable() -> bool:
+    try:
+        import numba  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 class NumpyBackend:
     """Backend that dispatches through ``numpy``.
 
-    Preferred default: no compile step, natural sizes, plays with
-    the rest of the numpy scientific ecosystem. Used as the
-    reference implementation against which the JAX backend is
-    validated.
+    Explicit "numpy, no accelerators" when selected directly via
+    ``RunOptions(backend='numpy')``. Shares its array-op surface with
+    :class:`NumbaBackend` and :class:`AutoBackend` (both subclass it);
+    the three differ only in their accelerator-policy methods.
     """
 
     name = 'numpy'
@@ -92,6 +125,28 @@ class NumpyBackend:
         """Solve `a @ x == b`. Delegates to `np.linalg.solve`."""
         return self._np.linalg.solve(a, b)
 
+    # ---- Accelerator policy (base: no acceleration). ----
+
+    def wants_accelerator(self, name: str) -> bool:
+        """False for explicit numpy: the user said no acceleration."""
+        _validate_accelerator(name)
+        return False
+
+    def accelerator_available(self, name: str) -> bool:
+        """Pure runtime probe: is the accelerator importable right now?
+
+        Shared across all subclasses; AutoBackend wraps this to fire
+        a one-shot missing-numba warning.
+        """
+        _validate_accelerator(name)
+        if name == 'numba':
+            return _numba_importable()
+        return False
+
+    def raise_if_needed_but_missing(self, name: str) -> None:
+        """No-op: this backend has no accelerator requirement."""
+        _validate_accelerator(name)
+
     # ---- Forwarders (universal to all array backends). ----
 
     def __getattr__(self, name):
@@ -108,6 +163,14 @@ class JaxBackend:
     the resonance data structures are expected to pad variable-size
     arrays at input; the physics core inside `xp.scan` / `xp.switch`
     stays trace-clean.
+
+    JAX cannot interoperate with numba (traced arrays vs numpy
+    arrays), so every accelerator-policy method here answers "no":
+    ``wants_accelerator`` is False (jax never takes the numba
+    branch), ``accelerator_available`` reports jax's own view
+    (always False for numba) regardless of whether numba is
+    installed system-wide, and ``raise_if_needed_but_missing`` is a
+    no-op (jax never requires numba).
     """
 
     name = 'jax'
@@ -134,44 +197,129 @@ class JaxBackend:
     def solve(self, a, b):
         return self._jnp.linalg.solve(a, b)
 
+    def wants_accelerator(self, name: str) -> bool:
+        _validate_accelerator(name)
+        return False
+
+    def accelerator_available(self, name: str) -> bool:
+        _validate_accelerator(name)
+        # jax algebra never dispatches through numba kernels; report
+        # unavailable even if numba is installed, since from this
+        # backend's point of view the accelerator cannot be used.
+        return False
+
+    def raise_if_needed_but_missing(self, name: str) -> None:
+        _validate_accelerator(name)
+
     def __getattr__(self, name):
         return getattr(self._jnp, name)
 
 
 class NumbaBackend(NumpyBackend):
-    """Signal backend: MLBW / (planned) SLBW / RM dispatch here go to
-    dedicated ``@njit``-compiled kernels instead of the vectorised
-    adapter path.
+    """Numpy algebra with numba acceleration as a hard requirement.
 
-    Numba doesn't expose ufuncs / array creation via a namespace object
-    the way ``numpy`` or ``jax.numpy`` do, so trying to translate every
-    ``xp.sqrt`` / ``xp.where`` call individually would just wrap numpy
-    with dispatch overhead. Instead, the physics modules keep the
-    adapter path for numpy and JAX (one implementation, two backends),
-    and provide a hand-written ``@njit`` fused kernel for numba
-    -- see :mod:`endf_userpy.mfsec_interpretation.mf2_interpretation_mlbw_numba`.
-    This backend's ``.name = 'numba'`` is the signal that triggers the
-    kernel dispatch.
+    ``RunOptions(backend='numba')`` resolves here. The constructor
+    verifies that ``numba`` is importable; if not, it raises so the
+    error surfaces at options construction rather than deep in a
+    resonance dispatch site.
 
-    The adapter surface itself inherits from :class:`NumpyBackend` so
-    that any code that does hit ``xp.sqrt`` (etc.) still works
-    correctly, just without a numba speedup.
+    Shares its array-op surface with :class:`NumpyBackend` so any
+    ``xp.sqrt`` etc. call that bypasses the numba kernel still works
+    (just without a numba speedup). The three accelerator-policy
+    methods assert "numba is wanted, is present, and is required".
     """
 
     name = 'numba'
 
     def __init__(self):
         super().__init__()
-        try:
-            import numba  # noqa: F401
-        except ImportError:
+        if not _numba_importable():
             raise RuntimeError(
                 "numba backend requested but `numba` is not installed; "
                 "install with `pip install numba`."
             )
 
+    def wants_accelerator(self, name: str) -> bool:
+        _validate_accelerator(name)
+        return name == 'numba'
 
-_BACKENDS: dict[str, type] = {'numpy': NumpyBackend}
+    # accelerator_available inherited (import probe): since __init__
+    # verified numba is present, this returns True in normal use.
+    # Kept inherited rather than overridden to True so that if numba
+    # becomes unavailable mid-process the probe reflects reality.
+
+    def raise_if_needed_but_missing(self, name: str) -> None:
+        """Belt-and-suspenders: construction already verified numba
+        presence, but if the module disappeared mid-process (cache
+        blown, uninstalled) re-raise the same error the constructor
+        would have raised.
+        """
+        _validate_accelerator(name)
+        if name == 'numba' and not self.accelerator_available('numba'):
+            raise RuntimeError(
+                "numba backend was constructed but `numba` is no "
+                "longer importable at dispatch time."
+            )
+
+
+class AutoBackend(NumpyBackend):
+    """Numpy algebra with opportunistic numba acceleration.
+
+    ``RunOptions(backend='auto')`` (the default) resolves here. The
+    accelerator-policy methods encode "soft-use" semantics:
+
+    - ``wants_accelerator('numba')`` is True, so resonance dispatch
+      sites consider the numba branch.
+    - ``accelerator_available('numba')`` probes the import and, on
+      the first miss per Python session, emits a one-shot
+      UserWarning naming the fallback. Dispatch sites then fall
+      through to the numpy branch without raising.
+    - ``raise_if_needed_but_missing`` is a no-op: AutoBackend never
+      *requires* numba, only prefers it.
+
+    ``name = 'numpy'`` deliberately: AutoBackend's visible array
+    semantics ARE numpy's. Accelerator preference is queried via
+    the three methods above, not via ``xp.name``. This keeps the
+    pre-existing ``xp.name == 'numpy'`` branches (numpy-chunking,
+    materialisation, jax-vs-numpy dispatch) working for
+    ``backend='auto'`` without touching every call site. Use
+    ``isinstance(xp, AutoBackend)`` if a test specifically needs
+    to tell AutoBackend apart from NumpyBackend.
+    """
+
+    name = 'numpy'
+
+    _warned_missing_numba = False  # class-level one-shot
+
+    def wants_accelerator(self, name: str) -> bool:
+        _validate_accelerator(name)
+        return name == 'numba'
+
+    def accelerator_available(self, name: str) -> bool:
+        _validate_accelerator(name)
+        available = super().accelerator_available(name)
+        if (
+            name == 'numba'
+            and not available
+            and not AutoBackend._warned_missing_numba
+        ):
+            AutoBackend._warned_missing_numba = True
+            import warnings
+            warnings.warn(
+                "backend='auto' fell back to numpy for MF2 resonance "
+                "reconstruction because numba is not installed. Install "
+                "with `pip install numba` for the ~30x speedup on real "
+                "actinide files. Pass RunOptions(backend='numpy') to "
+                "silence this warning.",
+                UserWarning, stacklevel=2,
+            )
+        return available
+
+
+_BACKENDS: dict[str, type] = {
+    'numpy': NumpyBackend,
+    'auto': AutoBackend,
+}
 try:
     import jax  # noqa: F401
     _BACKENDS['jax'] = JaxBackend

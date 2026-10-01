@@ -14,8 +14,8 @@ def pytest_configure(config):
     ``test_run_options.py``) reset the flag in-fixture as needed.
     """
     try:
-        from endf_userpy import run_options as ro
-        ro._WARNED_MISSING_NUMBA_ON_AUTO = True
+        from endf_userpy.primitives.array_ns import AutoBackend
+        AutoBackend._warned_missing_numba = True
     except Exception:
         pass
 

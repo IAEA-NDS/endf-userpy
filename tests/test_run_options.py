@@ -1,4 +1,7 @@
-"""Unit tests for endf_userpy.run_options.RunOptions (issue #143)."""
+"""Unit tests for endf_userpy.run_options.RunOptions and the
+accelerator-policy methods on the array_ns backend classes (issue
+#143 + AutoBackend refactor).
+"""
 from __future__ import annotations
 
 import warnings
@@ -6,7 +9,14 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from endf_userpy.run_options import RunOptions, resolve_backend
+from endf_userpy.primitives import array_ns
+from endf_userpy.primitives.array_ns import (
+    AutoBackend, JaxBackend, NumbaBackend, NumpyBackend,
+)
+from endf_userpy.run_options import RunOptions
+
+
+# ---------- RunOptions dataclass behaviour ----------
 
 
 def test_defaults_are_physics_first():
@@ -17,7 +27,7 @@ def test_defaults_are_physics_first():
     assert opts.resonance_range == 'warn'
     assert opts.include_resonance is True
     assert opts.mt5_contrib is True
-    assert opts.backend == 'auto'
+    assert isinstance(opts.backend, AutoBackend)
     assert opts.broadening_mesh_bounds is None
     assert opts.urr_quadrature == 'gauss_legendre_32'
 
@@ -33,86 +43,31 @@ def test_dataclass_replace_composition():
     base = RunOptions()
     tight = replace(base, above_range='raise')
     assert tight.above_range == 'raise'
-    assert tight.include_resonance is True  # unchanged
-    assert tight.backend == 'auto'          # unchanged
+    assert tight.include_resonance is True              # unchanged
+    assert isinstance(tight.backend, AutoBackend)       # unchanged
 
 
-def test_backend_string_alias_numpy_resolves_at_construction():
-    """RunOptions(backend='numpy') resolves to the numpy adapter
-    at __post_init__ time (so missing-backend errors surface early)."""
-    from endf_userpy.primitives import array_ns
+# ---------- Backend string resolution at construction ----------
+
+
+def test_backend_string_numpy_resolves_to_numpy_backend():
     opts = RunOptions(backend='numpy')
-    assert isinstance(opts.backend, type(array_ns.get_backend('numpy')))
+    assert isinstance(opts.backend, NumpyBackend)
+    assert not isinstance(opts.backend, AutoBackend)
     assert opts.backend.name == 'numpy'
 
 
-def test_backend_auto_stays_string_until_resolve():
-    """'auto' is deferred to resolve_backend() so RunOptions
-    construction never probes numba availability."""
-    opts = RunOptions()
-    assert opts.backend == 'auto'
-
-
-def test_resolve_backend_auto_non_resonance_call_gives_numpy():
-    """On a non-resonance call, 'auto' resolves to numpy regardless
-    of whether numba is installed. No warning emitted."""
-    import endf_userpy.run_options as ro
-    ro._WARNED_MISSING_NUMBA_ON_AUTO = False
-    opts = RunOptions()
-    with warnings.catch_warnings():
-        warnings.simplefilter('error')
-        resolved = resolve_backend(opts, is_resonance_call=False)
-    assert resolved.name == 'numpy'
-
-
-def test_resolve_backend_auto_resonance_call_prefers_numba_when_available():
-    """On a resonance call, 'auto' prefers numba when installed,
-    with no warning. Silently falls back to numpy with a one-shot
-    warning otherwise."""
-    from endf_userpy.primitives import array_ns
-    import endf_userpy.run_options as ro
-    ro._WARNED_MISSING_NUMBA_ON_AUTO = False
-
-    try:
-        array_ns.get_backend('numba')
-        numba_available = True
-    except Exception:
-        numba_available = False
-
-    opts = RunOptions()
-    if numba_available:
-        with warnings.catch_warnings():
-            warnings.simplefilter('error')  # no warnings expected
-            resolved = resolve_backend(opts, is_resonance_call=True)
-        assert resolved.name == 'numba'
-    else:
-        with pytest.warns(UserWarning, match=r"backend='auto' fell back to numpy"):
-            resolved = resolve_backend(opts, is_resonance_call=True)
-        assert resolved.name == 'numpy'
-
-
-def test_auto_backend_missing_numba_warning_is_one_shot():
-    """The 'auto' fallback warning fires at most once per process."""
-    import endf_userpy.run_options as ro
-    ro._WARNED_MISSING_NUMBA_ON_AUTO = False
-    try:
-        import numba  # noqa: F401
-        pytest.skip('numba is installed; cannot exercise the one-shot fallback warning')
-    except Exception:
-        pass
-    opts = RunOptions()
-    with pytest.warns(UserWarning):
-        resolve_backend(opts, is_resonance_call=True)
-    # Second call must not re-emit.
-    with warnings.catch_warnings():
-        warnings.simplefilter('error')
-        resolve_backend(opts, is_resonance_call=True)
+def test_backend_string_auto_resolves_to_auto_backend():
+    opts = RunOptions(backend='auto')
+    assert isinstance(opts.backend, AutoBackend)
+    # AutoBackend reports name='numpy' because its algebra IS numpy;
+    # the accelerator preference is queried via wants_accelerator().
+    assert opts.backend.name == 'numpy'
 
 
 def test_explicit_numba_raises_when_missing():
     """RunOptions(backend='numba') is a demand, not a hint: fail
-    loud at construction if numba is unavailable so the user sees
-    the error before any computation."""
+    loud at construction if numba is unavailable."""
     try:
         import numba  # noqa: F401
         pytest.skip('numba is installed; cannot exercise the missing-numba path')
@@ -136,10 +91,100 @@ def test_explicit_jax_raises_when_missing():
 def test_adapter_object_passes_through():
     """Passing an already-resolved adapter object bypasses the
     string-resolution machinery."""
-    from endf_userpy.primitives import array_ns
     numpy_backend = array_ns.get_backend('numpy')
     opts = RunOptions(backend=numpy_backend)
     assert opts.backend is numpy_backend
-    # resolve_backend is a pass-through for non-string.
-    assert resolve_backend(opts, is_resonance_call=True) is numpy_backend
-    assert resolve_backend(opts, is_resonance_call=False) is numpy_backend
+
+
+# ---------- Accelerator-policy methods ----------
+
+
+def test_numpy_backend_rejects_acceleration():
+    """Explicit numpy backend never takes the accelerator branch."""
+    xp = array_ns.get_backend('numpy')
+    assert xp.wants_accelerator('numba') is False
+    # Pure runtime probe is still honest (returns whatever numba's
+    # import status is), but wants=False gates the actual dispatch.
+    xp.raise_if_needed_but_missing('numba')   # no-op, must not raise
+
+
+def test_auto_backend_wants_numba_without_requiring_it():
+    """AutoBackend asks for numba but doesn't demand it."""
+    xp = array_ns.get_backend('auto')
+    assert xp.wants_accelerator('numba') is True
+    xp.raise_if_needed_but_missing('numba')   # no-op, soft-use
+
+
+def test_auto_backend_missing_numba_warning_is_one_shot():
+    """AutoBackend.accelerator_available('numba') fires the one-shot
+    missing-numba warning at most once per Python session."""
+    AutoBackend._warned_missing_numba = False
+    try:
+        import numba  # noqa: F401
+        pytest.skip('numba is installed; cannot exercise the one-shot fallback warning')
+    except Exception:
+        pass
+    xp = array_ns.get_backend('auto')
+    with pytest.warns(UserWarning, match=r"backend='auto' fell back to numpy"):
+        xp.accelerator_available('numba')
+    # Second probe must not re-emit.
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        xp.accelerator_available('numba')
+
+
+def test_auto_backend_present_numba_no_warning():
+    """When numba IS installed, AutoBackend.accelerator_available
+    returns True silently."""
+    try:
+        import numba  # noqa: F401
+    except Exception:
+        pytest.skip('numba is not installed; cannot exercise the present-numba path')
+    AutoBackend._warned_missing_numba = False
+    xp = array_ns.get_backend('auto')
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        assert xp.accelerator_available('numba') is True
+
+
+def test_numba_backend_wants_and_requires_numba():
+    """NumbaBackend both wants and requires numba. ``require`` is
+    enforced at construction time; the dispatch-site ``raise_if_...``
+    is defensive."""
+    try:
+        import numba  # noqa: F401
+    except Exception:
+        pytest.skip('numba is not installed')
+    xp = array_ns.get_backend('numba')
+    assert isinstance(xp, NumbaBackend)
+    assert xp.wants_accelerator('numba') is True
+    assert xp.accelerator_available('numba') is True
+    xp.raise_if_needed_but_missing('numba')   # numba present, no raise
+
+
+def test_jax_backend_cannot_use_numba():
+    """JaxBackend rejects numba at every method level: the algebras
+    don't compose."""
+    try:
+        import jax  # noqa: F401
+    except Exception:
+        pytest.skip('jax is not installed')
+    xp = array_ns.get_backend('jax')
+    assert isinstance(xp, JaxBackend)
+    assert xp.wants_accelerator('numba') is False
+    # Pure availability probe from a jax backend reports False even
+    # if numba is installed system-wide, because jax arrays cannot
+    # be consumed by numba kernels.
+    assert xp.accelerator_available('numba') is False
+    xp.raise_if_needed_but_missing('numba')   # jax never requires numba
+
+
+def test_unknown_accelerator_raises_valueerror():
+    """Typo guard: unknown accelerator names raise at the method call."""
+    xp = array_ns.get_backend('auto')
+    with pytest.raises(ValueError, match='unknown accelerator'):
+        xp.wants_accelerator('cuda')
+    with pytest.raises(ValueError, match='unknown accelerator'):
+        xp.accelerator_available('cuda')
+    with pytest.raises(ValueError, match='unknown accelerator'):
+        xp.raise_if_needed_but_missing('cuda')
