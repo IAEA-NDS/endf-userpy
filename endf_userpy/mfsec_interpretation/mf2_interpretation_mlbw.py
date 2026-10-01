@@ -193,7 +193,8 @@ def reconstruct(
     testing the chunking behaviour with a small threshold; users
     shouldn't rely on them.
     """
-    if getattr(xp, 'name', None) == 'numba':
+    xp.raise_if_needed_but_missing('numba')
+    if xp.wants_accelerator('numba') and xp.accelerator_available('numba'):
         # Route to the hand-written @njit kernel. Same physics, same
         # inputs, same outputs. See
         # :mod:`mf2_interpretation_mlbw_numba` for the trade-offs.

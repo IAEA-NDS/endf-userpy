@@ -4,7 +4,7 @@ from .primitives import physical_constants as physconst
 from .primitives import properties as prop
 from .primitives import reactions as reac
 from .primitives.helpers import unpack_za
-from .run_options import RunOptions, resolve_backend
+from .run_options import RunOptions
 from .quantities_mt_zap import quantities as quant_mt_zap
 from .quantities_mt_zap import selectors
 from .quantities_mt_zap import ddx_broadening as ddxb
@@ -314,7 +314,7 @@ def get_reaction_xs(
 def _get_reaction_xs_impl(
     endf_dict, reaction, energies_in, *, options, _warnings=None,
 ):
-    xp = resolve_backend(options, is_resonance_call=options.include_resonance)
+    xp = options.backend
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
     iter_mts = avail_mts.copy()
@@ -532,7 +532,7 @@ def _get_particle_production_dxs_dE_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     broadening_mesh_bounds = options.broadening_mesh_bounds
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
@@ -786,7 +786,7 @@ def get_particle_production_discrete_gamma_lines(
     """
     if options is None:
         options = RunOptions()
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
     hits = _WarningHits()
@@ -804,7 +804,7 @@ def _get_particle_production_ddxs_impl(
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     zap = physconst.get_zap_for_particle(particle)
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     broadening_mesh_bounds = options.broadening_mesh_bounds
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
 

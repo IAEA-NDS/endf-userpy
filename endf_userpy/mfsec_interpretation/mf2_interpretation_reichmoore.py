@@ -414,7 +414,8 @@ def reconstruct(
     this. Private args ``_max_intermediate_bytes`` and
     ``_skip_chunk`` are for testing the chunking behaviour.
     """
-    if getattr(xp, 'name', None) == 'numba':
+    xp.raise_if_needed_but_missing('numba')
+    if xp.wants_accelerator('numba') and xp.accelerator_available('numba'):
         # Route to the hand-written @njit kernel. Same physics, same
         # inputs, same outputs. See
         # :mod:`mf2_interpretation_reichmoore_numba` for the trade-offs.

@@ -581,7 +581,8 @@ def reconstruct(data: URRData, energies_in, xp,
         default for higher accuracy. Only supported on the numpy / JAX
         backends; the numba backend always uses the default.
     """
-    if getattr(xp, 'name', None) == 'numba':
+    xp.raise_if_needed_but_missing('numba')
+    if xp.wants_accelerator('numba') and xp.accelerator_available('numba'):
         if quadrature != 'gauss_legendre_32':
             raise NotImplementedError(
                 f'numba backend only supports the default '

@@ -168,10 +168,10 @@ def compute_xs_mt5_contrib(
     (``_warnings``) is threaded to the leaf reader so above-range
     hits contribute to the top-level summary UserWarning.
     """
-    from ..run_options import RunOptions, resolve_backend
+    from ..run_options import RunOptions
     if options is None:
         options = RunOptions()
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     zero_xs_result = xp.zeros_like(xp.asarray(energies_in), dtype=xp.float64)
     if not properties.has_mf6_mt(endf_dict, 5):
         return zero_xs_result
@@ -223,13 +223,13 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
     UserWarning fires per top-level query (issue #143). ``None``
     (default) makes leaf readers fall back to per-call warnings.
     """
-    from ..run_options import RunOptions, resolve_backend
+    from ..run_options import RunOptions
     if options is None:
         options = RunOptions()
+    xp = options.backend
     if options.include_resonance:
-        xp_res = resolve_backend(options, is_resonance_call=True)
         result = _res_comp.compute_reconstructed_cross_section(
-            endf_dict, mt, energies_in, xp_res,
+            endf_dict, mt, energies_in, xp,
             urr_quadrature=options.urr_quadrature,
         )
         # The composition layer uses ``compute_cross_section_agnostic``
@@ -255,7 +255,7 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
             # still needs a concrete count for the accumulator; on
             # tracers we skip that (no summary warning fires under
             # jit anyway).
-            einc_xp = xp_res.asarray(energies_in)
+            einc_xp = xp.asarray(energies_in)
             above_mask_xp = einc_xp > e_max
             # Concrete-path warning + raise policy live inside
             # ``_handle_above_range``. Only skip that call when
@@ -280,18 +280,17 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
                 else:
                     fill = 0.0
             if options.above_range in ('warn_nan', 'nan'):
-                result = xp_res.where(above_mask_xp, fill, result)
+                result = xp.where(above_mask_xp, fill, result)
             elif options.above_range in ('warn_zero', 'zero'):
-                result = xp_res.where(above_mask_xp, 0.0, result)
+                result = xp.where(above_mask_xp, 0.0, result)
             # 'raise' already raised inside _handle_above_range on
             # the concrete path; no fill to apply here.
         # Preserve pre-port behaviour on the numpy path (return
         # numpy); on non-numpy xp keep the tracer alive so autodiff
         # works end-to-end.
-        if xp_res.name == 'numpy':
+        if xp.name == 'numpy':
             return np.asarray(result)
         return result
-    xp = resolve_backend(options, is_resonance_call=False)
     xs = mf3_interp.compute_cross_section(
         endf_dict, mt, energies_in,
         above_range=options.above_range,
@@ -318,10 +317,10 @@ def compute_prodxs(
     top-level query. ``None`` (default) triggers per-call warnings
     from the leaf.
     """
-    from ..run_options import RunOptions, resolve_backend
+    from ..run_options import RunOptions
     if options is None:
         options = RunOptions()
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     if (
         zap == get_zap_for_particle('g')
         and mt not in endf_dict.get(3, {})
@@ -366,10 +365,10 @@ def compute_daxs(
 
     Runtime policies + backend live on ``options`` (issue #143).
     """
-    from ..run_options import RunOptions, resolve_backend
+    from ..run_options import RunOptions
     if options is None:
         options = RunOptions()
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     if _is_mf13_only_gamma(endf_dict, mt, zap):
         prodxs = mf13_interp.compute_total_photon_production_xs(
             endf_dict, mt, energies_in, xp=xp,
@@ -402,10 +401,10 @@ def compute_dexs(
 
     Runtime policies + backend live on ``options`` (issue #143).
     """
-    from ..run_options import RunOptions, resolve_backend
+    from ..run_options import RunOptions
     if options is None:
         options = RunOptions()
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     module_logger.debug(f'compute dexs for MT={mt} and ZAP={zap}')
     # MF13-only gamma fast path (issue #130).
     if _is_mf13_only_gamma(endf_dict, mt, zap):
@@ -440,10 +439,10 @@ def compute_ddxs(
 
     Runtime policies + backend live on ``options`` (issue #143).
     """
-    from ..run_options import RunOptions, resolve_backend
+    from ..run_options import RunOptions
     if options is None:
         options = RunOptions()
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     if _is_mf13_only_gamma(endf_dict, mt, zap):
         n_einc = np.asarray(energies_in).size
         n_eout = np.asarray(energies_out).size
@@ -502,10 +501,10 @@ def compute_ddxs_from_mf15_mf14(
     ddx : ndarray of shape ``(n_einc, n_eouts, n_mus)``. Same units
     and shape as ``compute_ddxs``.
     """
-    from ..run_options import RunOptions, resolve_backend
+    from ..run_options import RunOptions
     if options is None:
         options = RunOptions()
-    xp = resolve_backend(options, is_resonance_call=False)
+    xp = options.backend
     if zap != get_zap_for_particle('g'):
         raise ValueError(
             'MF15 continuum unbroadened DDX is gamma-only; got '

@@ -21,32 +21,8 @@ Design rationale is captured in issue #143; the summary is:
 """
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import Any
-
-
-# One-shot flag guarding the "numba missing, would have been faster"
-# warning emitted when a user leaves the default ``backend='auto'``
-# and hits ``include_resonance=True`` on a file with MF2 data. Module-
-# level so the warning fires at most once per Python session.
-_WARNED_MISSING_NUMBA_ON_AUTO = False
-
-
-def _warn_auto_backend_numba_missing_once():
-    """Emit the one-shot ``backend='auto'`` no-numba warning."""
-    global _WARNED_MISSING_NUMBA_ON_AUTO
-    if _WARNED_MISSING_NUMBA_ON_AUTO:
-        return
-    _WARNED_MISSING_NUMBA_ON_AUTO = True
-    warnings.warn(
-        "backend='auto' fell back to numpy for MF2 resonance "
-        "reconstruction because numba is not installed. Install "
-        "with `pip install numba` for the ~30x speedup on real "
-        "actinide files. Pass RunOptions(backend='numpy') to "
-        "silence this warning.",
-        UserWarning, stacklevel=2,
-    )
 
 
 @dataclass(frozen=True)
@@ -78,20 +54,21 @@ class RunOptions:
     backend : {'auto', 'numpy', 'numba', 'jax'} or adapter object, default ``'auto'``
         Backend selection for the whole reconstruction.
 
-        ``'auto'`` (default): pure numpy end-to-end, EXCEPT that the
-        MF2 resonance reconstruction uses the numba kernels when
-        numba is installed (~30x speedup on real actinide files).
-        Emits a single UserWarning per Python session on the first
-        ``include_resonance=True`` call if numba is missing.
+        ``'auto'`` (default): numpy algebra end-to-end with
+        opportunistic numba acceleration for MF2 resonance kernels
+        (~30x speedup on real actinide files). Resolves to
+        :class:`endf_userpy.primitives.array_ns.AutoBackend`; emits a
+        single UserWarning per Python session on the first MF2
+        reconstruction if numba is missing.
 
-        ``'numpy'``: pure numpy. No auto-selection, no warning.
+        ``'numpy'``: pure numpy, never accelerate.
 
         ``'numba'``: numba resonance kernels + numpy elsewhere.
-        Raises ``ImportError`` at option construction if numba is
+        Raises ``RuntimeError`` at option construction if numba is
         not installed.
 
         ``'jax'``: JAX end-to-end via the array-agnostic path.
-        Enables autodiff and ``@jax.jit``. Raises ``ImportError`` at
+        Enables autodiff and ``@jax.jit``. Raises ``ValueError`` at
         option construction if jax is not installed.
 
         Advanced use: pass an ``array_ns`` adapter object directly.
@@ -136,46 +113,16 @@ class RunOptions:
                 f"resonance_range must be one of "
                 f"{_RESONANCE_RANGE_POLICIES}; got {self.resonance_range!r}"
             )
-        # Resolve explicit string aliases at construction time so
-        # missing-optional-dependency errors surface early. 'auto'
-        # is deliberately deferred to first-use (see
-        # :func:`resolve_backend`); otherwise every RunOptions()
-        # would trigger a numba probe.
+        # Resolve all string aliases ('auto' / 'numpy' / 'numba' /
+        # 'jax') to adapter objects at construction time, so that
+        # downstream code can read ``options.backend`` and get a
+        # live adapter without a conditional. Missing-optional-
+        # dependency errors (``numba`` for 'numba', ``jax`` for
+        # 'jax') surface here rather than deep in a resonance
+        # dispatch site. ``'auto'`` resolves to AutoBackend, which
+        # never probes numba at construction (its probe is deferred
+        # to the first ``accelerator_available('numba')`` call).
         b = self.backend
-        if isinstance(b, str) and b != 'auto':
+        if isinstance(b, str):
             from .primitives.array_ns import get_backend
             object.__setattr__(self, 'backend', get_backend(b))
-
-
-def resolve_backend(options, *, is_resonance_call):
-    """Resolve ``options.backend`` to a concrete ``array_ns``
-    adapter for the current call.
-
-    Standalone helper rather than a method on :class:`RunOptions`
-    so the policy dataclass stays pure config: the resolution
-    needs caller-site context (``is_resonance_call``) that
-    ``RunOptions`` itself does not have, and it emits a warning
-    (side effect) which does not belong on a frozen policy
-    object.
-
-    If ``options.backend`` was already resolved to an adapter
-    object at construction time (explicit ``'numpy'`` / ``'numba'``
-    / ``'jax'`` string, or an adapter passed directly), it is
-    returned unchanged. If it is still the string ``'auto'``,
-    numba is chosen for resonance calls when installed, else
-    numpy; the one-shot missing-numba warning fires only when
-    numba was the preferred choice for this call.
-    """
-    b = options.backend
-    if not isinstance(b, str):
-        return b
-    # Only 'auto' should remain as a string past __post_init__.
-    assert b == 'auto', f'unexpected string backend: {b!r}'
-    from .primitives.array_ns import get_backend
-    if is_resonance_call:
-        try:
-            return get_backend('numba')
-        except Exception:
-            _warn_auto_backend_numba_missing_once()
-            return get_backend('numpy')
-    return get_backend('numpy')

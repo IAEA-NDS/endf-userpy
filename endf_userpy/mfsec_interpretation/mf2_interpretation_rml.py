@@ -538,7 +538,8 @@ def reconstruct(data: RMLData, energies_in, xp):
             f'only KRM=3 (Reich-Moore approximation) is '
             f'implemented in the initial scope.'
         )
-    if getattr(xp, 'name', None) == 'numba':
+    xp.raise_if_needed_but_missing('numba')
+    if xp.wants_accelerator('numba') and xp.accelerator_available('numba'):
         from . import mf2_interpretation_rml_numba as _numba
         return _numba.reconstruct(data, energies_in)
     e = xp.asarray(energies_in, dtype=xp.float64)
