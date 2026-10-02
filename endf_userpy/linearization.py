@@ -86,6 +86,57 @@ class LinearizationResult:
     Useful for diagnosing convergence behaviour on hard files."""
 
 
+@dataclass
+class SeedStrategyComparison:
+    """One strategy's result in a
+    :func:`benchmark_seed_strategies` run."""
+
+    strategy: str
+    """Seed strategy name."""
+
+    seed_size: int
+    """Seed mesh size before iterative refinement."""
+
+    final_size: int
+    """Final mesh size after convergence (or at
+    status='point_budget' / 'max_iterations' exit)."""
+
+    iterations: int
+    """Number of refinement iterations run."""
+
+    wall_time_s: float
+    """Wall clock time for the whole run in seconds (seed +
+    iterative refinement + verification)."""
+
+    verify_max_rel_err: float
+    """Maximum relative error of linear interpolation on the
+    verification mesh, measured against the ground-truth
+    :func:`endf_userpy.quantities.get_reaction_xs` on that same
+    mesh. Should be at or below the user tolerance for a
+    'converged' run."""
+
+    status: str
+    """``'converged'`` / ``'point_budget'`` / ``'max_iterations'``,
+    forwarded from the underlying :class:`LinearizationResult`."""
+
+
+@dataclass
+class SeedStrategyBenchmark:
+    """Bundle returned by :func:`benchmark_seed_strategies`."""
+
+    verify_mesh_size: int
+    """Number of points in the dense verification mesh used to
+    estimate linear-interpolation accuracy."""
+
+    results: list[SeedStrategyComparison]
+    """One :class:`SeedStrategyComparison` per strategy, in the
+    order they were requested (default: windowed_fixed then
+    territory_adaptive)."""
+
+
+_SEED_STRATEGIES = ('windowed_fixed', 'territory_adaptive')
+
+
 def linearize_reaction_xs(
     endf_dict: dict,
     reaction: str,
@@ -97,8 +148,10 @@ def linearize_reaction_xs(
     options: RunOptions | None = None,
     max_points: int = 200_000,
     max_iterations: int = 25,
+    seed_strategy: str = 'windowed_fixed',
     seed_poles_window_widths: float = 2.0,
     seed_poles_window_npts: int = 7,
+    seed_territory_max_wing_steps: int = 20,
     seed_background_per_decade: int = 5,
     return_diagnostics: bool = False,
 ) -> Any:
@@ -137,16 +190,38 @@ def linearize_reaction_xs(
     max_iterations : int, optional
         Hard cap on refinement iterations. On overflow the driver
         returns with ``status='max_iterations'``.
+    seed_strategy : {'windowed_fixed', 'territory_adaptive'}, optional
+        How to seed per-pole samples.
+
+        - ``'windowed_fixed'`` (default): fixed
+          ``seed_poles_window_npts`` points across
+          ``[E_r - K Γ, E_r + K Γ]`` for every pole, where
+          ``K = seed_poles_window_widths``. Simple, predictable
+          per-pole cost; over-samples dense clusters where
+          neighbour windows overlap.
+        - ``'territory_adaptive'``: for each pole, walks outward
+          in ``Γ/2`` steps up to the midpoint toward the
+          neighbouring pole (or the ``[e_min, e_max]`` boundary),
+          capped at ``seed_territory_max_wing_steps`` steps per
+          side. Also seeds the inter-pole midpoints themselves,
+          where interference dips tend to sit. Adapts density to
+          local peak spacing: sparser in dense clusters, denser
+          in isolated-peak regions (hence the wing cap).
     seed_poles_window_widths : float, optional
-        Half-width of the per-pole seed window in units of the
-        total resonance width ``Γ_total``. Default 2.0 (window
-        ``[E_r - 2Γ, E_r + 2Γ]``).
+        ``'windowed_fixed'`` only. Half-width of the per-pole
+        window in units of ``Γ_total``. Default 2.0.
     seed_poles_window_npts : int, optional
-        Number of seed points per pole, uniformly spaced across
-        the window. Default 7.
+        ``'windowed_fixed'`` only. Number of seed points per pole,
+        uniformly spaced across the window. Default 7.
+    seed_territory_max_wing_steps : int, optional
+        ``'territory_adaptive'`` only. Maximum ``Γ/2`` steps per
+        side on isolated peaks (bounds the wing-sample cost when
+        the next-pole midpoint is many widths away). Default 20
+        (covers ``±10 Γ``, where a Lorentzian has decayed to
+        ~1 percent of the peak amplitude).
     seed_background_per_decade : int, optional
-        Log-spaced background seed density. Default 5 points per
-        decade of ``[e_min, e_max]``.
+        Log-spaced background seed density, both strategies.
+        Default 5 points per decade of ``[e_min, e_max]``.
     return_diagnostics : bool, optional
         If True, return a :class:`LinearizationResult` with
         ``mesh``, ``sigma``, and iteration bookkeeping. Default
@@ -166,15 +241,27 @@ def linearize_reaction_xs(
         )
     if max_points < 2:
         raise ValueError(f'max_points must be at least 2, got {max_points!r}')
+    if seed_strategy not in _SEED_STRATEGIES:
+        raise ValueError(
+            f'seed_strategy must be one of {_SEED_STRATEGIES}; '
+            f'got {seed_strategy!r}'
+        )
     if options is None:
         options = RunOptions()
 
-    seed = _build_seed_mesh(
-        endf_dict, e_min, e_max,
-        poles_window_widths=seed_poles_window_widths,
-        poles_window_npts=seed_poles_window_npts,
-        background_per_decade=seed_background_per_decade,
-    )
+    if seed_strategy == 'windowed_fixed':
+        seed = _build_seed_mesh(
+            endf_dict, e_min, e_max,
+            poles_window_widths=seed_poles_window_widths,
+            poles_window_npts=seed_poles_window_npts,
+            background_per_decade=seed_background_per_decade,
+        )
+    else:
+        seed = _build_seed_mesh_territory_adaptive(
+            endf_dict, e_min, e_max,
+            max_wing_steps=seed_territory_max_wing_steps,
+            background_per_decade=seed_background_per_decade,
+        )
     if seed.size > max_points:
         warnings.warn(
             f'seed mesh ({seed.size} pts) already exceeds max_points '
@@ -222,6 +309,114 @@ def linearize_reaction_xs(
     return mesh, sigma
 
 
+def benchmark_seed_strategies(
+    endf_dict: dict,
+    reaction: str,
+    e_min: float,
+    e_max: float,
+    *,
+    tol_abs: float = 0.0,
+    tol_rel: float = 1e-3,
+    options: RunOptions | None = None,
+    strategies: tuple[str, ...] = _SEED_STRATEGIES,
+    verify_mesh_size: int = 50_000,
+    verify_log_spaced: bool = True,
+    max_points: int = 200_000,
+    max_iterations: int = 25,
+) -> SeedStrategyBenchmark:
+    """A/B compare seed strategies for :func:`linearize_reaction_xs`.
+
+    Runs each requested strategy with the same tolerance and
+    options, times each run, then measures the linear-interpolation
+    error of each strategy's output on a shared dense verification
+    mesh of ``verify_mesh_size`` points.
+
+    Intended for picking a default on a new file class or for
+    sanity-checking the two strategies on an unfamiliar corpus
+    file. Not a production hot path; the verification call to
+    :func:`endf_userpy.quantities.get_reaction_xs` dominates
+    wall time.
+
+    Parameters
+    ----------
+    endf_dict, reaction, e_min, e_max, tol_abs, tol_rel, options,
+    max_points, max_iterations
+        Forwarded verbatim to :func:`linearize_reaction_xs`.
+    strategies : tuple of str, optional
+        Which seed strategies to benchmark, in order. Defaults to
+        every registered strategy.
+    verify_mesh_size : int, optional
+        Number of points in the shared dense verification mesh.
+        Default 50 000 covers most RRR windows well; raise it for
+        high-level-density actinides where sub-resonance structure
+        is finer than a 50 k log-spaced sample can resolve.
+    verify_log_spaced : bool, optional
+        If True (default), build the verification mesh with
+        :func:`numpy.geomspace`; else :func:`numpy.linspace`.
+        Log-spaced is usually the right choice for an RRR window
+        spanning several decades of Ein.
+
+    Returns
+    -------
+    bench : :class:`SeedStrategyBenchmark`
+        Comparison bundle; one :class:`SeedStrategyComparison`
+        entry per requested strategy.
+    """
+    import time
+    unknown = [s for s in strategies if s not in _SEED_STRATEGIES]
+    if unknown:
+        raise ValueError(
+            f'unknown seed strategies: {unknown}; '
+            f'known: {_SEED_STRATEGIES}'
+        )
+    if options is None:
+        options = RunOptions()
+
+    if verify_log_spaced:
+        if e_min <= 0:
+            raise ValueError(
+                'verify_log_spaced=True requires e_min > 0; got '
+                f'e_min={e_min!r}'
+            )
+        verify_mesh = np.geomspace(e_min, e_max, verify_mesh_size)
+    else:
+        verify_mesh = np.linspace(e_min, e_max, verify_mesh_size)
+    verify_truth = np.asarray(
+        get_reaction_xs(endf_dict, reaction, verify_mesh, options=options),
+        dtype=float,
+    )
+
+    comparisons = []
+    for strat in strategies:
+        t0 = time.perf_counter()
+        result = linearize_reaction_xs(
+            endf_dict, reaction, e_min, e_max,
+            tol_abs=tol_abs, tol_rel=tol_rel, options=options,
+            max_points=max_points, max_iterations=max_iterations,
+            seed_strategy=strat,
+            return_diagnostics=True,
+        )
+        wall = time.perf_counter() - t0
+        xs_interp = np.interp(verify_mesh, result.mesh, result.sigma)
+        denom = np.maximum(np.abs(verify_truth), 1e-30)
+        rel_err = float(np.nanmax(np.abs(verify_truth - xs_interp) / denom))
+        seed_size = result.history[0]['n_mesh'] if result.history else result.mesh.size
+        comparisons.append(SeedStrategyComparison(
+            strategy=strat,
+            seed_size=int(seed_size),
+            final_size=int(result.mesh.size),
+            iterations=int(result.iterations),
+            wall_time_s=float(wall),
+            verify_max_rel_err=rel_err,
+            status=result.status,
+        ))
+
+    return SeedStrategyBenchmark(
+        verify_mesh_size=int(verify_mesh_size),
+        results=comparisons,
+    )
+
+
 # ----------------------------------------------------------------------
 # Seed construction
 # ----------------------------------------------------------------------
@@ -259,6 +454,77 @@ def _build_seed_mesh(
     arr = arr[(arr >= e_min) & (arr <= e_max)]
     arr = np.unique(arr)   # unique() returns sorted
     return arr
+
+
+def _build_seed_mesh_territory_adaptive(
+    endf_dict, e_min, e_max,
+    *, max_wing_steps, background_per_decade,
+) -> np.ndarray:
+    """Territory-tiled seed mesh: each pole owns the interval from
+    the midpoint to its left neighbour (or ``e_min``) to the
+    midpoint to its right neighbour (or ``e_max``), and seeds that
+    interval with ``Γ/2``-spaced samples capped at
+    ``max_wing_steps`` per side. Inter-pole midpoints are seeded
+    too so interference dips have a knot near them from iteration 0.
+
+    URR knots and a log-spaced background are added as in the
+    windowed-fixed strategy so URR-only regions and resonance-less
+    files still get sensible coverage.
+    """
+    pts = [float(e_min), float(e_max)]
+
+    poles = [
+        (float(er), float(gt))
+        for er, gt in _extract_resonance_seed_points(endf_dict)
+        if gt > 0 and np.isfinite(er) and e_min <= er <= e_max
+    ]
+    poles.sort(key=lambda p: p[0])
+    n_poles = len(poles)
+
+    for i, (er, gamma) in enumerate(poles):
+        # Left territory boundary: midpoint to previous in-range pole,
+        # or e_min if this is the first.
+        if i == 0:
+            left_bnd = float(e_min)
+        else:
+            left_bnd = 0.5 * (poles[i - 1][0] + er)
+        # Right territory boundary: midpoint to next in-range pole,
+        # or e_max if this is the last.
+        if i == n_poles - 1:
+            right_bnd = float(e_max)
+        else:
+            right_bnd = 0.5 * (er + poles[i + 1][0])
+
+        pts.append(er)
+        pts.append(left_bnd)
+        pts.append(right_bnd)
+
+        step = 0.5 * gamma
+        # Walk left of the pole in Γ/2 steps, stopping at the
+        # territory boundary or after ``max_wing_steps`` steps.
+        for k in range(1, max_wing_steps + 1):
+            e_k = er - k * step
+            if e_k <= left_bnd:
+                break
+            pts.append(e_k)
+        # Walk right of the pole likewise.
+        for k in range(1, max_wing_steps + 1):
+            e_k = er + k * step
+            if e_k >= right_bnd:
+                break
+            pts.append(e_k)
+
+    # URR knots (natural mesh for the averaged URR XS).
+    pts.extend(float(e) for e in _extract_urr_energy_knots(endf_dict))
+
+    # Log-spaced background filler.
+    if background_per_decade > 0:
+        n_bg = max(2, int(np.log10(e_max / e_min) * background_per_decade))
+        pts.extend(np.geomspace(e_min, e_max, n_bg).tolist())
+
+    arr = np.asarray(pts, dtype=float)
+    arr = arr[(arr >= e_min) & (arr <= e_max)]
+    return np.unique(arr)
 
 
 def _extract_resonance_seed_points(endf_dict):
