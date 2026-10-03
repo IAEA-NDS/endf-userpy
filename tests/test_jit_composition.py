@@ -3,24 +3,18 @@ path under ``RunOptions(backend='jax', include_resonance=True)``.
 
 Issue #308 opened a concern that composition routed through
 ``primitives.tab1.interp`` and would trigger a
-``TracerArrayConversionError`` on tracer input, forcing the jit
-test suite in :mod:`test_mf6_law1_gamma_isotropic_collapse` to
-pass ``include_resonance=False`` as a workaround. Follow-up
-investigation found:
+``TracerArrayConversionError`` on tracer input. The Reich-Moore
+(LRF=3) composition path turned out to be jit-safe end-to-end
+(verified by the jit tests in
+:mod:`test_mf6_law1_gamma_isotropic_collapse` after the #308
+cleanup PR reverted the ``include_resonance=False`` opt-out).
+Issue #314 then separately fixed the MLBW (LRF=2) preprocessor's
+unconditional-dummy-channel append so MLBW is jit-safe too.
 
-- The Reich-Moore (LRF=3) composition path IS jit-safe end-to-end;
-  the ``test_mf6_law1_gamma_isotropic_collapse`` jit tests pass
-  with the physics-first ``include_resonance=True`` default on
-  U-233 and Al-27 (opt-out reverted in this PR).
-- The MLBW (LRF=2) preprocessor contains an unconditional Python
-  branch (``if gj_dif > 1e-30`` in ``_build_channel_table``) that
-  triggers a ``TracerBoolConversionError`` under ``@jax.jit``.
-  Tracked separately so #308 can close on the resolved RM
-  surface.
-
-These tests pin the RM composition surface. The eager-JAX test
-below additionally exercises MLBW (Nb-93) in the eager-trace
-regime, which does work.
+These tests pin both composition surfaces (RM and MLBW) under
+``@jax.jit`` and under eager JAX, so a regression in either
+preprocessor's jit-safety surfaces here before showing up inside
+a user workload.
 """
 from __future__ import annotations
 
@@ -130,11 +124,49 @@ def test_get_reaction_xs_eager_jax_with_rm_composition(u235_dict):
 
 
 @pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_get_reaction_xs_under_jit_with_mlbw_composition(nb93_dict):
+    """Issue #314 regression: MLBW composition under ``@jax.jit``
+    with ``backend='jax'`` and ``include_resonance=True`` must not
+    raise ``TracerBoolConversionError`` from the dummy-channel
+    branch in the MLBW preprocessor, and must match the numpy path
+    numerically. Fix is in
+    :mod:`mfsec_interpretation.mf2_interpretation_mlbw_preproc`:
+    the dummy potential-only channel is now appended
+    unconditionally with its weight clamped to a non-negative
+    scalar, so the preproc output shape no longer depends on a
+    (possibly-traced) ``gj_dif``."""
+    import jax
+    import jax.numpy as jnp
+
+    ein_np = np.geomspace(1.0, 500.0, 16)
+    xp_jax = array_ns.get_backend('jax')
+    xp_np = array_ns.get_backend('numpy')
+    opts_jax = RunOptions(backend=xp_jax)
+    opts_np = RunOptions(backend=xp_np)
+
+    @jax.jit
+    def jit_go(ein_arg):
+        return get_reaction_xs(
+            nb93_dict, '(n,g)', ein_arg, options=opts_jax,
+        )
+
+    out_jit = np.asarray(jit_go(jnp.asarray(ein_np)))
+    out_np = np.asarray(
+        get_reaction_xs(nb93_dict, '(n,g)', ein_np, options=opts_np)
+    )
+    rel = np.abs(out_jit - out_np) / np.maximum(np.abs(out_np), 1e-30)
+    assert np.all(rel < 1e-6), (
+        f'JIT MLBW composition disagrees with numpy by max rel diff '
+        f'{rel.max():.3e}; dummy-channel append may be contributing '
+        f'non-zero where it should contribute zero'
+    )
+
+
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
 def test_get_reaction_xs_eager_jax_with_mlbw_composition(nb93_dict):
-    """Eager JAX through MLBW composition works even though the
-    jit path fails (see the module docstring for the MLBW preproc
-    tracer-branch issue). Pins that the autodiff / eager jax path
-    is not broken."""
+    """Eager JAX through MLBW composition. Catches regressions in
+    the dummy-channel append (issue #314) that would only surface
+    on live tracers."""
     import jax.numpy as jnp
 
     ein = jnp.array([1.0, 10.0, 100.0, 1000.0])

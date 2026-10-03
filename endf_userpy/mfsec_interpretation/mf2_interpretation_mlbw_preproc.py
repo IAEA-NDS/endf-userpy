@@ -393,23 +393,35 @@ def mlbw_data_from_endf_dict(
         # convention (SAMMY / NJOY) is to lump that missing weight into
         # a single dummy potential-only channel so total potential
         # scattering is still right.
+        #
+        # Append the dummy channel UNCONDITIONALLY so the preproc
+        # output shape doesn't depend on a (possibly-traced) value of
+        # ``gj_dif``. ``spi`` enters as ``xp.asarray(d_range['SPI'])``
+        # for mesh-knot autodiff (issue #159), so under xp=jax the
+        # sum downstream is a tracer and a Python ``if`` on it raises
+        # TracerBoolConversionError (issue #314). The dummy
+        # resonance carries zero widths, so if ``gj_dif`` is zero
+        # (file already supplied the full statistical weight) it
+        # contributes zero to every reconstructed cross section: the
+        # Breit-Wigner sum is scaled by ``gn * gg`` (both zero), and
+        # the potential-scattering term is scaled by the channel's
+        # ``g_c = gj_dif`` (also zero). ``xp.maximum`` clamps a
+        # negative over-count (shouldn't happen but could due to
+        # rounding) to zero so a negative weight never enters the
+        # downstream sum.
         gj_sum = sum(ch_g_list[ch_base + c] for c in range(len(j2_unique)))
         gj_target = 2.0 * L + 1.0
-        gj_dif = gj_target - gj_sum
-        if gj_dif > 1e-30:
-            ch_l_list.append(L)
-            ch_g_list.append(gj_dif)
-            # A "dummy" resonance at a tiny energy carries the missing
-            # potential-scattering channel. No widths => contributes
-            # only through phi_L in the sct/pot sums.
-            dummy_ch = len(ch_l_list) - 1
-            res_channel_list.append(dummy_ch)
-            res_l_list.append(L)
-            res_er_list.append(1.0e-12)
-            res_gn_list.append(0.0)
-            res_gg_list.append(0.0)
-            res_gf_list.append(0.0)
-            res_gx_list.append(0.0)
+        gj_dif = xp.maximum(gj_target - gj_sum, 0.0)
+        ch_l_list.append(L)
+        ch_g_list.append(gj_dif)
+        dummy_ch = len(ch_l_list) - 1
+        res_channel_list.append(dummy_ch)
+        res_l_list.append(L)
+        res_er_list.append(1.0e-12)
+        res_gn_list.append(0.0)
+        res_gg_list.append(0.0)
+        res_gf_list.append(0.0)
+        res_gx_list.append(0.0)
 
     # Consolidate QX to a single scalar (all matching in practice; take
     # the first one).
