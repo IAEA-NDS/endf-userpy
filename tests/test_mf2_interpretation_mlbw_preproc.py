@@ -259,20 +259,27 @@ def _nb93_available():
 
 @pytest.mark.skipif(not _nb93_available(), reason='Nb-93 ENDF file not available')
 def test_nb93_channel_and_resonance_counts_match_reference():
-    """Preprocess Nb-93 and check the top-level structural counts
-    (number of channels, number of resonances including the dummy
-    potential-only rows). Ground truth: 7 channels, 202 resonances
-    -- verified via the JAX prototype's reference preprocessor on
-    branch feature_resonance.
+    """Preprocess Nb-93 and check the top-level structural counts.
+    Baseline: Nb-93 has 2 L-groups (L=0, L=1), 200 file-listed
+    resonances. The MLBW preprocessor appends ONE dummy
+    potential-only channel per L-group unconditionally (issue
+    #314: previously conditional, now unconditional so the
+    preproc output shape is independent of the possibly-traced
+    SPI value under xp=jax; see mlbw_preproc). Expected totals:
 
-    If either count drifts, chances are the missing-J-multiplicity
-    dummy-channel accounting broke."""
+      - channels: 6 J-channels (3 per L for Nb-93) + 2 dummies = 8
+      - resonances: 200 real + 2 dummies = 202 real-weight + 1
+        extra dummy where previously the L-group didn't need one
+        = 203
+
+    If either count drifts beyond these, the missing-J-
+    multiplicity dummy-channel accounting broke."""
     from endf_parserpy import EndfParserCpp
     p = EndfParserCpp()
     d = p.parsefile(resolve_nb93(), include=[1, 2])
     data = pre.mlbw_data_from_endf_dict(d)
-    assert data.ch_l.shape[0] == 7
-    assert data.res_er.shape[0] == 202
+    assert data.ch_l.shape[0] == 8
+    assert data.res_er.shape[0] == 203
     # ki also independently verifiable: for Nb-93 (AWRI ~ 92.1) it's
     # ~2.17e-3 in the file's unit convention.
     assert 2.15e-3 < data.ki < 2.20e-3
