@@ -376,9 +376,11 @@ def _get_reaction_xs_impl(
             xs = xp.where(
                 cur_xs_ref == 0.0, xs + mt5_xs_all, xs,
             )
-            mt5_xs = mt5_xs_all
-            if xp.any(mt5_xs != 0.0):
-                module_logger.debug(f'include MF6/MT5 component for MT={mt}')
+            # Debug log fires unconditionally; under jax jit the
+            # `xp.any(mt5_xs != 0.0)` guard would trace into a
+            # TracerBoolConversionError, and the message is already
+            # filtered by the logging level.
+            module_logger.debug(f'MF6/MT5 component considered for MT={mt}')
     return xs
 
 
