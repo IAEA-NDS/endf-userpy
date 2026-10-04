@@ -127,6 +127,7 @@ Not covered:
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -582,16 +583,32 @@ def reconstruct(data: URRData, energies_in, xp,
         backends; the numba backend always uses the default.
     """
     xp.raise_if_needed_but_missing('numba')
-    if xp.wants_accelerator('numba') and xp.accelerator_available('numba'):
-        if quadrature != 'gauss_legendre_32':
-            raise NotImplementedError(
-                f'numba backend only supports the default '
-                f"quadrature='gauss_legendre_32'; got "
-                f'{quadrature!r}. Switch to numpy or JAX to use '
-                f"'ross_10'."
-            )
+    # Enter the numba kernel only when the quadrature is one it
+    # supports. Any other value (today only 'ross_10') falls through
+    # to the array-agnostic path below, which runs on NumbaBackend's
+    # inherited numpy array ops and still produces a correct result.
+    # Issue #315: previously raised NotImplementedError here; now
+    # emits one UserWarning per call so the user still knows the
+    # kernel didn't fire, but the query returns the right answer.
+    numba_ok = (
+        xp.wants_accelerator('numba')
+        and xp.accelerator_available('numba')
+    )
+    if numba_ok and quadrature == 'gauss_legendre_32':
         from . import mf2_interpretation_urr_numba as _numba
         return _numba.reconstruct(data, energies_in)
+    if numba_ok and quadrature != 'gauss_legendre_32':
+        warnings.warn(
+            f'URR reconstruction fell back to the array-agnostic '
+            f'(numpy / JAX) path because the numba kernel only '
+            f"supports quadrature='gauss_legendre_32'; got "
+            f'{quadrature!r}. The result is correct, only the '
+            f'numba speedup for this call is lost. Pass '
+            f"RunOptions(urr_quadrature='gauss_legendre_32') to "
+            f'take the fast path, or RunOptions(backend='
+            f"'numpy') to silence this warning.",
+            UserWarning, stacklevel=3,
+        )
     if quadrature not in ('gauss_legendre_32', 'ross_10'):
         raise ValueError(
             f"quadrature must be 'gauss_legendre_32' or 'ross_10'; "
