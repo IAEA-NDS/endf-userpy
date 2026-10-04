@@ -31,6 +31,131 @@ from .mfsec_interpretation.mf3_interpretation import (
 _isomer_warning_seen = set()
 
 
+# Chance-breakdown fission MTs: MT 19 = first-chance (n,f), MT 20 =
+# second-chance (n,nf), MT 21 = third-chance (n,2nf), MT 38 =
+# fourth-chance (n,3nf). ENDF-6: MT 18 (total fission) = sum of these.
+_CHANCE_BREAKDOWN_FISSION_MTS = frozenset({19, 20, 21, 38})
+
+
+def _file_has_mf2_fission_widths(endf_dict) -> bool:
+    """True iff any MF2 resonance range in the file carries non-zero
+    fission widths (``GF`` for MLBW, ``GFA``/``GFB`` for Reich-Moore,
+    fission-flagged channel widths for RML).
+
+    Walks only the parsed-dict metadata; does no reconstruction. Used
+    by the chance-breakdown-fission guard in the user-facing XS entry
+    points (#311): if the file carries total-fission widths in MF2 and
+    the user asks for a chance-breakdown MT (19/20/21/38), composing
+    the widths with the chance MT would overstate the resonance
+    contribution, so we fail loudly rather than return a wrong answer.
+    """
+    if 2 not in endf_dict or 151 not in endf_dict[2]:
+        return False
+    for iso in endf_dict[2][151].get('isotope', {}).values():
+        for rng in iso.get('range', {}).values():
+            lru = int(rng.get('LRU', 0))
+            lrf = int(rng.get('LRF', 0))
+            if lru != 1:
+                continue
+            # ``endf_parserpy`` names this ``l_group`` (>=0.17) or
+            # ``spingroup`` (older); same content.
+            d_grp = rng.get('l_group') or rng.get('spingroup') or {}
+            for d_l in d_grp.values():
+                # MLBW / RM share GF column in the per-resonance table.
+                for key in ('GF', 'GFA', 'GFB'):
+                    column = d_l.get(key, None)
+                    if column is None:
+                        continue
+                    values = (
+                        column.values() if isinstance(column, dict) else column
+                    )
+                    for v in values:
+                        if abs(float(v)) > 0.0:
+                            return True
+                # LRF=7 RML stores widths in a per-channel GAM table
+                # keyed by channel; the fission channel is flagged by
+                # KPS=0 (?) in the channel header. Pragmatic shortcut:
+                # treat any non-zero per-channel GAM as potential
+                # fission on an RML file. False positives here are
+                # cheap (we just raise where we might otherwise
+                # silently miscompose).
+                if lrf == 7:
+                    gam = d_l.get('GAM', None)
+                    if gam is None:
+                        continue
+                    try:
+                        values = (
+                            gam.values() if isinstance(gam, dict)
+                            else np.asarray(gam, dtype=float).ravel()
+                        )
+                    except Exception:
+                        continue
+                    for v in values:
+                        if abs(float(v)) > 0.0:
+                            return True
+    return False
+
+
+def _check_particle_production_mode1(
+    endf_dict, user_mts, zap, mts, _warnings,
+):
+    """Issue #311 mode 1 for particle-production entry points.
+
+    Record the user-requested MT when the file carries no MT that
+    the particle-production selector would admit for this
+    ``(reaction, zap)`` pair. Pre-iteration precomputation of the
+    same admission decision the four particle-production
+    dispatchers (xs / dxs_dE / dxs_dmu / ddxs) make inside their
+    ``compute_cumulative_quantity`` loops, keyed on
+    ``satisfies_particle_production_select`` + ``contains_zap``.
+    """
+    if _warnings is None or not user_mts:
+        return
+    avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
+    missing_user = [mt for mt in user_mts if mt not in avail_mts]
+    if not missing_user:
+        return
+    admitted_any = any(
+        selectors.contains_zap(endf_dict, mt, zap)
+        and selectors.satisfies_particle_production_select(
+            endf_dict, mt, user_mts, zap,
+        )
+        for mt in mts
+    )
+    if admitted_any:
+        return
+    _warnings.missing_user_mts.extend(missing_user)
+
+
+def _check_fission_chance_breakdown_vs_mf2(
+    endf_dict, user_mts, reaction, options,
+):
+    """Raise if the user's reaction string resolves to a chance-
+    breakdown fission MT (19/20/21/38) and the file's MF2 carries
+    fission widths. See #311.
+
+    MF2 fission widths represent total fission (MT 18); composing
+    them with a chance-breakdown MT would overstate the resonance
+    contribution above threshold. The honest answer is to point the
+    user at MT 18 or at ``include_resonance=False``.
+    """
+    if not options.include_resonance:
+        return
+    bad = [mt for mt in user_mts if mt in _CHANCE_BREAKDOWN_FISSION_MTS]
+    if not bad or not _file_has_mf2_fission_widths(endf_dict):
+        return
+    raise ValueError(
+        f'Reaction {reaction!r} resolves to MT {bad[0]} (chance-'
+        f'breakdown fission: first/second/third/fourth-chance). '
+        f'This file\'s MF2 carries fission widths that describe '
+        f'TOTAL fission (ENDF-6: MT 18 = MT 19 + MT 20 + MT 21 + '
+        f'MT 38); composing them with MT {bad[0]} would overstate '
+        f'the resonance contribution above threshold. Query '
+        f"'(n,fission)' for MT 18 (total fission), or set "
+        f'RunOptions(include_resonance=False) to use raw MF3 only.'
+    )
+
+
 def _warn_if_missing_isomer_routing(
     endf_dict, residual_str, za_residual, lfs, mt5_contrib
 ):
@@ -316,12 +441,18 @@ def _get_reaction_xs_impl(
 ):
     xp = options.backend
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    _check_fission_chance_breakdown_vs_mf2(
+        endf_dict, user_mts, reaction, options,
+    )
+    if _warnings is not None:
+        _warnings.user_mts.update(user_mts)
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
     iter_mts = avail_mts.copy()
     iter_mts.update(user_mts)
     energies_in_xp = xp.asarray(energies_in)
     xs = xp.zeros_like(energies_in_xp, dtype=xp.float64)
     proj = prop.get_projectile(endf_dict)
+    admitted_count = 0
     for mt in sorted(iter_mts):
         module_logger.debug(f'consider MT={mt} for reaction xs')
         should_select = selectors.satisfies_select_heuristic(
@@ -338,6 +469,7 @@ def _get_reaction_xs_impl(
                 options=options, _warnings=_warnings,
             )
             xs = xs + cur_xs
+            admitted_count += 1
 
         # MT5 fallback component: adds a redistributed MT5
         # contribution at Es where the direct MT is zero. Only
@@ -381,6 +513,14 @@ def _get_reaction_xs_impl(
             # TracerBoolConversionError, and the message is already
             # filtered by the logging level.
             module_logger.debug(f'MF6/MT5 component considered for MT={mt}')
+    # Mode 1 (#311): user asked for an MT the file does not carry
+    # AND no admitted partial could synthesise it via the sum rule.
+    # Signal the empty result so a silent-zero does not look like a
+    # correct answer.
+    if _warnings is not None and admitted_count == 0:
+        for mt in user_mts:
+            if mt not in avail_mts:
+                _warnings.missing_user_mts.append(mt)
     return xs
 
 
@@ -467,6 +607,11 @@ def _get_particle_production_xs_impl(
     endf_dict, reaction, particle, energies_in, *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    _check_fission_chance_breakdown_vs_mf2(
+        endf_dict, user_mts, reaction, options,
+    )
+    if _warnings is not None:
+        _warnings.user_mts.update(user_mts)
     zap = physconst.get_zap_for_particle(particle)
     # Widened iteration (union of MF3+MF12+MF13+MF15 keys) so MTs
     # that carry gamma production only in MF12/MF13/MF15 without an
@@ -474,6 +619,7 @@ def _get_particle_production_xs_impl(
     # cumulative-sum iteration (issue #130). Non-gamma queries
     # over the wider list are still filtered correctly by contains_zap.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
+    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _warnings)
     warnings_hits = _warnings
     return quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt, zap, einc: quant_mt_zap.compute_prodxs(
@@ -533,12 +679,18 @@ def _get_particle_production_dxs_dE_impl(
     *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    _check_fission_chance_breakdown_vs_mf2(
+        endf_dict, user_mts, reaction, options,
+    )
+    if _warnings is not None:
+        _warnings.user_mts.update(user_mts)
     zap = physconst.get_zap_for_particle(particle)
     xp = options.backend
     broadening_mesh_bounds = options.broadening_mesh_bounds
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
+    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _warnings)
 
     def select(endf_dict, mt, zap, einc, eouts):
         return (
@@ -694,8 +846,14 @@ def _get_particle_production_dxs_dmu_impl(
     options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    _check_fission_chance_breakdown_vs_mf2(
+        endf_dict, user_mts, reaction, options,
+    )
+    if _warnings is not None:
+        _warnings.user_mts.update(user_mts)
     zap = physconst.get_zap_for_particle(particle)
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
+    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _warnings)
     return quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt, zap, einc, mus:
             quant_mt_zap.compute_daxs(
@@ -807,10 +965,16 @@ def _get_particle_production_ddxs_impl(
     angle_cosines_out, broadening, *, options, _warnings=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
+    _check_fission_chance_breakdown_vs_mf2(
+        endf_dict, user_mts, reaction, options,
+    )
+    if _warnings is not None:
+        _warnings.user_mts.update(user_mts)
     zap = physconst.get_zap_for_particle(particle)
     xp = options.backend
     broadening_mesh_bounds = options.broadening_mesh_bounds
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
+    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _warnings)
 
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     if kernel is None:

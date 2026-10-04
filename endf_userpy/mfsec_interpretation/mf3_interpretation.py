@@ -32,6 +32,25 @@ class _WarningHits:
     """
     above_range: dict = field(default_factory=dict)
     resonance_range: dict = field(default_factory=dict)
+    # Issue #311: visibility for silent-zero / silent-raw-MF3 cases
+    # when the user's reaction string resolves to an MT the file or
+    # the resonance-composition maps cannot handle.
+    missing_user_mts: list = field(default_factory=list)
+    """MTs the user requested (via reaction string) that are
+    neither tabulated in the file nor synthesisable from admitted
+    partials. Populated at the top-level ``_impl`` function after
+    the cumulative-sum iteration completes. Mode 1."""
+    unmapped_composition_mts: list = field(default_factory=list)
+    """MTs the user requested that are in the file but have no
+    entry in the active MF2 formalism's MT-to-partial-keys map, so
+    the composition layer silently returned raw MF3 for them.
+    Populated inside ``reconstruct_resonance_xs``, scoped to
+    ``user_mts`` to avoid noise. Mode 2."""
+    user_mts: set = field(default_factory=set)
+    """MTs the user explicitly requested at the top-level entry
+    point. Threaded here so the composition layer can scope mode 2
+    reporting to user-requested MTs only, not the widened
+    iteration set in differential queries."""
 
 
 def _emit_summary_warnings(hits, options):
@@ -77,6 +96,42 @@ def _emit_summary_warnings(hits, options):
             f'subtractive background cross section; the physical '
             f'cross section requires resonance reconstruction from '
             f'MF2 (see README "Known limitations").',
+            UserWarning, stacklevel=3,
+        )
+    # Issue #311 mode 1: user-requested MT absent AND no admitted
+    # partial could synthesise it. Fires with the file's MT list
+    # so the user can see what was actually available.
+    if hits.missing_user_mts:
+        mt_list = ', '.join(f'MT={mt}' for mt in sorted(set(hits.missing_user_mts)))
+        warnings.warn(
+            f'reaction string resolved to {mt_list}, which the '
+            f'file does not tabulate; no admitted partial could '
+            f'synthesise the requested cross section via the sum '
+            f'rule, so the result is zero. Common cause: '
+            f'ambiguous fission reaction spellings -- '
+            f"'(n,fission)' resolves to MT 18 (total fission, "
+            f"usually available), '(n,f)' to MT 19 (first-chance "
+            f'fission, often absent). Use '
+            f"endf_userpy.quantities_mt_zap.get_reaction_mt_numbers "
+            f"to inspect what the file carries.",
+            UserWarning, stacklevel=3,
+        )
+    # Issue #311 mode 2: user requested MTs tabulated in MF3 but
+    # not present in the active MF2 formalism's MT-to-partial-keys
+    # map. The composition layer returned raw MF3 for them instead
+    # of composing a resonance contribution.
+    if hits.unmapped_composition_mts:
+        mt_list = ', '.join(
+            f'MT={mt}' for mt in sorted(set(hits.unmapped_composition_mts))
+        )
+        warnings.warn(
+            f'{mt_list} is in MF3 but has no entry in the active '
+            f'MF2 formalism\'s MT-to-partial-keys map; the '
+            f'composition layer returned raw MF3 only for these '
+            f'MTs, without adding a resonance contribution. If '
+            f'the file carries MF2 widths that should contribute '
+            f'to these MTs, the returned cross section is '
+            f'incomplete in the resolved-resonance region.',
             UserWarning, stacklevel=3,
         )
 

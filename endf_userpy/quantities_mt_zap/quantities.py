@@ -234,6 +234,7 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
         result = _res_comp.compute_reconstructed_cross_section(
             endf_dict, mt, energies_in, xp,
             urr_quadrature=options.urr_quadrature,
+            _warnings=_warnings,
         )
         # The composition layer uses ``compute_cross_section_agnostic``
         # so it bypasses the MF3 policy machinery. Reapply the
