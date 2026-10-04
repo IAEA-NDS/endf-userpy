@@ -31,71 +31,6 @@ from .mfsec_interpretation.mf3_interpretation import (
 _isomer_warning_seen = set()
 
 
-# Chance-breakdown fission MTs: MT 19 = first-chance (n,f), MT 20 =
-# second-chance (n,nf), MT 21 = third-chance (n,2nf), MT 38 =
-# fourth-chance (n,3nf). ENDF-6: MT 18 (total fission) = sum of these.
-_CHANCE_BREAKDOWN_FISSION_MTS = frozenset({19, 20, 21, 38})
-
-
-def _file_has_mf2_fission_widths(endf_dict) -> bool:
-    """True iff any MF2 resonance range in the file carries non-zero
-    fission widths (``GF`` for MLBW, ``GFA``/``GFB`` for Reich-Moore,
-    fission-flagged channel widths for RML).
-
-    Walks only the parsed-dict metadata; does no reconstruction. Used
-    by the chance-breakdown-fission guard in the user-facing XS entry
-    points (#311): if the file carries total-fission widths in MF2 and
-    the user asks for a chance-breakdown MT (19/20/21/38), composing
-    the widths with the chance MT would overstate the resonance
-    contribution, so we fail loudly rather than return a wrong answer.
-    """
-    if 2 not in endf_dict or 151 not in endf_dict[2]:
-        return False
-    for iso in endf_dict[2][151].get('isotope', {}).values():
-        for rng in iso.get('range', {}).values():
-            lru = int(rng.get('LRU', 0))
-            lrf = int(rng.get('LRF', 0))
-            if lru != 1:
-                continue
-            # ``endf_parserpy`` names this ``l_group`` (>=0.17) or
-            # ``spingroup`` (older); same content.
-            d_grp = rng.get('l_group') or rng.get('spingroup') or {}
-            for d_l in d_grp.values():
-                # MLBW / RM share GF column in the per-resonance table.
-                for key in ('GF', 'GFA', 'GFB'):
-                    column = d_l.get(key, None)
-                    if column is None:
-                        continue
-                    values = (
-                        column.values() if isinstance(column, dict) else column
-                    )
-                    for v in values:
-                        if abs(float(v)) > 0.0:
-                            return True
-                # LRF=7 RML stores widths in a per-channel GAM table
-                # keyed by channel; the fission channel is flagged by
-                # KPS=0 (?) in the channel header. Pragmatic shortcut:
-                # treat any non-zero per-channel GAM as potential
-                # fission on an RML file. False positives here are
-                # cheap (we just raise where we might otherwise
-                # silently miscompose).
-                if lrf == 7:
-                    gam = d_l.get('GAM', None)
-                    if gam is None:
-                        continue
-                    try:
-                        values = (
-                            gam.values() if isinstance(gam, dict)
-                            else np.asarray(gam, dtype=float).ravel()
-                        )
-                    except Exception:
-                        continue
-                    for v in values:
-                        if abs(float(v)) > 0.0:
-                            return True
-    return False
-
-
 def _check_particle_production_mode1(
     endf_dict, user_mts, zap, mts, _warnings,
 ):
@@ -103,11 +38,12 @@ def _check_particle_production_mode1(
 
     Record the user-requested MT when the file carries no MT that
     the particle-production selector would admit for this
-    ``(reaction, zap)`` pair. Pre-iteration precomputation of the
-    same admission decision the four particle-production
-    dispatchers (xs / dxs_dE / dxs_dmu / ddxs) make inside their
-    ``compute_cumulative_quantity`` loops, keyed on
-    ``satisfies_particle_production_select`` + ``contains_zap``.
+    ``(reaction, zap)`` pair. The admission heuristic itself lives
+    at the selector layer
+    (:func:`selectors.any_mt_admitted_for_particle_production`);
+    this helper only decides whether to append to ``_warnings`` and
+    stays in the top-level API layer alongside the other policy /
+    warning-recording glue.
     """
     if _warnings is None or not user_mts:
         return
@@ -115,14 +51,9 @@ def _check_particle_production_mode1(
     missing_user = [mt for mt in user_mts if mt not in avail_mts]
     if not missing_user:
         return
-    admitted_any = any(
-        selectors.contains_zap(endf_dict, mt, zap)
-        and selectors.satisfies_particle_production_select(
-            endf_dict, mt, user_mts, zap,
-        )
-        for mt in mts
-    )
-    if admitted_any:
+    if selectors.any_mt_admitted_for_particle_production(
+        endf_dict, user_mts, zap, mts,
+    ):
         return
     _warnings.missing_user_mts.extend(missing_user)
 
@@ -141,8 +72,8 @@ def _check_fission_chance_breakdown_vs_mf2(
     """
     if not options.include_resonance:
         return
-    bad = [mt for mt in user_mts if mt in _CHANCE_BREAKDOWN_FISSION_MTS]
-    if not bad or not _file_has_mf2_fission_widths(endf_dict):
+    bad = [mt for mt in user_mts if mt in reac.CHANCE_BREAKDOWN_FISSION_MTS]
+    if not bad or not prop.has_mf2_fission_widths(endf_dict):
         return
     raise ValueError(
         f'Reaction {reaction!r} resolves to MT {bad[0]} (chance-'

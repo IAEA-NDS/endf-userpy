@@ -176,3 +176,62 @@ def has_mf14_mt(endf_dict, mt):
 
 def has_mf15_mt(endf_dict, mt):
     return 15 in endf_dict and mt in endf_dict[15]
+
+
+def has_mf2_fission_widths(endf_dict):
+    """True iff any MF2 resonance range carries non-zero fission
+    widths (``GF`` for MLBW, ``GFA`` / ``GFB`` for Reich-Moore,
+    per-channel ``GAM`` for RML).
+
+    Walks parsed-dict metadata only; does no reconstruction. Used by
+    the chance-breakdown-fission guard in the user-facing XS entry
+    points (issue #311): if the file carries total-fission widths in
+    MF2 and the user asks for a chance-breakdown MT (19/20/21/38),
+    composing the widths with the chance MT would overstate the
+    resonance contribution.
+    """
+    import numpy as np
+    if 2 not in endf_dict or 151 not in endf_dict[2]:
+        return False
+    for iso in endf_dict[2][151].get('isotope', {}).values():
+        for rng in iso.get('range', {}).values():
+            lru = int(rng.get('LRU', 0))
+            lrf = int(rng.get('LRF', 0))
+            if lru != 1:
+                continue
+            # ``endf_parserpy`` names this ``l_group`` (>=0.17) or
+            # ``spingroup`` (older); same content.
+            d_grp = rng.get('l_group') or rng.get('spingroup') or {}
+            for d_l in d_grp.values():
+                # MLBW / RM share GF / GFA / GFB columns.
+                for key in ('GF', 'GFA', 'GFB'):
+                    column = d_l.get(key, None)
+                    if column is None:
+                        continue
+                    values = (
+                        column.values() if isinstance(column, dict)
+                        else column
+                    )
+                    for v in values:
+                        if abs(float(v)) > 0.0:
+                            return True
+                # LRF=7 RML stores per-channel widths under GAM.
+                # Pragmatic shortcut: treat any non-zero per-channel
+                # GAM as a potential fission signal on an RML file;
+                # a false positive just makes the top-level guard
+                # raise a shade more aggressively.
+                if lrf == 7:
+                    gam = d_l.get('GAM', None)
+                    if gam is None:
+                        continue
+                    try:
+                        values = (
+                            gam.values() if isinstance(gam, dict)
+                            else np.asarray(gam, dtype=float).ravel()
+                        )
+                    except Exception:
+                        continue
+                    for v in values:
+                        if abs(float(v)) > 0.0:
+                            return True
+    return False

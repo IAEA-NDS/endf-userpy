@@ -559,3 +559,24 @@ def satisfies_particle_production_select(endf_dict, mt, user_mts, zap):
     if zap == physconst.PARTICLE_ZAP['g']:
         return satisfies_gamma_production_select(endf_dict, mt, user_mts)
     return satisfies_select_heuristic(endf_dict, mt, user_mts)
+
+
+def any_mt_admitted_for_particle_production(endf_dict, user_mts, zap, mts):
+    """True iff at least one MT in ``mts`` would be admitted by the
+    particle-production dispatcher for ``(user_mts, zap)``.
+
+    Shares the admission predicate with
+    :func:`satisfies_particle_production_select`
+    (``+`` :func:`contains_zap`): any MT that pairs with ``zap`` as
+    the ejectile and that the sum-rule heuristic admits for the
+    user-requested reaction. Used by the top-level mode 1 check in
+    ``endf_userpy.quantities`` (issue #311) to decide whether a
+    silent-zero result should be surfaced as a UserWarning.
+    """
+    return any(
+        contains_zap(endf_dict, mt, zap)
+        and satisfies_particle_production_select(
+            endf_dict, mt, user_mts, zap,
+        )
+        for mt in mts
+    )
