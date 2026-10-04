@@ -40,25 +40,32 @@ def nb93_endf_dict():
 
 
 def test_default_matches_xp_numpy_adapter(nb93_endf_dict):
-    """xp=None default and xp=numpy adapter bit-identical for
-    ``get_reaction_xs`` on the raw-MF3 path (no resonance
-    composition)."""
+    """``options=None`` default (``AutoBackend``) matches the
+    explicit ``NumpyBackend`` for ``get_reaction_xs``. Equality
+    is to machine precision rather than bit-identity because
+    ``AutoBackend`` opportunistically routes the MF2 resonance
+    reconstruction through the hand-fused numba kernel when
+    numba is installed, which differs from the array-agnostic
+    numpy path by O(1) ULP due to operation ordering / fma
+    rearrangement in the kernel (#315)."""
     ein = np.array([1e-3, 1.0, 100.0, 5000.0, 20000.0])
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', UserWarning)
         default = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein))
         xp_np = array_ns.get_backend('numpy')
         with_xp = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(backend=xp_np)))
-    np.testing.assert_array_equal(default, with_xp)
+    np.testing.assert_allclose(default, with_xp, rtol=1e-14, atol=0.0)
 
 
 def test_default_matches_xp_numpy_with_resonance(nb93_endf_dict):
-    """Same for the include_resonance=True composition path."""
+    """Same ULP-tolerance comparison for the ``include_resonance=True``
+    composition path. See the sibling test above for why the
+    assertion is relaxed from bit-identity (#315)."""
     ein = np.array([1e-3, 1.0, 100.0])
     default = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(include_resonance=True)))
     xp_np = array_ns.get_backend('numpy')
     with_xp = np.asarray(get_reaction_xs(nb93_endf_dict, '(n,total)', ein, options=RunOptions(include_resonance=True, backend=xp_np)))
-    np.testing.assert_array_equal(default, with_xp)
+    np.testing.assert_allclose(default, with_xp, rtol=1e-14, atol=0.0)
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')

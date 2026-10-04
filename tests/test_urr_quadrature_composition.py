@@ -16,6 +16,9 @@ import os
 import numpy as np
 import pytest
 
+import warnings
+
+from endf_userpy.primitives import array_ns
 from endf_userpy.quantities import get_reaction_xs
 from endf_userpy.run_options import RunOptions
 
@@ -115,3 +118,59 @@ def test_urr_quadrature_default_matches_gauss_legendre_explicit(pu239_endf_dict)
         ),
     )
     np.testing.assert_array_equal(xs_default, xs_explicit)
+
+
+def _numba_available():
+    return 'numba' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _pu239_available(), reason='CENDL-3.2 Pu-239 corpus missing')
+@pytest.mark.skipif(not _numba_available(), reason='numba not installed')
+def test_urr_numba_ross10_falls_back_to_numpy_with_warning(pu239_endf_dict):
+    """Issue #315: ``RunOptions(backend='numba', urr_quadrature='ross_10')``
+    on a file with an LSSF=0 URR range must not raise. The numba
+    kernel only supports ``'gauss_legendre_32'``; for Ross-10 the
+    URR dispatcher falls through to the array-agnostic (numpy /
+    JAX) path and emits a one-shot ``UserWarning`` naming the
+    fallback.
+
+    Pre-fix: raised ``NotImplementedError`` from
+    ``mf2_interpretation_urr.reconstruct``. Caller received a
+    composition layer warning instead of the real average XS;
+    cross-scheme comparison tests silently measured raw MF3 vs
+    Ross-10 and failed with ~100% rel diff."""
+    ein = np.linspace(2.0e3, 25.0e3, 20)
+    xp_numba = array_ns.get_backend('numba')
+    xp_numpy = array_ns.get_backend('numpy')
+    opts_numba_ross = RunOptions(
+        backend=xp_numba, include_resonance=True,
+        urr_quadrature='ross_10',
+    )
+    opts_numpy_ross = RunOptions(
+        backend=xp_numpy, include_resonance=True,
+        urr_quadrature='ross_10',
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        xs_numba = np.asarray(
+            get_reaction_xs(pu239_endf_dict, '(n,g)', ein, options=opts_numba_ross)
+        )
+    xs_numpy = np.asarray(
+        get_reaction_xs(pu239_endf_dict, '(n,g)', ein, options=opts_numpy_ross)
+    )
+
+    # Correctness: fallback result matches the numpy path pointwise.
+    np.testing.assert_allclose(xs_numba, xs_numpy, rtol=1e-12, atol=0.0)
+
+    # Warning: at least one UserWarning mentioning the fallback.
+    fb_warnings = [
+        w for w in caught
+        if issubclass(w.category, UserWarning)
+        and 'fell back' in str(w.message)
+        and 'ross_10' in str(w.message)
+    ]
+    assert fb_warnings, (
+        'expected a UserWarning naming the ross_10 fallback; '
+        f'got {[str(w.message)[:80] for w in caught]}'
+    )
