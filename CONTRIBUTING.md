@@ -4,6 +4,34 @@ Rules for adding tests to this repo, distilled from the bug-fix
 pull-request pattern that settled during issues #29–#65. Follow
 these when adding new tests or extending existing ones.
 
+## API design
+
+Three rules shape where state lives and keep the dict-first core
+philosophy from drifting:
+
+1. **Public API functions take `endf_dict` first and everything
+   else by keyword.** No session objects, no file-open context
+   managers; the parsed dict is the input. This keeps the surface
+   referentially transparent (`f(dict, x) == f(dict, x)`),
+   trivially testable, and trivially parallelisable.
+2. **Dataclasses carry data only.** Validation in `__post_init__`
+   is fine; `reconstruct` or `evaluate` methods are not. The
+   dataclasses in this repo (`RunOptions`, `MLBWData`, `TAB1`,
+   `URRData`, ...) are value objects, not objects in the OO
+   sense — they bundle arrays with shape / layout invariants that
+   a dict cannot express, and that is the only role they have.
+3. **Classes with methods appear only for polymorphism** (array
+   backends: `NumpyBackend`, `AutoBackend`, `JaxBackend`,
+   `NumbaBackend`) **or for scoped mutable state threaded through
+   an explicit argument** (per-call accumulators like
+   `_WarningHits`). Everywhere else: pure functions on dicts or
+   dataclasses.
+
+JAX PyTree registration of dataclasses is a *functional* move,
+not an OO one — it is metadata declaring how JAX should flatten
+the object for `tree_map` / `grad` / `vmap`. The dataclass stays
+passive; the user-facing API still takes `(endf_dict, ...)`.
+
 ## Testing conventions
 
 1. **"Does not raise" is not a test.** For any function that
