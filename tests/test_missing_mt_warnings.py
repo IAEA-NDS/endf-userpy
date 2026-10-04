@@ -38,7 +38,6 @@ from _corpus import resolve_u235, resolve_nb93  # noqa: E402
 from endf_userpy.quantities import (                      # noqa: E402
     get_reaction_xs,
     get_particle_production_xs,
-    get_particle_production_dxs_dE,
 )
 from endf_userpy.run_options import RunOptions             # noqa: E402
 
