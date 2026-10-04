@@ -171,25 +171,26 @@ class _QueryState:
     iteration set in differential queries."""
 
 
-def _emit_summary_warnings(hits, options):
+def _emit_summary_warnings(query_state, options):
     """Drain a :class:`_QueryState` into UserWarnings, at most one
     per policy family. Called by every top-level entry point in
     :mod:`endf_userpy.quantities` after its impl returns (see
-    issue #143). Silent when the corresponding hits dict is empty
-    or when the policy is a non-``warn_*`` variant.
+    issue #143). Silent when the corresponding ``query_state``
+    collection is empty or when the policy is a non-``warn_*``
+    variant.
     """
     ar_policy = options.above_range
     rr_policy = options.resonance_range
-    if hits.above_range and ar_policy in ('warn_nan', 'warn_zero'):
+    if query_state.above_range and ar_policy in ('warn_nan', 'warn_zero'):
         fill_word = 'NaN' if ar_policy == 'warn_nan' else '0'
-        n_mts = len(hits.above_range)
+        n_mts = len(query_state.above_range)
         total_above = sum(
-            n_above for _, n_above, _ in hits.above_range.values()
+            n_above for _, n_above, _ in query_state.above_range.values()
         )
         mt_summary = ', '.join(
             f'MT={mt} (max {e_max:.6g} eV, {n_above} pts)'
             for mt, (e_max, n_above, _) in
-            sorted(hits.above_range.items())
+            sorted(query_state.above_range.items())
         )
         warnings.warn(
             f'above_range: {total_above} out-of-mesh points across '
@@ -197,15 +198,15 @@ def _emit_summary_warnings(hits, options):
             f'Cross section is undefined above the evaluation range.',
             UserWarning, stacklevel=3,
         )
-    if hits.resonance_range and rr_policy in ('warn', 'warn_nan'):
+    if query_state.resonance_range and rr_policy in ('warn', 'warn_nan'):
         action = 'NaN' if rr_policy == 'warn_nan' else 'raw MF3 background'
-        n_mts = len(hits.resonance_range)
-        total_pts = sum(n for _, n, _, _ in hits.resonance_range.values())
+        n_mts = len(query_state.resonance_range)
+        total_pts = sum(n for _, n, _, _ in query_state.resonance_range.values())
         details = ', '.join(
             f'MT={mt} ({n_in} of {n_total} pts in RRR '
             f'[{el:.3g}, {eh:.3g}] eV)'
             for mt, (el, eh, n_in, n_total) in
-            sorted(hits.resonance_range.items())
+            sorted(query_state.resonance_range.items())
         )
         warnings.warn(
             f'resonance_range: {total_pts} in-RRR points across '
@@ -216,9 +217,9 @@ def _emit_summary_warnings(hits, options):
             f'MF2 (see README "Known limitations").',
             UserWarning, stacklevel=3,
         )
-    if hits.missing_user_mts:
+    if query_state.missing_user_mts:
         mt_list = ', '.join(
-            f'MT={mt}' for mt in sorted(set(hits.missing_user_mts))
+            f'MT={mt}' for mt in sorted(set(query_state.missing_user_mts))
         )
         warnings.warn(
             f'reaction string resolved to {mt_list}, which the '
@@ -233,9 +234,9 @@ def _emit_summary_warnings(hits, options):
             f"to inspect what the file carries.",
             UserWarning, stacklevel=3,
         )
-    if hits.unmapped_composition_mts:
+    if query_state.unmapped_composition_mts:
         mt_list = ', '.join(
-            f'MT={mt}' for mt in sorted(set(hits.unmapped_composition_mts))
+            f'MT={mt}' for mt in sorted(set(query_state.unmapped_composition_mts))
         )
         warnings.warn(
             f'{mt_list} is in MF3 but has no entry in the active '

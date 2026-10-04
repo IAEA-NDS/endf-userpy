@@ -164,9 +164,10 @@ def compute_xs_mt5_contrib(
     identified by ``mt``, or zeros if the file has no MF6/MT=5 or the
     reaction isn't unique-path-to-residual.
 
-    Runtime policies + backend live on ``options``; the accumulator
-    (``_query_state``) is threaded to the leaf reader so above-range
-    hits contribute to the top-level summary UserWarning.
+    Runtime policies + backend live on ``options``; the per-call
+    scratch state (``_query_state``) is threaded to the leaf reader
+    so above-range entries contribute to the top-level summary
+    UserWarning.
     """
     from ..run_options import RunOptions
     if options is None:
@@ -275,7 +276,7 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _query_state=None):
                 above_mask_np = einc_arr > e_max
                 fill = _handle_above_range(
                     options.above_range, mt, e_max,
-                    above_mask_np, einc_arr, hits=_query_state,
+                    above_mask_np, einc_arr, query_state=_query_state,
                 )
             else:
                 # tracer path: pick the fill from the policy name
@@ -315,11 +316,11 @@ def compute_prodxs(
     ``options=None`` resolves to a physics-first
     :class:`~endf_userpy.run_options.RunOptions`.
 
-    ``_query_state`` is the private ``_QueryState`` accumulator
+    ``_query_state`` is the private ``_QueryState`` scratch object
     threaded from the top-level entry points so above-range /
-    resonance-range hits populate the ONE summary UserWarning per
-    top-level query. ``None`` (default) triggers per-call warnings
-    from the leaf.
+    resonance-range entries populate the ONE summary UserWarning
+    per top-level query. ``None`` (default) triggers per-call
+    warnings from the leaf.
     """
     from ..run_options import RunOptions
     if options is None:

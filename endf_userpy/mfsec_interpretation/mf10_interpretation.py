@@ -60,7 +60,7 @@ def compute_cross_section(
     e_max = float(np.asarray(en_mesh, dtype=float).max())
     above_mask = en_out > e_max
     fill_value = _handle_above_range(
-        above_range, mt, e_max, above_mask, en_out, hits=_query_state,
+        above_range, mt, e_max, above_mask, en_out, query_state=_query_state,
     )
     xs = endf_interp1d(en_out, en_mesh, xs_mesh, intarr, nbtarr, outside_value=0.0)
     if above_mask.any() and fill_value != 0.0:

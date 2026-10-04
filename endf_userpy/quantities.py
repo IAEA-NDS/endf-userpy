@@ -357,11 +357,11 @@ def get_reaction_xs(
     """
     if options is None:
         options = RunOptions()
-    hits = _QueryState()
+    query_state = _QueryState()
     result = _get_reaction_xs_impl(
             endf_dict, reaction, energies_in, options=options,
-         _query_state=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
@@ -464,11 +464,11 @@ def get_residual_production_xs(
     """
     if options is None:
         options = RunOptions()
-    hits = _QueryState()
+    query_state = _QueryState()
     result = _get_residual_production_xs_impl(
             endf_dict, residual_nucleus, energies_in, options=options,
-         _query_state=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
@@ -524,11 +524,11 @@ def get_particle_production_xs(
     """
     if options is None:
         options = RunOptions()
-    hits = _QueryState()
+    query_state = _QueryState()
     result = _get_particle_production_xs_impl(
             endf_dict, reaction, particle, energies_in, options=options,
-         _query_state=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
@@ -594,12 +594,12 @@ def get_particle_production_dxs_dE(
     """
     if options is None:
         options = RunOptions()
-    hits = _QueryState()
+    query_state = _QueryState()
     result = _get_particle_production_dxs_dE_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             broadening, options=options,
-         _query_state=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
@@ -761,12 +761,12 @@ def get_particle_production_dxs_dmu(
     """
     if options is None:
         options = RunOptions()
-    hits = _QueryState()
+    query_state = _QueryState()
     result = _get_particle_production_dxs_dmu_impl(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,
             options=options,
-         _query_state=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
@@ -820,12 +820,12 @@ def get_particle_production_ddxs(
     """
     if options is None:
         options = RunOptions()
-    hits = _QueryState()
+    query_state = _QueryState()
     result = _get_particle_production_ddxs_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             angle_cosines_out, broadening, options=options,
-         _query_state=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
@@ -880,12 +880,12 @@ def get_particle_production_discrete_gamma_lines(
     xp = options.backend
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    hits = _QueryState()
+    query_state = _QueryState()
     result = discrete_gamma.extract_discrete_gamma_lines(
         endf_dict, mts, user_mts, energies_in,
         angle_cosines_out=angle_cosines_out, xp=xp,
     )
-    _emit_summary_warnings(hits, options)
+    _emit_summary_warnings(query_state, options)
     return result
 
 

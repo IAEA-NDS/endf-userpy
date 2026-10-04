@@ -37,7 +37,7 @@ def get_resolved_resonance_ranges(endf_dict):
     return ranges
 
 
-def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, hits=None):
+def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, query_state=None):
     """Common resonance-range policy implementation shared by every
     XS reader. Returns `(in_rrr_mask, fill_value)`: `in_rrr_mask` is
     True at Ein positions inside any LRU=1 range; `fill_value` is
@@ -76,10 +76,10 @@ def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, hits=None):
             f'reconstruction).'
         )
     if policy in ('warn', 'warn_nan'):
-        if hits is not None:
-            prev = hits.resonance_range.get(mt)
+        if query_state is not None:
+            prev = query_state.resonance_range.get(mt)
             if prev is None or n_in > prev[2]:
-                hits.resonance_range[mt] = (
+                query_state.resonance_range[mt] = (
                     el_union, eh_union, n_in, len(einc_arr),
                 )
         else:
@@ -101,15 +101,15 @@ def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, hits=None):
     return in_rrr_mask, None  # 'warn' / passthrough
 
 
-def _handle_above_range(policy, mt, e_max, above_mask, energies_in, hits=None):
+def _handle_above_range(policy, mt, e_max, above_mask, energies_in, query_state=None):
     """Common implementation of the `above_range` policy shared by
     every XS reader (see issue #28). Returns the numeric-fill value
     the caller should place at `above_mask` positions in its result
     array (`0.0` or `np.nan`), after either raising per the policy
-    or recording the hit in the caller-provided ``hits``
+    or recording the hit in the caller-provided ``query_state``
     accumulator (issue #143).
 
-    ``hits`` is a :class:`~endf_userpy.run_options._QueryState`
+    ``query_state`` is a :class:`~endf_userpy.run_options._QueryState`
     instance threaded down by top-level
     :mod:`endf_userpy.quantities` entry points, or ``None`` for
     direct leaf callers -- in which case ``warn_*`` variants fall
@@ -131,14 +131,14 @@ def _handle_above_range(policy, mt, e_max, above_mask, energies_in, hits=None):
             f'is undefined above the evaluation range.'
         )
     if policy in ('warn_nan', 'warn_zero'):
-        if hits is not None:
+        if query_state is not None:
             # Inside a top-level call: record for the summary
             # UserWarning that _emit_summary_warnings drains on
             # the way back out. Keep the largest n_above per MT if
             # the same MT is queried more than once.
-            prev = hits.above_range.get(mt)
+            prev = query_state.above_range.get(mt)
             if prev is None or n_above > prev[1]:
-                hits.above_range[mt] = (e_max, n_above, len(energies_in))
+                query_state.above_range[mt] = (e_max, n_above, len(energies_in))
         else:
             # Called outside a ctx (leaf reader used directly).
             # Emit a per-call warning so the caller still sees a
@@ -337,7 +337,7 @@ def compute_cross_section(
     einc_arr = np.asarray(energies_in, dtype=float)
     above_mask = einc_arr > e_max
     fill_value = _handle_above_range(
-        above_range, mt, e_max, above_mask, einc_arr, hits=_query_state,
+        above_range, mt, e_max, above_mask, einc_arr, query_state=_query_state,
     )
     if above_mask.any() and fill_value != 0.0:
         xs = np.where(above_mask, fill_value, xs)
@@ -349,7 +349,7 @@ def compute_cross_section(
     rrr_ranges = get_resolved_resonance_ranges(endf_dict)
     if rrr_ranges:
         in_rrr_mask, rrr_fill = _handle_resonance_range(
-            resonance_range, mt, einc_arr, rrr_ranges, hits=_query_state,
+            resonance_range, mt, einc_arr, rrr_ranges, query_state=_query_state,
         )
         if in_rrr_mask is not None and rrr_fill is not None:
             # Only overwrite positions that are NOT already
