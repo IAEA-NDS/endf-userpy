@@ -23,7 +23,7 @@ def get_subsecs(endf_dict, mt, zap, level=None):
 
 def compute_cross_section(
     endf_dict, mt, zap, energies_in, level=None,
-    above_range='warn_nan', _warnings=None,
+    above_range='warn_nan', _query_state=None,
 ):
     """Residual-production cross section from MF10.
 
@@ -34,10 +34,10 @@ def compute_cross_section(
     (issue #143); direct callers of this leaf get the
     ``'warn_nan'`` default.
 
-    ``_warnings`` is the private :class:`_WarningHits` accumulator
+    ``_query_state`` is the private :class:`_QueryState` accumulator
     the top-level entry points thread through internal callers so
     ONE summary UserWarning fires per top-level query instead of
-    one per (MT, call). ``_warnings=None`` (the leaf's default)
+    one per (MT, call). ``_query_state=None`` (the leaf's default)
     falls back to a per-call warning for direct leaf usage.
     """
     subsecs = get_subsecs(endf_dict, mt, zap, level)
@@ -60,7 +60,7 @@ def compute_cross_section(
     e_max = float(np.asarray(en_mesh, dtype=float).max())
     above_mask = en_out > e_max
     fill_value = _handle_above_range(
-        above_range, mt, e_max, above_mask, en_out, hits=_warnings,
+        above_range, mt, e_max, above_mask, en_out, hits=_query_state,
     )
     xs = endf_interp1d(en_out, en_mesh, xs_mesh, intarr, nbtarr, outside_value=0.0)
     if above_mask.any() and fill_value != 0.0:

@@ -21,7 +21,8 @@ Design rationale is captured in issue #143; the summary is:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -126,3 +127,123 @@ class RunOptions:
         if isinstance(b, str):
             from .primitives.array_ns import get_backend
             object.__setattr__(self, 'backend', get_backend(b))
+
+
+@dataclass
+class _QueryState:
+    """Per-top-level-call mutable scratch state threaded down the
+    call chain by every ``endf_userpy.quantities`` entry point.
+
+    Companion to :class:`RunOptions`: ``RunOptions`` is the frozen
+    input policy, ``_QueryState`` is the per-call output / scratch
+    state that leaf readers populate and that the top-level entry
+    point drains on the way out. Threaded as an underscore-prefixed
+    ``_query_state=`` kwarg through every internal function that
+    transitively calls the leaves; ``_query_state=None`` (the leaf's
+    default) preserves the pre-#143 per-call warning fallback, which
+    keeps the leaf usable when called from outside a top-level
+    query (unit tests, ad-hoc scripts).
+
+    Fields today only hold summary-warning accumulators (above-range
+    NaN fill, resonance-range raw-MF3 fallback, #311 silent-zero /
+    silent-raw-MF3 visibility). Future per-call state belongs here
+    too: see #306 for the planned ``reconstruction_cache`` field.
+
+    Private implementation detail; not part of the public API.
+    """
+    above_range: dict = field(default_factory=dict)
+    resonance_range: dict = field(default_factory=dict)
+    missing_user_mts: list = field(default_factory=list)
+    """MTs the user requested (via reaction string) that are
+    neither tabulated in the file nor synthesisable from admitted
+    partials. Populated at the top-level ``_impl`` function after
+    the cumulative-sum iteration completes. Mode 1 of #311."""
+    unmapped_composition_mts: list = field(default_factory=list)
+    """MTs the user requested that are in the file but have no
+    entry in the active MF2 formalism's MT-to-partial-keys map, so
+    the composition layer silently returned raw MF3 for them.
+    Populated inside ``reconstruct_resonance_xs``, scoped to
+    ``user_mts`` to avoid noise. Mode 2 of #311."""
+    user_mts: set = field(default_factory=set)
+    """MTs the user explicitly requested at the top-level entry
+    point. Threaded here so the composition layer can scope mode 2
+    reporting to user-requested MTs only, not the widened
+    iteration set in differential queries."""
+
+
+def _emit_summary_warnings(hits, options):
+    """Drain a :class:`_QueryState` into UserWarnings, at most one
+    per policy family. Called by every top-level entry point in
+    :mod:`endf_userpy.quantities` after its impl returns (see
+    issue #143). Silent when the corresponding hits dict is empty
+    or when the policy is a non-``warn_*`` variant.
+    """
+    ar_policy = options.above_range
+    rr_policy = options.resonance_range
+    if hits.above_range and ar_policy in ('warn_nan', 'warn_zero'):
+        fill_word = 'NaN' if ar_policy == 'warn_nan' else '0'
+        n_mts = len(hits.above_range)
+        total_above = sum(
+            n_above for _, n_above, _ in hits.above_range.values()
+        )
+        mt_summary = ', '.join(
+            f'MT={mt} (max {e_max:.6g} eV, {n_above} pts)'
+            for mt, (e_max, n_above, _) in
+            sorted(hits.above_range.items())
+        )
+        warnings.warn(
+            f'above_range: {total_above} out-of-mesh points across '
+            f'{n_mts} MTs returned as {fill_word}: {mt_summary}. '
+            f'Cross section is undefined above the evaluation range.',
+            UserWarning, stacklevel=3,
+        )
+    if hits.resonance_range and rr_policy in ('warn', 'warn_nan'):
+        action = 'NaN' if rr_policy == 'warn_nan' else 'raw MF3 background'
+        n_mts = len(hits.resonance_range)
+        total_pts = sum(n for _, n, _, _ in hits.resonance_range.values())
+        details = ', '.join(
+            f'MT={mt} ({n_in} of {n_total} pts in RRR '
+            f'[{el:.3g}, {eh:.3g}] eV)'
+            for mt, (el, eh, n_in, n_total) in
+            sorted(hits.resonance_range.items())
+        )
+        warnings.warn(
+            f'resonance_range: {total_pts} in-RRR points across '
+            f'{n_mts} MTs returned as {action}: {details}. '
+            f'MF3 in the resolved-resonance region is a '
+            f'subtractive background cross section; the physical '
+            f'cross section requires resonance reconstruction from '
+            f'MF2 (see README "Known limitations").',
+            UserWarning, stacklevel=3,
+        )
+    if hits.missing_user_mts:
+        mt_list = ', '.join(
+            f'MT={mt}' for mt in sorted(set(hits.missing_user_mts))
+        )
+        warnings.warn(
+            f'reaction string resolved to {mt_list}, which the '
+            f'file does not tabulate; no admitted partial could '
+            f'synthesise the requested cross section via the sum '
+            f'rule, so the result is zero. Common cause: '
+            f'ambiguous fission reaction spellings -- '
+            f"'(n,fission)' resolves to MT 18 (total fission, "
+            f"usually available), '(n,f)' to MT 19 (first-chance "
+            f'fission, often absent). Use '
+            f"endf_userpy.quantities_mt_zap.get_reaction_mt_numbers "
+            f"to inspect what the file carries.",
+            UserWarning, stacklevel=3,
+        )
+    if hits.unmapped_composition_mts:
+        mt_list = ', '.join(
+            f'MT={mt}' for mt in sorted(set(hits.unmapped_composition_mts))
+        )
+        warnings.warn(
+            f'{mt_list} is in MF3 but has no entry in the active '
+            f'MF2 formalism\'s MT-to-partial-keys map; the '
+            f'composition layer returned raw MF3 only for these '
+            f'MTs, without adding a resonance contribution. If '
+            f'the file carries MF2 widths that should contribute '
+            f'to these MTs, the returned cross section is '
+            f'incomplete in the resolved-resonance region.',
+            UserWarning, stacklevel=3,
+        )
