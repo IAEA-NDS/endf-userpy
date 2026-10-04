@@ -175,6 +175,16 @@ SUM_RULES = {
 SUM_RULE_MAP = {mt: k for k, v in SUM_RULES.items() for mt in v}
 
 
+# Chance-breakdown fission MTs: MT 19 = first-chance (n,f), MT 20 =
+# second-chance (n,nf), MT 21 = third-chance (n,2nf), MT 38 =
+# fourth-chance (n,3nf). ENDF-6 convention is MT 18 = sum of these
+# (SUM_RULES[18] above). The MF2 fission widths parameterise TOTAL
+# fission; composing them with a chance-breakdown MT would overstate
+# the resonance contribution above threshold, so the top-level XS
+# entry points raise on this combination (issue #311).
+CHANCE_BREAKDOWN_FISSION_MTS = frozenset(SUM_RULES[18])
+
+
 def is_known_reaction_mt(mt):
     """True iff `mt` is a reaction MT recognised by this package.
 

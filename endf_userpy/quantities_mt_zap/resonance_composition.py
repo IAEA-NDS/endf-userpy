@@ -204,7 +204,8 @@ def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp,
 
 
 def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
-                             urr_quadrature='gauss_legendre_32'):
+                             urr_quadrature='gauss_legendre_32',
+                             _warnings=None):
     """MF2 partial-XS contribution for ``mt``, summed over every
     supported resonance range in ``endf_dict``. Zero at query
     energies outside every range: each range is treated as the
@@ -260,6 +261,17 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
         else:
             keys = _RML_MT_TO_KEYS.get(mt)
         if not keys:
+            # Mode 2 (#311): if the user asked for this MT at the
+            # top-level entry point, record it so the summary
+            # warning fires. Scoped to user_mts so the widened MT
+            # iteration in differential queries doesn't emit a
+            # warning for every incidentally-visited MT.
+            if (
+                _warnings is not None
+                and mt in getattr(_warnings, 'user_mts', set())
+                and mt in endf_dict.get(3, {})
+            ):
+                _warnings.unmapped_composition_mts.append(mt)
             continue
         el = float(rng['EL'])
         eh = float(rng['EH'])
@@ -302,7 +314,15 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
     for iso_i, rng_i, rng in _iter_lru2_lssf0_ranges(endf_dict):
         if not keys_urr:
             # MT does not receive an MF2 contribution in the URR
-            # either; skip the reconstruction work.
+            # either; skip the reconstruction work. Mode 2 (#311):
+            # if the user asked for this MT and it is in MF3, note
+            # the gap so the summary warning fires.
+            if (
+                _warnings is not None
+                and mt in getattr(_warnings, 'user_mts', set())
+                and mt in endf_dict.get(3, {})
+            ):
+                _warnings.unmapped_composition_mts.append(mt)
             continue
         el = float(rng['EL'])
         eh = float(rng['EH'])
@@ -350,6 +370,7 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
 def compute_reconstructed_cross_section(
     endf_dict, mt, energies_in, xp=None,
     urr_quadrature='gauss_legendre_32',
+    _warnings=None,
 ):
     """Physical cross section for ``mt`` per ENDF-6:
 
@@ -400,5 +421,6 @@ def compute_reconstructed_cross_section(
     resonance_xs = reconstruct_resonance_xs(
         endf_dict, mt, energies_in, xp,
         urr_quadrature=urr_quadrature,
+        _warnings=_warnings,
     )
     return xp.asarray(mf3_xs) + xp.asarray(resonance_xs)
