@@ -156,7 +156,7 @@ def compute_yields(
 
 
 def compute_xs_mt5_contrib(
-    endf_dict, mt, energies_in, *, options=None, _warnings=None,
+    endf_dict, mt, energies_in, *, options=None, _query_state=None,
 ):
     """MT5 backfill contribution for reactions with a unique-path-to-
     residual. Returns the redistributed cross section ``y(E) * σ_MT5(E)``
@@ -164,9 +164,10 @@ def compute_xs_mt5_contrib(
     identified by ``mt``, or zeros if the file has no MF6/MT=5 or the
     reaction isn't unique-path-to-residual.
 
-    Runtime policies + backend live on ``options``; the accumulator
-    (``_warnings``) is threaded to the leaf reader so above-range
-    hits contribute to the top-level summary UserWarning.
+    Runtime policies + backend live on ``options``; the per-call
+    scratch state (``_query_state``) is threaded to the leaf reader
+    so above-range entries contribute to the top-level summary
+    UserWarning.
     """
     from ..run_options import RunOptions
     if options is None:
@@ -203,12 +204,12 @@ def compute_xs_mt5_contrib(
     # door.
     xs_mt5 = compute_xs(
         endf_dict, mt5, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     )
     return xs_mt5 * yield_mt5
 
 
-def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
+def compute_xs(endf_dict, mt, energies_in, *, options=None, _query_state=None):
     """Cross section for one MT.
 
     ``options`` (see :class:`endf_userpy.run_options.RunOptions`)
@@ -219,8 +220,8 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
     :class:`RunOptions` instance, so leaf callers get sensible
     physics-first defaults if they invoke this directly.
 
-    ``_warnings`` is the private
-    :class:`~endf_userpy.mfsec_interpretation.mf3_interpretation._WarningHits`
+    ``_query_state`` is the private
+    :class:`~endf_userpy.run_options._QueryState`
     accumulator the top-level ``endf_userpy.quantities`` entry
     points thread through internal callers so ONE summary
     UserWarning fires per top-level query (issue #143). ``None``
@@ -234,7 +235,7 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
         result = _res_comp.compute_reconstructed_cross_section(
             endf_dict, mt, energies_in, xp,
             urr_quadrature=options.urr_quadrature,
-            _warnings=_warnings,
+            _query_state=_query_state,
         )
         # The composition layer uses ``compute_cross_section_agnostic``
         # so it bypasses the MF3 policy machinery. Reapply the
@@ -275,7 +276,7 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
                 above_mask_np = einc_arr > e_max
                 fill = _handle_above_range(
                     options.above_range, mt, e_max,
-                    above_mask_np, einc_arr, hits=_warnings,
+                    above_mask_np, einc_arr, query_state=_query_state,
                 )
             else:
                 # tracer path: pick the fill from the policy name
@@ -299,7 +300,7 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
         endf_dict, mt, energies_in,
         above_range=options.above_range,
         resonance_range=options.resonance_range,
-        xp=xp, _warnings=_warnings,
+        xp=xp, _query_state=_query_state,
     )
     if xp.name != 'numpy':
         return xp.asarray(xs)
@@ -307,7 +308,7 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _warnings=None):
 
 
 def compute_prodxs(
-    endf_dict, mt, zap, energies_in, *, options=None, _warnings=None,
+    endf_dict, mt, zap, energies_in, *, options=None, _query_state=None,
 ):
     """Particle-production cross section for one (MT, ZAP).
 
@@ -315,11 +316,11 @@ def compute_prodxs(
     ``options=None`` resolves to a physics-first
     :class:`~endf_userpy.run_options.RunOptions`.
 
-    ``_warnings`` is the private ``_WarningHits`` accumulator
+    ``_query_state`` is the private ``_QueryState`` scratch object
     threaded from the top-level entry points so above-range /
-    resonance-range hits populate the ONE summary UserWarning per
-    top-level query. ``None`` (default) triggers per-call warnings
-    from the leaf.
+    resonance-range entries populate the ONE summary UserWarning
+    per top-level query. ``None`` (default) triggers per-call
+    warnings from the leaf.
     """
     from ..run_options import RunOptions
     if options is None:
@@ -343,7 +344,7 @@ def compute_prodxs(
     # to the physical composed cross section.
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     )
     return yields * xs
 
@@ -365,7 +366,7 @@ def _is_mf13_only_gamma(endf_dict, mt, zap):
 
 def compute_daxs(
     endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     """Angular-differential cross section ``d sigma / d mu`` for one
     (MT, ZAP).
@@ -391,7 +392,7 @@ def compute_daxs(
     # include_resonance=True (issue #304).
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     ).reshape(-1, 1)
     angdist = compute_angdist_values(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp=xp,
@@ -401,7 +402,7 @@ def compute_daxs(
 
 def compute_dexs(
     endf_dict, mt, zap, energies_in, energies_out, to_lab=True,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     """Energy-differential cross section ``d sigma / d E'`` for one
     (MT, ZAP).
@@ -429,7 +430,7 @@ def compute_dexs(
     # include_resonance=True (issue #304).
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     ).reshape(-1, 1)
     energydist = compute_energydist_values(
         endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
@@ -440,7 +441,7 @@ def compute_dexs(
 
 def compute_ddxs(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
-    to_lab=True, *, options=None, _warnings=None,
+    to_lab=True, *, options=None, _query_state=None,
 ):
     """Double-differential cross section for one (MT, ZAP).
 
@@ -462,7 +463,7 @@ def compute_ddxs(
     # include_resonance=True (issue #304).
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     ).reshape(-1, 1, 1)
     f = compute_dist2d_values(
         endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
@@ -473,7 +474,7 @@ def compute_ddxs(
 
 def compute_ddxs_from_mf15_mf14(
     endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out,
-    to_lab=True, *, options=None, _warnings=None,
+    to_lab=True, *, options=None, _query_state=None,
 ):
     """Unbroadened DDX contribution from MF15 continuum gamma
     spectrum + MF14 angular. Gamma-only peer of
@@ -556,7 +557,7 @@ def compute_ddxs_from_mf15_mf14(
         # include_resonance=True (issue #304).
         xs = compute_xs(
             endf_dict, mt, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )   # (n_einc,), xp-native
         weight = xs * y_cont
 
@@ -603,11 +604,11 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwar
     else:
         mt_list = mts
     # ``select`` predicates take (endf_dict, mt, zap, ...) positional
-    # only and do not accept ``xp`` / ``options`` / ``_warnings``.
+    # only and do not accept ``xp`` / ``options`` / ``_query_state``.
     # Strip them before passing.
     select_kwargs = {
         k: v for k, v in kwargs.items()
-        if k not in ('xp', 'options', '_warnings')
+        if k not in ('xp', 'options', '_query_state')
     }
     is_first = True
     cum_res = None
@@ -630,7 +631,7 @@ def compute_cumulative_quantity(func, select, endf_dict, *args, mts=None, **kwar
 
 def _compute_residual_xs_for_lfs(
     endf_dict, mt, za_residual, lfs, energies_in,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     from ..run_options import RunOptions
     if options is None:
@@ -644,12 +645,12 @@ def _compute_residual_xs_for_lfs(
     if lmf == 3:
         return compute_xs(
             endf_dict, mt, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
     if lmf == 6:
         xs = compute_xs(
             endf_dict, mt, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
         y = mf6_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in,
@@ -659,7 +660,7 @@ def _compute_residual_xs_for_lfs(
     if lmf == 9:
         xs = compute_xs(
             endf_dict, mt, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
         y = mf9_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in, level=lfs
@@ -668,7 +669,7 @@ def _compute_residual_xs_for_lfs(
     if lmf == 10:
         return mf10_interp.compute_cross_section(
             endf_dict, mt, za_residual, energies_in, level=lfs,
-            above_range=options.above_range, _warnings=_warnings,
+            above_range=options.above_range, _query_state=_query_state,
         )
     raise ValueError(
         f'unsupported LMF={lmf} in MF8/MT={mt} for ZAP={za_residual}, LFS={lfs}'
@@ -677,7 +678,7 @@ def _compute_residual_xs_for_lfs(
 
 def compute_residual_xs(
     endf_dict, mt, za_residual, lfs, energies_in,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     """Cross section for producing (za_residual, lfs) via reaction MT.
 
@@ -703,7 +704,7 @@ def compute_residual_xs(
                 and mf6_help.contains_zap(endf_dict, mt, za_residual)):
             xs = compute_xs(
                 endf_dict, mt, energies_in,
-                options=options, _warnings=_warnings,
+                options=options, _query_state=_query_state,
             )
             y = mf6_interp.compute_yields(
                 endf_dict, mt, za_residual, energies_in,
@@ -717,7 +718,7 @@ def compute_residual_xs(
             )
         return compute_xs(
             endf_dict, mt, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
 
     available_lfs = sorted({
@@ -732,13 +733,13 @@ def compute_residual_xs(
             return np.zeros_like(energies_in, dtype=float)
         return _compute_residual_xs_for_lfs(
             endf_dict, mt, za_residual, lfs, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
 
     total = np.zeros_like(energies_in, dtype=float)
     for cur_lfs in available_lfs:
         total = total + _compute_residual_xs_for_lfs(
             endf_dict, mt, za_residual, cur_lfs, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
     return total

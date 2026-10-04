@@ -1,5 +1,4 @@
 import warnings
-from dataclasses import dataclass, field
 import numpy as np
 from ..primitives.helpers import treat_duplicates
 from ..primitives.interpolation import interp_tab1
@@ -10,130 +9,6 @@ from ..primitives.properties import (
 
 _ABOVE_RANGE_POLICIES = ('warn_nan', 'nan', 'warn_zero', 'zero', 'raise')
 _RESONANCE_RANGE_POLICIES = ('warn', 'warn_nan', 'nan', 'raise')
-
-
-@dataclass
-class _WarningHits:
-    """Per-top-level-call mutable accumulator for the two policy-
-    driven summary warnings. Populated by leaf XS readers when a
-    top-level ``endf_userpy.quantities`` entry point threads a
-    fresh instance down, drained by :func:`_emit_summary_warnings`
-    on the way back out so the caller sees ONE UserWarning per
-    policy per top-level call rather than one per (MT, call).
-
-    Private implementation detail (issue #143): the public policy
-    surface is :class:`endf_userpy.run_options.RunOptions` and the
-    accumulator is threaded as an underscore-prefixed
-    ``_warnings=`` kwarg through every internal function that
-    transitively calls the leaves. ``_warnings=None`` (the leaf's
-    default) preserves the pre-migration per-call warning fallback,
-    which keeps the leaf usable when called from outside a
-    top-level query (unit tests, ad-hoc scripts).
-    """
-    above_range: dict = field(default_factory=dict)
-    resonance_range: dict = field(default_factory=dict)
-    # Issue #311: visibility for silent-zero / silent-raw-MF3 cases
-    # when the user's reaction string resolves to an MT the file or
-    # the resonance-composition maps cannot handle.
-    missing_user_mts: list = field(default_factory=list)
-    """MTs the user requested (via reaction string) that are
-    neither tabulated in the file nor synthesisable from admitted
-    partials. Populated at the top-level ``_impl`` function after
-    the cumulative-sum iteration completes. Mode 1."""
-    unmapped_composition_mts: list = field(default_factory=list)
-    """MTs the user requested that are in the file but have no
-    entry in the active MF2 formalism's MT-to-partial-keys map, so
-    the composition layer silently returned raw MF3 for them.
-    Populated inside ``reconstruct_resonance_xs``, scoped to
-    ``user_mts`` to avoid noise. Mode 2."""
-    user_mts: set = field(default_factory=set)
-    """MTs the user explicitly requested at the top-level entry
-    point. Threaded here so the composition layer can scope mode 2
-    reporting to user-requested MTs only, not the widened
-    iteration set in differential queries."""
-
-
-def _emit_summary_warnings(hits, options):
-    """Drain a :class:`_WarningHits` into UserWarnings, at most one
-    per policy family. Called by every top-level entry point in
-    :mod:`endf_userpy.quantities` after its impl returns (see
-    issue #143). Silent when the corresponding hits dict is empty
-    or when the policy is a non-``warn_*`` variant.
-    """
-    ar_policy = options.above_range
-    rr_policy = options.resonance_range
-    if hits.above_range and ar_policy in ('warn_nan', 'warn_zero'):
-        fill_word = 'NaN' if ar_policy == 'warn_nan' else '0'
-        n_mts = len(hits.above_range)
-        total_above = sum(
-            n_above for _, n_above, _ in hits.above_range.values()
-        )
-        mt_summary = ', '.join(
-            f'MT={mt} (max {e_max:.6g} eV, {n_above} pts)'
-            for mt, (e_max, n_above, _) in
-            sorted(hits.above_range.items())
-        )
-        warnings.warn(
-            f'above_range: {total_above} out-of-mesh points across '
-            f'{n_mts} MTs returned as {fill_word}: {mt_summary}. '
-            f'Cross section is undefined above the evaluation range.',
-            UserWarning, stacklevel=3,
-        )
-    if hits.resonance_range and rr_policy in ('warn', 'warn_nan'):
-        action = 'NaN' if rr_policy == 'warn_nan' else 'raw MF3 background'
-        n_mts = len(hits.resonance_range)
-        total_pts = sum(n for _, n, _, _ in hits.resonance_range.values())
-        details = ', '.join(
-            f'MT={mt} ({n_in} of {n_total} pts in RRR '
-            f'[{el:.3g}, {eh:.3g}] eV)'
-            for mt, (el, eh, n_in, n_total) in
-            sorted(hits.resonance_range.items())
-        )
-        warnings.warn(
-            f'resonance_range: {total_pts} in-RRR points across '
-            f'{n_mts} MTs returned as {action}: {details}. '
-            f'MF3 in the resolved-resonance region is a '
-            f'subtractive background cross section; the physical '
-            f'cross section requires resonance reconstruction from '
-            f'MF2 (see README "Known limitations").',
-            UserWarning, stacklevel=3,
-        )
-    # Issue #311 mode 1: user-requested MT absent AND no admitted
-    # partial could synthesise it. Fires with the file's MT list
-    # so the user can see what was actually available.
-    if hits.missing_user_mts:
-        mt_list = ', '.join(f'MT={mt}' for mt in sorted(set(hits.missing_user_mts)))
-        warnings.warn(
-            f'reaction string resolved to {mt_list}, which the '
-            f'file does not tabulate; no admitted partial could '
-            f'synthesise the requested cross section via the sum '
-            f'rule, so the result is zero. Common cause: '
-            f'ambiguous fission reaction spellings -- '
-            f"'(n,fission)' resolves to MT 18 (total fission, "
-            f"usually available), '(n,f)' to MT 19 (first-chance "
-            f'fission, often absent). Use '
-            f"endf_userpy.quantities_mt_zap.get_reaction_mt_numbers "
-            f"to inspect what the file carries.",
-            UserWarning, stacklevel=3,
-        )
-    # Issue #311 mode 2: user requested MTs tabulated in MF3 but
-    # not present in the active MF2 formalism's MT-to-partial-keys
-    # map. The composition layer returned raw MF3 for them instead
-    # of composing a resonance contribution.
-    if hits.unmapped_composition_mts:
-        mt_list = ', '.join(
-            f'MT={mt}' for mt in sorted(set(hits.unmapped_composition_mts))
-        )
-        warnings.warn(
-            f'{mt_list} is in MF3 but has no entry in the active '
-            f'MF2 formalism\'s MT-to-partial-keys map; the '
-            f'composition layer returned raw MF3 only for these '
-            f'MTs, without adding a resonance contribution. If '
-            f'the file carries MF2 widths that should contribute '
-            f'to these MTs, the returned cross section is '
-            f'incomplete in the resolved-resonance region.',
-            UserWarning, stacklevel=3,
-        )
 
 
 def get_resolved_resonance_ranges(endf_dict):
@@ -162,7 +37,7 @@ def get_resolved_resonance_ranges(endf_dict):
     return ranges
 
 
-def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, hits=None):
+def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, query_state=None):
     """Common resonance-range policy implementation shared by every
     XS reader. Returns `(in_rrr_mask, fill_value)`: `in_rrr_mask` is
     True at Ein positions inside any LRU=1 range; `fill_value` is
@@ -201,10 +76,10 @@ def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, hits=None):
             f'reconstruction).'
         )
     if policy in ('warn', 'warn_nan'):
-        if hits is not None:
-            prev = hits.resonance_range.get(mt)
+        if query_state is not None:
+            prev = query_state.resonance_range.get(mt)
             if prev is None or n_in > prev[2]:
-                hits.resonance_range[mt] = (
+                query_state.resonance_range[mt] = (
                     el_union, eh_union, n_in, len(einc_arr),
                 )
         else:
@@ -226,19 +101,20 @@ def _handle_resonance_range(policy, mt, einc_arr, rrr_ranges, hits=None):
     return in_rrr_mask, None  # 'warn' / passthrough
 
 
-def _handle_above_range(policy, mt, e_max, above_mask, energies_in, hits=None):
+def _handle_above_range(policy, mt, e_max, above_mask, energies_in, query_state=None):
     """Common implementation of the `above_range` policy shared by
     every XS reader (see issue #28). Returns the numeric-fill value
     the caller should place at `above_mask` positions in its result
     array (`0.0` or `np.nan`), after either raising per the policy
-    or recording the hit in the caller-provided ``hits``
+    or recording the hit in the caller-provided ``query_state``
     accumulator (issue #143).
 
-    ``hits`` is a :class:`_WarningHits` instance threaded down by
-    top-level :mod:`endf_userpy.quantities` entry points, or
-    ``None`` for direct leaf callers -- in which case ``warn_*``
-    variants fall back to a per-call UserWarning so the leaf stays
-    usable in isolation.
+    ``query_state`` is a :class:`~endf_userpy.run_options._QueryState`
+    instance threaded down by top-level
+    :mod:`endf_userpy.quantities` entry points, or ``None`` for
+    direct leaf callers -- in which case ``warn_*`` variants fall
+    back to a per-call UserWarning so the leaf stays usable in
+    isolation.
     """
     if policy not in _ABOVE_RANGE_POLICIES:
         raise ValueError(
@@ -255,14 +131,14 @@ def _handle_above_range(policy, mt, e_max, above_mask, energies_in, hits=None):
             f'is undefined above the evaluation range.'
         )
     if policy in ('warn_nan', 'warn_zero'):
-        if hits is not None:
+        if query_state is not None:
             # Inside a top-level call: record for the summary
             # UserWarning that _emit_summary_warnings drains on
             # the way back out. Keep the largest n_above per MT if
             # the same MT is queried more than once.
-            prev = hits.above_range.get(mt)
+            prev = query_state.above_range.get(mt)
             if prev is None or n_above > prev[1]:
-                hits.above_range[mt] = (e_max, n_above, len(energies_in))
+                query_state.above_range[mt] = (e_max, n_above, len(energies_in))
         else:
             # Called outside a ctx (leaf reader used directly).
             # Emit a per-call warning so the caller still sees a
@@ -371,7 +247,7 @@ def get_reactions(endf_dict):
 
 def compute_cross_section(
     endf_dict, mt, energies_in, above_range='warn_nan',
-    resonance_range='warn', xp=None, _warnings=None,
+    resonance_range='warn', xp=None, _query_state=None,
 ):
     """Cross section for MT evaluated on `energies_in`.
 
@@ -461,7 +337,7 @@ def compute_cross_section(
     einc_arr = np.asarray(energies_in, dtype=float)
     above_mask = einc_arr > e_max
     fill_value = _handle_above_range(
-        above_range, mt, e_max, above_mask, einc_arr, hits=_warnings,
+        above_range, mt, e_max, above_mask, einc_arr, query_state=_query_state,
     )
     if above_mask.any() and fill_value != 0.0:
         xs = np.where(above_mask, fill_value, xs)
@@ -473,7 +349,7 @@ def compute_cross_section(
     rrr_ranges = get_resolved_resonance_ranges(endf_dict)
     if rrr_ranges:
         in_rrr_mask, rrr_fill = _handle_resonance_range(
-            resonance_range, mt, einc_arr, rrr_ranges, hits=_warnings,
+            resonance_range, mt, einc_arr, rrr_ranges, query_state=_query_state,
         )
         if in_rrr_mask is not None and rrr_fill is not None:
             # Only overwrite positions that are NOT already

@@ -105,7 +105,7 @@ def compute_ddx_continuous_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
     **convolve_kwargs,
 ):
     """DDX of (MT, ZAP) convolved with `kernel` along E_out.
@@ -184,7 +184,7 @@ def compute_ddx_continuous_broadened(
     # include_resonance=True (issue #304).
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     ).reshape(-1, 1, 1)
     # DDX of a physical distribution is non-negative; FFT roundoff in
     # adaptive_convolve can produce sub-eps negatives at the tails,
@@ -201,7 +201,7 @@ def compute_ddx_continuous_broadened_summed(
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
     **convolve_kwargs,
 ):
     """DDX of `sum_{MT in mts}` convolved with `kernel` along E_out
@@ -258,7 +258,7 @@ def compute_ddx_continuous_broadened_summed(
         # include_resonance=True (issue #304).
         xs = compute_xs(
             endf_dict, mt, einc,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
         scales.append((y * xs).reshape(-1, 1, 1))
 
@@ -289,7 +289,7 @@ def compute_dxs_dE_broadened(
     energies_in, energies_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
     **convolve_kwargs,
 ):
     """1D dxs/dE for (MT, ZAP) convolved with `kernel` along E_out.
@@ -348,7 +348,7 @@ def compute_dxs_dE_broadened(
     def f(eout_internal):
         return compute_dexs(
             endf_dict, mt, zap, energies_in, eout_internal, to_lab,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
 
     # Fast-path override for jit callers who supplied mesh_bounds
@@ -394,7 +394,7 @@ def compute_dxs_dE_broadened_summed(
     energies_in, energies_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
     **convolve_kwargs,
 ):
     """1D dxs/dE of ``sum_{MT in mts}`` convolved with ``kernel``
@@ -458,7 +458,7 @@ def compute_dxs_dE_broadened_summed(
             try:
                 contrib = compute_dexs(
                     endf_dict, mt, zap, einc, eout_internal, to_lab,
-                    options=options, _warnings=_warnings,
+                    options=options, _query_state=_query_state,
                 )
             except (IndexError, AssertionError):
                 # Same defensive cases the per-MT
@@ -506,7 +506,7 @@ def compute_ddx_discrete_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel,
     to_lab=True, xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     """DDX of the 2-body discrete-level part of (MT, ZAP), with the
     kinematic delta delta(E_out - E_out_kin(E_in, mu)) replaced by
@@ -582,7 +582,7 @@ def compute_ddx_discrete_broadened(
     # include_resonance=True (issue #304).
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     ).reshape(-1, 1, 1)
     return (
         kernel_vals * angdist_b
@@ -596,7 +596,7 @@ def compute_ddx_law1_discrete_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel,
     to_lab=True, xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     """DDX contribution from MF6/LAW=1 discrete-energy lines (ND>0),
     with the kinematic delta at each line replaced by `kernel`.
@@ -681,7 +681,7 @@ def compute_ddx_law1_discrete_broadened(
     # include_resonance=True (issue #304).
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     ).reshape(-1, 1, 1)
     return ddx * yields * xs / (2 * np.pi)
 
@@ -691,7 +691,7 @@ def compute_ddx_mf12_discrete_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel,
     xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     """DDX contribution from MF12 discrete photon lines with the MF14
     angular distribution factored in, and each Dirac peak at Eg_i
@@ -776,7 +776,7 @@ def compute_ddx_mf12_discrete_broadened(
     # include_resonance=True (issue #304).
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     )  # (n_einc,), xp-native
     weight_E = yields_disc * xs[:, None]  # (n_einc, n_disc)
 
@@ -823,7 +823,7 @@ def compute_ddx_mf12_discrete_broadened(
 
 def compute_dxs_dE_mf12_discrete_broadened(
     endf_dict, mt, zap, energies_in, energies_out, kernel, xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     """1D dxs/dE contribution from discrete photon lines declared in
     MF12, with each Dirac peak at Eg_i replaced by ``kernel``.
@@ -903,7 +903,7 @@ def compute_dxs_dE_mf12_discrete_broadened(
     # include_resonance=True (issue #304).
     xs = compute_xs(
         endf_dict, mt, energies_in,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     )  # (n_einc,), xp-native
     weight = yields_disc * xs[:, None]  # (n_einc, n_disc_lines)
 
@@ -1081,7 +1081,7 @@ def compute_ddx_mf15_continuum_broadened(
     energies_in, energies_out, angle_cosines_out,
     kernel, kernel_width,
     to_lab=True, xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
     **convolve_kwargs,
 ):
     """DDX contribution from the MF15 continuous gamma spectrum,
@@ -1194,7 +1194,7 @@ def compute_ddx_mf15_continuum_broadened(
         # include_resonance=True (issue #304).
         xs = compute_xs(
             endf_dict, mt, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )   # (n_einc,), xp-native
         weight = xs * y_cont
         # NOTE on normalisation: the 1D dxs/dE path composes
@@ -1259,7 +1259,7 @@ def compute_dxs_dE_law1_discrete_broadened(
     to_lab=True,
     n_mu_internal=64,
     xp=None,
-    *, options=None, _warnings=None,
+    *, options=None, _query_state=None,
 ):
     """1D analogue of `compute_ddx_law1_discrete_broadened`: DDX of
     MF6/LAW=1 ND>0 discrete lines with the kinematic delta replaced
@@ -1300,7 +1300,7 @@ def compute_dxs_dE_law1_discrete_broadened(
         endf_dict, mt, zap,
         energies_in, energies_out, mus,
         kernel, to_lab=to_lab, xp=xp,
-        options=options, _warnings=_warnings,
+        options=options, _query_state=_query_state,
     )
     # trapezoid over mu. Use xp.trapezoid on JAX (traced arrays cannot
     # go through numpy's trapezoid without materialising); the numpy

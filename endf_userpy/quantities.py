@@ -19,9 +19,7 @@ from .mfsec_interpretation import mf8_interpretation as mf8interp
 from .mfsec_interpretation import mf12_interpretation as mf12interp
 from .mfsec_interpretation import mf13_interpretation as mf13interp
 from .mfsec_interpretation import mf15_interpretation as mf15interp
-from .mfsec_interpretation.mf3_interpretation import (
-    _WarningHits, _emit_summary_warnings,
-)
+from .run_options import _QueryState, _emit_summary_warnings
 
 
 # Cache of (id(endf_dict), mt, zap, lfs) tuples we have already warned
@@ -32,7 +30,7 @@ _isomer_warning_seen = set()
 
 
 def _check_particle_production_mode1(
-    endf_dict, user_mts, zap, mts, _warnings,
+    endf_dict, user_mts, zap, mts, _query_state,
 ):
     """Issue #311 mode 1 for particle-production entry points.
 
@@ -41,11 +39,11 @@ def _check_particle_production_mode1(
     ``(reaction, zap)`` pair. The admission heuristic itself lives
     at the selector layer
     (:func:`selectors.any_mt_admitted_for_particle_production`);
-    this helper only decides whether to append to ``_warnings`` and
+    this helper only decides whether to append to ``_query_state`` and
     stays in the top-level API layer alongside the other policy /
     warning-recording glue.
     """
-    if _warnings is None or not user_mts:
+    if _query_state is None or not user_mts:
         return
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
     missing_user = [mt for mt in user_mts if mt not in avail_mts]
@@ -55,7 +53,7 @@ def _check_particle_production_mode1(
         endf_dict, user_mts, zap, mts,
     ):
         return
-    _warnings.missing_user_mts.extend(missing_user)
+    _query_state.missing_user_mts.extend(missing_user)
 
 
 def _check_fission_chance_breakdown_vs_mf2(
@@ -359,24 +357,24 @@ def get_reaction_xs(
     """
     if options is None:
         options = RunOptions()
-    hits = _WarningHits()
+    query_state = _QueryState()
     result = _get_reaction_xs_impl(
             endf_dict, reaction, energies_in, options=options,
-         _warnings=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
 def _get_reaction_xs_impl(
-    endf_dict, reaction, energies_in, *, options, _warnings=None,
+    endf_dict, reaction, energies_in, *, options, _query_state=None,
 ):
     xp = options.backend
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     _check_fission_chance_breakdown_vs_mf2(
         endf_dict, user_mts, reaction, options,
     )
-    if _warnings is not None:
-        _warnings.user_mts.update(user_mts)
+    if _query_state is not None:
+        _query_state.user_mts.update(user_mts)
     avail_mts = set(quant_mt_zap.get_reaction_mt_numbers(endf_dict))
     iter_mts = avail_mts.copy()
     iter_mts.update(user_mts)
@@ -397,7 +395,7 @@ def _get_reaction_xs_impl(
             # numpy and gets promoted via xp.asarray inside compute_xs.
             cur_xs = quant_mt_zap.compute_xs(
                 endf_dict, mt, energies_in,
-                options=options, _warnings=_warnings,
+                options=options, _query_state=_query_state,
             )
             xs = xs + cur_xs
             admitted_count += 1
@@ -424,7 +422,7 @@ def _get_reaction_xs_impl(
                 cur_xs_ref = cur_xs
             mt5_xs_all = quant_mt_zap.compute_xs_mt5_contrib(
                 endf_dict, mt, energies_in,
-                options=options, _warnings=_warnings,
+                options=options, _query_state=_query_state,
             )
             # Backfill: add mt5_xs_all where the direct MT gave zero
             # (or wasn't selected), leave xs unchanged where the
@@ -448,10 +446,10 @@ def _get_reaction_xs_impl(
     # AND no admitted partial could synthesise it via the sum rule.
     # Signal the empty result so a silent-zero does not look like a
     # correct answer.
-    if _warnings is not None and admitted_count == 0:
+    if _query_state is not None and admitted_count == 0:
         for mt in user_mts:
             if mt not in avail_mts:
-                _warnings.missing_user_mts.append(mt)
+                _query_state.missing_user_mts.append(mt)
     return xs
 
 
@@ -466,16 +464,16 @@ def get_residual_production_xs(
     """
     if options is None:
         options = RunOptions()
-    hits = _WarningHits()
+    query_state = _QueryState()
     result = _get_residual_production_xs_impl(
             endf_dict, residual_nucleus, energies_in, options=options,
-         _warnings=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
 def _get_residual_production_xs_impl(
-    endf_dict, residual_nucleus, energies_in, *, options, _warnings=None,
+    endf_dict, residual_nucleus, energies_in, *, options, _query_state=None,
 ):
     za_residual, level = physconst.get_za_for_residual_nucleus(residual_nucleus)
     if level is not None:
@@ -488,7 +486,7 @@ def _get_residual_production_xs_impl(
     xs = quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt: quant_mt_zap.compute_residual_xs(
             endf_dict, mt, za_residual, level, energies_in,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         ),
         lambda endf_dict, mt: (
             (options.mt5_contrib or mt != 5) and
@@ -526,23 +524,23 @@ def get_particle_production_xs(
     """
     if options is None:
         options = RunOptions()
-    hits = _WarningHits()
+    query_state = _QueryState()
     result = _get_particle_production_xs_impl(
             endf_dict, reaction, particle, energies_in, options=options,
-         _warnings=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
 def _get_particle_production_xs_impl(
-    endf_dict, reaction, particle, energies_in, *, options, _warnings=None,
+    endf_dict, reaction, particle, energies_in, *, options, _query_state=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     _check_fission_chance_breakdown_vs_mf2(
         endf_dict, user_mts, reaction, options,
     )
-    if _warnings is not None:
-        _warnings.user_mts.update(user_mts)
+    if _query_state is not None:
+        _query_state.user_mts.update(user_mts)
     zap = physconst.get_zap_for_particle(particle)
     # Widened iteration (union of MF3+MF12+MF13+MF15 keys) so MTs
     # that carry gamma production only in MF12/MF13/MF15 without an
@@ -550,12 +548,12 @@ def _get_particle_production_xs_impl(
     # cumulative-sum iteration (issue #130). Non-gamma queries
     # over the wider list are still filtered correctly by contains_zap.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _warnings)
-    warnings_hits = _warnings
+    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _query_state)
+    query_state_hits = _query_state
     return quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt, zap, einc: quant_mt_zap.compute_prodxs(
             endf_dict, mt, zap, einc,
-            options=options, _warnings=warnings_hits,
+            options=options, _query_state=query_state_hits,
         ),
         lambda endf_dict, mt, zap, energies_in: (
             selectors.satisfies_particle_production_select(
@@ -596,32 +594,32 @@ def get_particle_production_dxs_dE(
     """
     if options is None:
         options = RunOptions()
-    hits = _WarningHits()
+    query_state = _QueryState()
     result = _get_particle_production_dxs_dE_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             broadening, options=options,
-         _warnings=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
 def _get_particle_production_dxs_dE_impl(
     endf_dict, reaction, particle, energies_in, energies_out, broadening,
-    *, options, _warnings=None,
+    *, options, _query_state=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     _check_fission_chance_breakdown_vs_mf2(
         endf_dict, user_mts, reaction, options,
     )
-    if _warnings is not None:
-        _warnings.user_mts.update(user_mts)
+    if _query_state is not None:
+        _query_state.user_mts.update(user_mts)
     zap = physconst.get_zap_for_particle(particle)
     xp = options.backend
     broadening_mesh_bounds = options.broadening_mesh_bounds
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _warnings)
+    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _query_state)
 
     def select(endf_dict, mt, zap, einc, eouts):
         return (
@@ -642,7 +640,7 @@ def _get_particle_production_dxs_dE_impl(
             lambda endf_dict, mt, zap, einc, eouts:
                 quant_mt_zap.compute_dexs(
                     endf_dict, mt, zap, einc, eouts,
-                    options=options, _warnings=_warnings,
+                    options=options, _query_state=_query_state,
                 ),
             select,
             endf_dict, zap, energies_in, energies_out,
@@ -653,7 +651,7 @@ def _get_particle_production_dxs_dE_impl(
         return ddxb.compute_dxs_dE_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
         )
 
@@ -670,7 +668,7 @@ def _get_particle_production_dxs_dE_impl(
         return ddxb.compute_dxs_dE_law1_discrete_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
 
     def law1_disc_select(endf_dict, mt, zap, einc, eouts):
@@ -684,7 +682,7 @@ def _get_particle_production_dxs_dE_impl(
         return ddxb.compute_dxs_dE_mf12_discrete_broadened(
             endf_dict, mt, zap, einc, eouts,
             kernel=kernel, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
 
     def mf12_disc_select(endf_dict, mt, zap, einc, eouts):
@@ -718,7 +716,7 @@ def _get_particle_production_dxs_dE_impl(
             endf_dict, admitted_cont_mts, zap,
             energies_in, energies_out,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
         )
     else:
@@ -763,33 +761,33 @@ def get_particle_production_dxs_dmu(
     """
     if options is None:
         options = RunOptions()
-    hits = _WarningHits()
+    query_state = _QueryState()
     result = _get_particle_production_dxs_dmu_impl(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,
             options=options,
-         _warnings=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
 def _get_particle_production_dxs_dmu_impl(
     endf_dict, reaction, particle, energies_in, angle_cosines_out, *,
-    options, _warnings=None,
+    options, _query_state=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     _check_fission_chance_breakdown_vs_mf2(
         endf_dict, user_mts, reaction, options,
     )
-    if _warnings is not None:
-        _warnings.user_mts.update(user_mts)
+    if _query_state is not None:
+        _query_state.user_mts.update(user_mts)
     zap = physconst.get_zap_for_particle(particle)
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _warnings)
+    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _query_state)
     return quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt, zap, einc, mus:
             quant_mt_zap.compute_daxs(
                 endf_dict, mt, zap, einc, mus,
-                options=options, _warnings=_warnings,
+                options=options, _query_state=_query_state,
             ),
         lambda endf_dict, mt, zap, energies_in, angle_cosines_out: (
             selectors.contains_zap(endf_dict, mt, zap) and
@@ -822,12 +820,12 @@ def get_particle_production_ddxs(
     """
     if options is None:
         options = RunOptions()
-    hits = _WarningHits()
+    query_state = _QueryState()
     result = _get_particle_production_ddxs_impl(
             endf_dict, reaction, particle, energies_in, energies_out,
             angle_cosines_out, broadening, options=options,
-         _warnings=hits)
-    _emit_summary_warnings(hits, options)
+         _query_state=query_state)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
@@ -882,30 +880,30 @@ def get_particle_production_discrete_gamma_lines(
     xp = options.backend
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    hits = _WarningHits()
+    query_state = _QueryState()
     result = discrete_gamma.extract_discrete_gamma_lines(
         endf_dict, mts, user_mts, energies_in,
         angle_cosines_out=angle_cosines_out, xp=xp,
     )
-    _emit_summary_warnings(hits, options)
+    _emit_summary_warnings(query_state, options)
     return result
 
 
 def _get_particle_production_ddxs_impl(
     endf_dict, reaction, particle, energies_in, energies_out,
-    angle_cosines_out, broadening, *, options, _warnings=None,
+    angle_cosines_out, broadening, *, options, _query_state=None,
 ):
     user_mts = [reac.translate_reaction_string_to_mt(reaction)]
     _check_fission_chance_breakdown_vs_mf2(
         endf_dict, user_mts, reaction, options,
     )
-    if _warnings is not None:
-        _warnings.user_mts.update(user_mts)
+    if _query_state is not None:
+        _query_state.user_mts.update(user_mts)
     zap = physconst.get_zap_for_particle(particle)
     xp = options.backend
     broadening_mesh_bounds = options.broadening_mesh_bounds
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
-    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _warnings)
+    _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _query_state)
 
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     if kernel is None:
@@ -929,7 +927,7 @@ def _get_particle_production_ddxs_impl(
             lambda endf_dict, mt, zap, einc, eouts, mus:
                 quant_mt_zap.compute_ddxs(
                     endf_dict, mt, zap, einc, eouts, mus,
-                    options=options, _warnings=_warnings,
+                    options=options, _query_state=_query_state,
                 ),
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
@@ -943,7 +941,7 @@ def _get_particle_production_ddxs_impl(
             lambda endf_dict, mt, zap, einc, eouts, mus:
                 quant_mt_zap.compute_ddxs_from_mf15_mf14(
                     endf_dict, mt, zap, einc, eouts, mus,
-                    options=options, _warnings=_warnings,
+                    options=options, _query_state=_query_state,
                 ),
             lambda endf_dict, mt, zap, energies_in, energies_out, angle_cosines_out: (
                 selectors.contains_zap(endf_dict, mt, zap) and
@@ -965,7 +963,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_continuous_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
         )
 
@@ -980,7 +978,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
 
     def disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -994,7 +992,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_law1_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
 
     def law1_disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -1008,7 +1006,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_mf12_discrete_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
         )
 
     def mf12_disc_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -1035,7 +1033,7 @@ def _get_particle_production_ddxs_impl(
         return ddxb.compute_ddx_mf15_continuum_broadened(
             endf_dict, mt, zap, einc, eouts, mus,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
         )
 
@@ -1062,7 +1060,7 @@ def _get_particle_production_ddxs_impl(
             endf_dict, cont_mts, zap,
             energies_in, energies_out, angle_cosines_out,
             kernel=kernel, kernel_width=kernel_width, xp=xp,
-            options=options, _warnings=_warnings,
+            options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
         )
     else:
