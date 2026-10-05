@@ -79,6 +79,27 @@ def _inside_jit_trace() -> bool:
         return False
 
 
+def _enable_jax_x64() -> None:
+    """Enable ``jax_enable_x64`` once, at module import time, so no
+    later ``JaxBackend`` construction can race the config change
+    against an active ``@jax.jit`` trace. Jax ignores the flag if
+    it is set from inside a trace: the trace keeps whatever dtype
+    the tracers already have (float32 by default), and resonance
+    reconstruction underflows at low Ein. Idempotent and silent
+    when jax is not installed."""
+    try:
+        import jax
+    except ImportError:
+        return
+    try:
+        jax.config.update("jax_enable_x64", True)
+    except Exception:
+        pass
+
+
+_enable_jax_x64()
+
+
 def _numba_importable() -> bool:
     try:
         import numba  # noqa: F401
@@ -218,7 +239,13 @@ class JaxBackend:
         import jax
         import jax.numpy as jnp
         from jax import lax
-        jax.config.update("jax_enable_x64", True)
+        # x64 activation must happen BEFORE any jit trace that uses
+        # this backend; doing it here would be too late when the
+        # first ``RunOptions(backend='jax')`` is constructed inside
+        # a jit trace (the trace runs in float32 and underflows
+        # resonance 1/v tails at ~1e-5 eV, see post-#325 analysis).
+        # The idempotent module-level ``_enable_jax_x64()`` is
+        # invoked once at import time instead.
         self._jax = jax
         self._jnp = jnp
         self._lax = lax
