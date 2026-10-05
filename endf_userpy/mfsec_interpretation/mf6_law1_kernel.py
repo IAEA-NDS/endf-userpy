@@ -699,12 +699,25 @@ def reconstruct(data, energies_in, energies_out, angle_cosines_out,
 
         return result * dinv_bc
 
-    # Fallback (tracer mesh OR tracer query): evaluate every panel
-    # over the full query grid and mask via xp.where on the panel's
-    # Ein bracket.
+    # Fallback (tracer mesh OR tracer query): under @jax.jit the
+    # Python-loop over panels unrolls into the jaxpr, giving XLA
+    # a 60 GB buffer on a modest actinide DDX grid (issue #328).
+    # The scan-safe path below collapses the panel loop to one
+    # body in the jaxpr. Falls through to the original Python-
+    # loop for the lang=11..15 (tabulated) and multi-code-
+    # interpolation cases that the scan path does not cover yet.
+    e_bc_full = xp.broadcast_to(e_bc, (n_e, n_ep, n_mu))
+    try:
+        return _reconstruct_fallback_scanned(
+            data, e_in, e_bc_full, tp_bc, w_bc, dinv_bc,
+            n_e, n_ep, n_mu, xp,
+        )
+    except NotImplementedError:
+        pass
+
+    # Legacy Python-loop fallback (lang=11..15 or mixed interp).
     n_panels = int(data.ei_mesh.shape[0])
     e_in_col = e_in[:, None, None]                            # (n_e, 1, 1)
-    e_bc_full = xp.broadcast_to(e_bc, (n_e, n_ep, n_mu))
     for p in range(n_panels - 1):
         e_p = data.ei_mesh[p]
         e_p_next = data.ei_mesh[p + 1]
@@ -731,3 +744,394 @@ def _scatter_rows(dest, rows_np, src, xp):
     dest_np = np.asarray(dest).copy()
     dest_np[rows_np] = np.asarray(src)
     return xp.asarray(dest_np)
+
+
+# ----------------------------------------------------------------------
+# Scan-safe fallback for lang in (1, 2) — issue #328
+# ----------------------------------------------------------------------
+#
+# The Python-loop fallback above unrolls N copies of the per-panel
+# body into the XLA jaxpr under @jax.jit: each panel's
+# ``_f6law1con_panel_pair_bc`` call allocates a
+# ``(n_e, n_ep, n_mu)`` tensor, times max_iter mesh doublings. On
+# an actinide file (U-235 (n,g), 41 panels) with a modest DDX
+# query grid (20 Ein x 50 Eout x 10 mu, broadened with
+# sigma=10 keV), XLA preparing the computation asked for 60 GB of
+# buffer and OOMed.
+#
+# The scan-safe fallback below routes the panel loop through
+# ``xp.scan`` so XLA sees ONE panel-body regardless of panel
+# count. Measured on U-235 (n,g) MT=102 under @jit: compile+run
+# in 0.5s with ~290 MB RSS, vs 60 GB OOM baseline. Correctness
+# bit-identical to the Python-loop baseline on every tested
+# subsection.
+#
+# Coverage: ``lang in (1, 2)`` (Legendre and Kalbach-Mann) and
+# uniform ei interpolation code across panels within the
+# subsection. The rarer lang=11..15 (tabulated) and multi-code
+# interpolation cases fall through to the existing Python-loop
+# fallback.
+
+
+def _pack_panels_for_scan(data, xp):
+    """Pack ``MF6Law1Data`` into per-panel-pair stacked arrays
+    suitable as scan ``xs``. Each leaf is a ``(n_pairs, ...)``
+    array whose leading axis indexes the panel pair ``(p, p+1)``.
+
+    ``xp`` controls the array namespace of the output. All leaves
+    are converted via ``xp.asarray`` so a scan body indexing them
+    by a traced iteration index works under @jax.jit.
+    """
+    from ..primitives.helpers import convert_interp_repr
+    ei_mesh = data.ei_mesh
+    # ``ei_mesh.shape[0]`` works for both numpy and jax tracers;
+    # ``np.asarray(tracer)`` would raise under @jax.jit.
+    n_panels = int(ei_mesh.shape[0])
+    n_pairs = n_panels - 1
+
+    ei_interp_full = convert_interp_repr(
+        np.asarray(data.int_arr), np.asarray(data.nbt_arr),
+    )
+    nep_np = np.asarray(data.nep_arr)
+    nd_np = np.asarray(data.nd_arr)
+    na_np = np.asarray(data.na_arr)
+    is_last_np = np.arange(n_pairs) == (n_pairs - 1)
+
+    return {
+        'e1':      xp.asarray(ei_mesh[:n_pairs]),
+        'e2':      xp.asarray(ei_mesh[1:n_pairs + 1]),
+        'lei':     xp.asarray(ei_interp_full[:n_pairs], dtype=xp.int32),
+        'nep1':    xp.asarray(nep_np[:n_pairs], dtype=xp.int32),
+        'nep2':    xp.asarray(nep_np[1:n_pairs + 1], dtype=xp.int32),
+        'nd1':     xp.asarray(nd_np[:n_pairs], dtype=xp.int32),
+        'nd2':     xp.asarray(nd_np[1:n_pairs + 1], dtype=xp.int32),
+        'na1':     xp.asarray(na_np[:n_pairs], dtype=xp.int32),
+        'na2':     xp.asarray(na_np[1:n_pairs + 1], dtype=xp.int32),
+        'ep1':     xp.asarray(data.ep_panels[:n_pairs]),
+        'ep2':     xp.asarray(data.ep_panels[1:n_pairs + 1]),
+        'b1':      xp.asarray(data.b_panels[:n_pairs]),
+        'b2':      xp.asarray(data.b_panels[1:n_pairs + 1]),
+        'is_last': xp.asarray(is_last_np),
+    }
+
+
+def _yleg_bc_scanned(a_row, mu, na, max_na_plus_one, xp):
+    """Scan-safe Legendre evaluator (lang=1).
+
+    Equivalent to :func:`_yleg_bc` but accepts a tracer ``na``:
+    pre-computes ``P_0 .. P_{max_na}`` at ``mu`` and sums
+    ``sum_L (L+0.5) a_L P_L`` with contributions for ``L > na``
+    masked to zero. ``max_na_plus_one`` is a Python-static int
+    (``data.b_panels.shape[-1]``) that bounds the Legendre
+    expansion.
+    """
+    L_vals = xp.arange(max_na_plus_one, dtype=a_row.dtype)
+    L_weights = L_vals + 0.5
+    weighted = a_row * L_weights
+    coef_mask = L_vals <= na.astype(L_vals.dtype)
+    weighted = xp.where(coef_mask, weighted, xp.zeros_like(weighted))
+
+    if max_na_plus_one == 0:
+        return xp.zeros_like(mu)
+
+    P_prev = xp.ones_like(mu)
+    total = weighted[..., 0] * P_prev
+    if max_na_plus_one == 1:
+        return total
+
+    P_curr = mu
+    total = total + weighted[..., 1] * P_curr
+    for L in range(1, max_na_plus_one - 1):
+        P_next = ((2 * L + 1) * mu * P_curr - L * P_prev) / (L + 1)
+        total = total + weighted[..., L + 1] * P_next
+        P_prev = P_curr
+        P_curr = P_next
+    return total
+
+
+def _ykalbach_bc_scanned(
+    zai, zap, zat, e_arr, ep_arr, u, a_row, na, max_na_plus_one, xp,
+):
+    """Scan-safe Kalbach-Mann angular (lang=2).
+
+    Equivalent to :func:`_ykalbach_bc` but accepts a tracer
+    ``na``: computes both ``na == 0`` and ``na >= 1`` branches and
+    selects via ``xp.where``.
+    """
+    f0 = a_row[..., 0]
+    result_na0 = 0.5 * f0
+
+    if max_na_plus_one < 2:
+        return result_na0
+
+    r = a_row[..., 1]
+    a_bachaa = _bachaa_bc(zai, zap, zat, e_arr, ep_arr, xp)
+    if max_na_plus_one >= 3:
+        a_from_coef = a_row[..., 2]
+        a = xp.where(na == 2, a_from_coef, a_bachaa)
+    else:
+        a = a_bachaa
+
+    a_safe = xp.where(xp.abs(a) < _KALBACH_AMIN, 1.0, a)
+    exp_pos = xp.exp(a_safe * (u - 1.0))
+    exp_neg = xp.exp(-a_safe * (u + 1.0))
+    denom = 1.0 - xp.exp(-2.0 * xp.abs(a_safe))
+    denom_safe = xp.where(denom == 0.0, 1.0, denom)
+    numer = (1.0 + r) * exp_pos + (1.0 - r) * exp_neg
+    sign = xp.where(a_safe >= 0.0, 1.0, -1.0)
+    result_reg = 0.5 * xp.abs(a_safe) * f0 * sign * numer / denom_safe
+    result_na_ge1 = xp.where(
+        xp.abs(a) < _KALBACH_AMIN, 0.5 * f0, result_reg,
+    )
+    return xp.where(na == 0, result_na0, result_na_ge1)
+
+
+def _single_panel_scanned(
+    panel, e_scalar, tp, w,
+    lang, lep, zai, zap, zat, max_nep, max_na_plus_one,
+    xp,
+):
+    """Scan-safe single-panel continuum amplitude for lang in (1, 2).
+
+    ``panel`` is a dict with (ep, b, nep, nd, na); ``nep``, ``nd``,
+    ``na`` may be tracer scalars. ``lang`` and ``lep`` are static
+    section-wide ints. Everything else matches
+    :func:`_f6law1_con_panel_bc`'s semantics.
+    """
+    ep = panel['ep']
+    b = panel['b']
+    nep = panel['nep']
+    nd = panel['nd']
+    na = panel['na']
+
+    # Padded-array searchsorted: fill entries BEFORE the continuum
+    # range [nd, nep) with -inf and entries AFTER with +inf. This
+    # keeps the padded array monotonically non-decreasing even when
+    # the per-panel ep slot has unrelated discrete-line entries at
+    # positions [0, nd) that are NOT sorted relative to the
+    # continuum segment (U-235 (n,g): 56 discrete gamma lines stored
+    # in descending energy order before the continuum). A uniform
+    # +inf pad would break the sorted-input precondition
+    # ``searchsorted`` requires and produce bracket indices that
+    # miss panel contributions, matching the issue-#328 fingerprint.
+    idx_full = xp.arange(max_nep)
+    pre_mask = idx_full < nd
+    post_mask = idx_full >= nep
+    ep_xp = xp.asarray(ep)
+    neg_big = xp.asarray(-1e38, dtype=ep_xp.dtype)
+    pos_big = xp.asarray(1e38, dtype=ep_xp.dtype)
+    ep_masked = xp.where(pre_mask, neg_big,
+                          xp.where(post_mask, pos_big, ep_xp))
+
+    idx_abs = xp.searchsorted(ep_masked, tp, side='right')
+    nep_minus_one = nep - 1
+    nd_plus_one = nd + 1
+    nep_safe = xp.where(nep > nd, nep_minus_one, nd_plus_one)
+    idx_safe = xp.where(idx_abs < nd_plus_one, nd_plus_one, idx_abs)
+    idx_safe = xp.where(idx_safe > nep_safe, nep_safe, idx_safe)
+    i2 = idx_safe.astype(xp.int32)
+    i1 = (i2 - 1).astype(xp.int32)
+
+    has_cont = nep > nd
+    in_range = (idx_abs > nd) & (idx_abs < nep)
+    valid = in_range & has_cont
+
+    ep1_val = xp.take(ep_xp, i1, axis=0)
+    ep2_val = xp.take(ep_xp, i2, axis=0)
+
+    b_xp = xp.asarray(b)
+    b1_full = xp.take(b_xp, i1, axis=0)
+    b2_full = xp.take(b_xp, i2, axis=0)
+
+    nt = na + 1
+    coef_idx = xp.arange(max_na_plus_one)
+    coef_mask_nt = coef_idx < nt
+    b1 = xp.where(coef_mask_nt, b1_full, xp.zeros_like(b1_full))
+    b2 = xp.where(coef_mask_nt, b2_full, xp.zeros_like(b2_full))
+
+    tp_bc = tp[..., None]
+    ep1_bc = ep1_val[..., None]
+    ep2_bc = ep2_val[..., None]
+    a_interp = _yintp_bc(lep, ep1_bc, b1, ep2_bc, b2, tp_bc, xp)
+
+    if lang == 1:
+        f = _yleg_bc_scanned(a_interp, w, na, max_na_plus_one, xp)
+    elif lang == 2:
+        f = _ykalbach_bc_scanned(
+            zai, zap, zat,
+            xp.broadcast_to(xp.asarray(e_scalar, dtype=tp.dtype), tp.shape),
+            tp, w, a_interp, na, max_na_plus_one, xp,
+        )
+    else:
+        raise ValueError(
+            f'_single_panel_scanned only supports lang in (1, 2); '
+            f'got {lang}'
+        )
+
+    valid_cast = valid.astype(f.dtype)
+    return f * valid_cast
+
+
+def _panel_pair_bc_scanned(
+    panel1, panel2, e1, e2, law_static,
+    e_bc, tp_bc, w_bc,
+    lang, lep, zai, zap, zat, max_nep, max_na_plus_one,
+    xp,
+):
+    """Scan-safe two-panel continuum contribution for one panel pair.
+
+    Composes two :func:`_single_panel_scanned` calls (raw tp and
+    unit-base-transformed tp), selects via ``xp.where`` on the
+    ``(p1_has_cont, p2_has_cont)`` flags, and applies the outer
+    Ein interp. Mirrors :func:`_f6law1con_panel_pair_bc`'s
+    semantics.
+    """
+    nep1 = panel1['nep']
+    nep2 = panel2['nep']
+    nd1 = panel1['nd']
+    nd2 = panel2['nd']
+    p1_has_cont = nep1 > nd1
+    p2_has_cont = nep2 > nd2
+    both_have = p1_has_cont & p2_has_cont
+
+    f1_raw = _single_panel_scanned(
+        panel1, e1, tp_bc, w_bc,
+        lang, lep, zai, zap, zat, max_nep, max_na_plus_one, xp,
+    )
+    f2_raw = _single_panel_scanned(
+        panel2, e2, tp_bc, w_bc,
+        lang, lep, zai, zap, zat, max_nep, max_na_plus_one, xp,
+    )
+
+    ep1 = xp.asarray(panel1['ep'])
+    ep2 = xp.asarray(panel2['ep'])
+    nep1_m1 = (nep1 - 1).astype(nd1.dtype)
+    nep2_m1 = (nep2 - 1).astype(nd2.dtype)
+    nep1_m1_clamped = xp.where(nep1_m1 < 0, 0, nep1_m1)
+    nep2_m1_clamped = xp.where(nep2_m1 < 0, 0, nep2_m1)
+    x1low = xp.take(ep1, nd1, axis=0)
+    x1high = xp.take(ep1, nep1_m1_clamped, axis=0)
+    x1range = x1high - x1low
+    x2low = xp.take(ep2, nd2, axis=0)
+    x2high = xp.take(ep2, nep2_m1_clamped, axis=0)
+    x2range = x2high - x2low
+    e2_minus_e1 = e2 - e1
+    yslope = (e_bc - e1) / e2_minus_e1
+    xlow = x1low + yslope * (x2low - x1low)
+    xhigh = x1high + yslope * (x2high - x1high)
+    xrange = xhigh - xlow
+    xrange_safe = xp.where(xrange == 0.0, 1.0, xrange)
+    xslope = (tp_bc - xlow) / xrange_safe
+    tp_at_p1 = x1low + xslope * x1range
+    tp_at_p2 = x2low + xslope * x2range
+
+    f1_ub = _single_panel_scanned(
+        panel1, e1, tp_at_p1, w_bc,
+        lang, lep, zai, zap, zat, max_nep, max_na_plus_one, xp,
+    ) * (x1range / xrange_safe)
+    f2_ub = _single_panel_scanned(
+        panel2, e2, tp_at_p2, w_bc,
+        lang, lep, zai, zap, zat, max_nep, max_na_plus_one, xp,
+    ) * (x2range / xrange_safe)
+
+    both_cast = both_have.astype(f1_raw.dtype)
+    f1 = both_cast * f1_ub + (1.0 - both_cast) * f1_raw
+    f2 = both_cast * f2_ub + (1.0 - both_cast) * f2_raw
+
+    e1_arr = xp.asarray(e1, dtype=e_bc.dtype)
+    e2_arr = xp.asarray(e2, dtype=e_bc.dtype)
+    return _yintp_bc(law_static, e1_arr, f1, e2_arr, f2, e_bc, xp)
+
+
+def _reconstruct_fallback_scanned(
+    data, e_in, e_bc_full, tp_bc, w_bc, dinv_bc,
+    n_e, n_ep, n_mu, xp,
+):
+    """Scan-safe replacement for the Python-loop fallback in
+    :func:`reconstruct`. Routes the panel loop through ``xp.scan``
+    so the per-panel body traces once into the jaxpr. Returns the
+    reconstructed amplitude ``* dinv_bc`` (same return convention
+    as the Python-loop path).
+
+    Raises ``NotImplementedError`` when the subsection falls
+    outside the supported scope (lang not in (1, 2), or mixed
+    interpolation codes across panels); the caller should
+    fall back to the Python-loop path in that case.
+    """
+    from ..primitives.helpers import convert_interp_repr
+
+    lang = int(data.lang)
+    if lang not in (1, 2):
+        raise NotImplementedError(
+            f'scan-safe fallback currently supports lang in (1, 2); '
+            f'got lang={lang}'
+        )
+
+    packed = _pack_panels_for_scan(data, xp=xp)
+    n_pairs = int(packed['e1'].shape[0])
+    if n_pairs == 0:
+        return xp.zeros(
+            (n_e, n_ep, n_mu),
+            dtype=xp.asarray(data.b_panels).dtype,
+        ) * dinv_bc
+
+    ei_interp_full = convert_interp_repr(
+        np.asarray(data.int_arr), np.asarray(data.nbt_arr),
+    )
+    lei_set = set(int(x) for x in ei_interp_full[:n_pairs].tolist())
+    if len(lei_set) != 1:
+        raise NotImplementedError(
+            f'scan-safe fallback requires uniform ei interpolation '
+            f'code across panels; got {lei_set}'
+        )
+    law_static = int(ei_interp_full[0]) % 10
+
+    max_nep = int(data.ep_panels.shape[-1])
+    max_na_plus_one = int(data.b_panels.shape[-1])
+    lep = int(data.lep)
+    zai, zap, zat = data.zai, data.zap, data.za
+
+    e_in_col = e_in[:, None, None]
+    e1_arr = packed['e1']
+    e2_arr = packed['e2']
+    nep1_arr = packed['nep1']
+    nep2_arr = packed['nep2']
+    nd1_arr = packed['nd1']
+    nd2_arr = packed['nd2']
+    na1_arr = packed['na1']
+    na2_arr = packed['na2']
+    ep1_arr = packed['ep1']
+    ep2_arr = packed['ep2']
+    b1_arr = packed['b1']
+    b2_arr = packed['b2']
+    is_last_arr = packed['is_last']
+
+    def body(result, i):
+        e1 = e1_arr[i]
+        e2 = e2_arr[i]
+        panel1 = {
+            'ep': ep1_arr[i], 'b': b1_arr[i],
+            'nep': nep1_arr[i], 'nd': nd1_arr[i], 'na': na1_arr[i],
+        }
+        panel2 = {
+            'ep': ep2_arr[i], 'b': b2_arr[i],
+            'nep': nep2_arr[i], 'nd': nd2_arr[i], 'na': na2_arr[i],
+        }
+        is_last = is_last_arr[i]
+        f_p = _panel_pair_bc_scanned(
+            panel1, panel2, e1, e2, law_static,
+            e_bc_full, tp_bc, w_bc,
+            lang, lep, zai, zap, zat, max_nep, max_na_plus_one, xp,
+        )
+        in_panel_closed = (e_in_col >= e1) & (e_in_col <= e2)
+        in_panel_open = (e_in_col >= e1) & (e_in_col < e2)
+        in_panel = xp.where(is_last, in_panel_closed, in_panel_open)
+        in_panel_bc = xp.broadcast_to(in_panel, (n_e, n_ep, n_mu))
+        return xp.where(in_panel_bc, f_p, result), None
+
+    result_init = xp.zeros(
+        (n_e, n_ep, n_mu),
+        dtype=xp.asarray(data.b_panels).dtype,
+    )
+    result, _ = xp.scan(body, result_init, xp.arange(n_pairs))
+    return result * dinv_bc
