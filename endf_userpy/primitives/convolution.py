@@ -34,8 +34,13 @@ def _fftconvolve(values, kernel_vals, xp):
     scipy.signal.fftconvolve broadcasts the leading (non-axis)
     dimensions; jax.scipy.signal.fftconvolve requires them to match
     exactly. Broadcast the kernel explicitly before the JAX call.
+
+    ``'numba'`` falls back to the numpy path: numba has no native
+    FFT and ``NumbaBackend`` inherits from ``NumpyBackend`` for the
+    non-accelerated array ops, so scipy.signal.fftconvolve on the
+    underlying numpy arrays is the correct behaviour.
     """
-    if xp.name == 'numpy':
+    if xp.name in ('numpy', 'numba'):
         return fftconvolve(values, kernel_vals, mode='same', axes=-1)
     if xp.name == 'jax':
         from jax.scipy.signal import fftconvolve as jax_fftconvolve
@@ -60,7 +65,6 @@ def adaptive_convolve(
     richardson=True,
     xp=None,
     mesh_bounds=None,
-    chunk_size=1024,
     window_kernel_widths=None,
 ):
     """Compute `(f * kernel)(E)` at `eval_points` via adaptive FFT
@@ -123,55 +127,45 @@ def adaptive_convolve(
         ``eval_points.min() - margin`` / ``.max() + margin``. When
         passed, the ``n_kernel_widths * kernel_width`` margin is
         assumed to be already included; do not double-count.
-    chunk_size : int, default 1024
-        Memory-cap chunk size applied at two independent stages:
-
-        1. **f-eval chunking** -- the internal mesh is split into
-           chunks of this size, ``f`` is evaluated on each chunk,
-           and the results are concatenated along the last axis.
-           Caps the peak size of the (..., n_mesh) tensor that
-           ``f`` materialises (the MF6 LAW=1 kernel's
-           ``(n_Ein, n_mesh, n_mu)`` reconstruction grows to GB of
-           intermediates on a resonance-dense file after a few mesh
-           doublings).
-        2. **fftconvolve chunking** -- the flattened leading axes
-           of ``values`` are processed in blocks of this size
-           before the FFT convolution, with results reassembled by
-           reshape. Each FFT invocation allocates a complex128
-           workspace of shape ``(block, n_mesh)``, so chunking the
-           leading axes caps that too.
-
-        Both splits are numerically no-ops; they only trade peak
-        memory for a small Python loop. Set to ``None`` to disable
-        both.
     window_kernel_widths : float or None, default None
         Target span of each windowed sub-convolution, in units of
-        ``kernel_width``. ``None`` auto-selects per backend state:
+        ``kernel_width``. ``None`` (default) resolves to ``inf``
+        -> **single window** on both the concrete-eval_points and
+        tracer-eval_points paths. The single-window default keeps
+        jit compile time bounded regardless of eval_points layout:
+        windowing under jit unrolls ``W x max_iter`` adaptive
+        doublings into the XLA graph (one unroll per Python-level
+        window iteration), which on wide, scattered eval_points
+        pushes compile time from seconds to many minutes.
 
-        * **concrete eval_points** (eager numpy / eager jax):
-          auto value is ``50.0``; function partitions the query
-          via point-centric interval merge (each query point
-          sprouts a ``[E - margin, E + margin]`` segment; overlapping
-          segments are merged). Cost is proportional to the number
-          of merged disjoint segments, not the span of ``eval_points``.
-        * **tracer eval_points** (``@jax.jit`` / ``jax.grad``):
-          auto value is ``inf`` -> single-window. This preserves
-          the pre-windowing XLA trace graph; windowing under jit
-          unrolls ``W x max_iter`` adaptive doublings at trace
-          time, which can push jit compile time from seconds to
-          many minutes for scattered ``eval_points``. Pass an
-          explicit float to opt into windowing under jit (memory
-          reduction at the cost of compile time).
+        Pass an explicit finite float to opt into windowing. Two
+        partition strategies:
 
-        When set to an explicit float, both branches use fixed-grid
-        partition: ``W = ceil((eval_hi - eval_lo) / (
-        window_kernel_widths * kernel_width))`` static windows,
-        with ``eval_points`` split by index into contiguous slices
-        under the "sorted eval_points" precondition. XLA sees a
-        static graph.
+        * **concrete eval_points with no mesh_bounds**: point-centric
+          interval merge. Each query point sprouts a
+          ``[E - margin, E + margin]`` segment; overlapping segments
+          are merged. Cost scales with the number of merged segments.
+          Best eager memory savings on wide, scattered queries
+          (e.g. actinide broadening); not jit-friendly because the
+          Python-level merge loop unrolls at trace time.
+        * **tracer eval_points, or concrete with ``mesh_bounds``
+          given**: fixed-grid partition.
+          ``W = ceil((eval_hi - eval_lo) / (
+          window_kernel_widths * kernel_width))`` static windows,
+          with ``eval_points`` split by index into contiguous
+          slices under the "sorted eval_points" precondition. XLA
+          sees a static graph; routed through ``xp.scan`` so the
+          body traces once.
 
-        Pass ``inf`` or a very large value (e.g. ``1e9``) to force
-        single-window behaviour explicitly.
+        Rules of thumb:
+
+        * Leave as ``None`` for predictable jit compile times and
+          simple eager workflows.
+        * Pass ``50.0`` for maximum eager-memory savings on actinide
+          broadening (point-centric merge; eager only).
+        * Pass ``50.0`` + ``mesh_bounds=`` for memory savings under
+          jit (fixed-grid, scan-based; opt-in jit memory reduction
+          at the cost of a larger XLA trace graph).
 
     Returns
     -------
@@ -210,26 +204,38 @@ def adaptive_convolve(
 
     margin = n_kernel_widths * kernel_width
 
-    def _single_window(win_eval_points, win_emin, win_emax):
+    from ..mfsec_interpretation.mf6_law1_kernel import (
+        _is_jax_tracer as _is_tracer,
+    )
+
+    def _build_mesh(win_emin, win_emax, n_intervals):
+        """Numpy mesh when bounds are concrete (embeds as a jaxpr
+        constant under @jax.jit), xp-native mesh only when bounds
+        are jax tracers (``xp.scan`` body on jax). Keeps the trace
+        graph small on the single-window path."""
+        if _is_tracer(win_emin) or _is_tracer(win_emax):
+            return xp.linspace(win_emin, win_emax, n_intervals + 1)
+        return np.linspace(win_emin, win_emax, n_intervals + 1)
+
+    def _single_window(win_eval_points, win_emin, win_emax, win_span):
         """One adaptive_convolve pass over a single [win_emin,
         win_emax] range at the eval points ``win_eval_points``.
-        Closes over all tuning parameters of the outer call."""
-        n_intervals = max(1, int(np.ceil((win_emax - win_emin) / h0)))
+        Closes over all tuning parameters of the outer call.
+
+        ``win_span`` is the Python-float window width (always a
+        static value even when ``win_emin`` / ``win_emax`` are jax
+        tracers under ``xp.scan``). ``n_intervals`` and ``h`` are
+        derived from ``win_span`` so the mesh *shape* stays static
+        for the XLA trace; the mesh *values* fall back to
+        ``np.linspace`` whenever the bounds are concrete to keep
+        the jaxpr small (see ``_build_mesh``).
+        """
+        n_intervals = max(1, int(np.ceil(win_span / h0)))
         n_intervals = 1 << int(np.ceil(np.log2(n_intervals)))
-        mesh = np.linspace(win_emin, win_emax, n_intervals + 1)
-        h = (win_emax - win_emin) / n_intervals
+        mesh = _build_mesh(win_emin, win_emax, n_intervals)
+        h = win_span / n_intervals
 
-        def _f_chunked(points_1d):
-            if chunk_size is None or points_1d.shape[0] <= chunk_size:
-                return f(points_1d)
-            parts = []
-            for start in range(0, points_1d.shape[0], chunk_size):
-                parts.append(f(points_1d[start:start + chunk_size]))
-            return xp.concatenate(parts, axis=-1)
-
-        values = _f_chunked(mesh)
-        if xp.name == 'numpy':
-            values = np.asarray(values)
+        values = xp.asarray(f(mesh))
         if values.shape[-1] != mesh.shape[0]:
             raise ValueError(
                 f"f(mesh) must return shape (..., {mesh.shape[0]}); "
@@ -239,35 +245,13 @@ def adaptive_convolve(
         def _convolve_and_sample(values, h, mesh):
             n_half = int(np.ceil(n_kernel_widths * kernel_width / h))
             delta = np.arange(-n_half, n_half + 1) * h
-            k_vals = kernel(delta)
-            if xp.name == 'jax':
-                k_vals = xp.asarray(k_vals)
-            else:
-                k_vals = np.asarray(k_vals)
-
-            def _conv_block(block):
-                k_vals_b = k_vals.reshape(
-                    (1,) * (block.ndim - 1) + k_vals.shape,
-                )
-                conv = _fftconvolve(block, k_vals_b, xp) * h
-                return _interp_last_axis(
-                    conv, mesh, win_eval_points, xp,
-                )
-
-            lead_shape = values.shape[:-1]
-            n_lead = 1
-            for s in lead_shape:
-                n_lead *= int(s)
-            if (chunk_size is None or values.ndim <= 1
-                    or n_lead <= chunk_size):
-                return _conv_block(values)
-            flat = values.reshape(n_lead, values.shape[-1])
-            parts = []
-            for start in range(0, n_lead, chunk_size):
-                parts.append(_conv_block(flat[start:start + chunk_size]))
-            stacked = xp.concatenate(parts, axis=0)
-            return stacked.reshape(
-                lead_shape + (int(stacked.shape[-1]),),
+            k_vals = xp.asarray(kernel(delta))
+            k_vals_b = k_vals.reshape(
+                (1,) * (values.ndim - 1) + k_vals.shape,
+            )
+            conv = _fftconvolve(values, k_vals_b, xp) * h
+            return _interp_last_axis(
+                conv, mesh, win_eval_points, xp,
             )
 
         def _to_host_max_abs(arr):
@@ -281,12 +265,15 @@ def adaptive_convolve(
         converged = False
         is_traced_local = False
 
+        n_intervals_cur = n_intervals
         for it in range(1, max_iter + 1):
-            new_mesh = np.empty(2 * mesh.shape[0] - 1)
-            new_mesh[0::2] = mesh
-            new_mesh[1::2] = 0.5 * (mesh[:-1] + mesh[1:])
-
-            mid_values = _f_chunked(new_mesh[1::2])
+            # Mesh doubling: build the new uniform mesh (numpy when
+            # bounds are concrete; xp-native only when tracers, see
+            # ``_build_mesh``). Compute f on the inserted midpoints
+            # only. Shape stays static.
+            n_intervals_cur = 2 * n_intervals_cur
+            new_mesh = _build_mesh(win_emin, win_emax, n_intervals_cur)
+            mid_values = f(new_mesh[1::2])
             if xp.name == 'jax':
                 new_values = xp.zeros(
                     values.shape[:-1] + (new_mesh.shape[0],),
@@ -305,7 +292,7 @@ def adaptive_convolve(
 
             mesh = new_mesh
             values = new_values
-            h = h / 2.0
+            h = win_span / n_intervals_cur
 
             R_cur = _convolve_and_sample(values, h, mesh)
 
@@ -348,10 +335,14 @@ def adaptive_convolve(
     # subset; [win_emin, win_emax] is its internal mesh range
     # (already including the kernel margin on both sides).
     if window_kernel_widths is None:
-        # Auto: 50 kernel widths per window for concrete, infinity
-        # (= single window) for tracer. See docstring for the trace
-        # time rationale.
-        effective_wkw = float('inf') if is_tracer else 50.0
+        # Auto: single-window default (``inf``). Opt in to windowing
+        # by passing a finite value (e.g. ``50``) for memory
+        # reduction on wide, resonance-dense queries. Defaulting to
+        # single-window keeps jit-compile fast when ``eval_points``
+        # is a concrete closure argument of a jitted function, where
+        # auto-windowing would otherwise unroll ``W`` adaptive-
+        # convolve bodies into the XLA graph.
+        effective_wkw = float('inf')
     else:
         effective_wkw = float(window_kernel_widths)
     window_span = effective_wkw * kernel_width
@@ -360,8 +351,19 @@ def adaptive_convolve(
         uniformly subdivide the eval_points' *own* range [emin+margin,
         emax-margin] (``mesh_bounds`` is the mesh extent, so
         ``emin + margin`` is the lower eval_points bound by
-        convention). Returns a list of
-        (slice_start, slice_stop, win_emin, win_emax)."""
+        convention). Returns ``(segments, uniform_window_span,
+        per_window)``.
+
+        - ``segments``: list of ``(slice_start, slice_stop,
+          win_emin, win_emax)``.
+        - ``uniform_window_span``: a static Python float, equal
+          to ``win_emax - win_emin`` for every slot. Fed to
+          :func:`_run_scan_windows` so the mesh shape stays static
+          across scan iterations.
+        - ``per_window``: static integer slice length so scan
+          iterations have uniform tensor shape (the last slice is
+          padded to this length before scan runs).
+        """
         eval_lo = emin + margin
         eval_hi = emax - margin
         if eval_hi <= eval_lo:
@@ -373,15 +375,19 @@ def adaptive_convolve(
         W = max(1, int(np.ceil((eval_hi - eval_lo) / window_span)))
         per_window = max(1, int(np.ceil(n_eval / W)))
         n_segments = int(np.ceil(n_eval / per_window))
+        slot_span = (eval_hi - eval_lo) / n_segments
+        uniform_window_span = slot_span + 2.0 * margin
         out = []
         for i in range(n_segments):
             start = i * per_window
             stop = min(start + per_window, n_eval)
-            slot_lo = eval_lo + (eval_hi - eval_lo) * i / n_segments
-            slot_hi = eval_lo + (eval_hi - eval_lo) * (i + 1) / n_segments
+            slot_lo = eval_lo + slot_span * i
+            slot_hi = slot_lo + slot_span
             out.append((start, stop, slot_lo - margin, slot_hi + margin))
-        return out
+        return out, uniform_window_span, per_window
 
+    _fixed_grid_window_span = None
+    _fixed_grid_per_window = None
     if is_tracer:
         # Fixed-grid partition from static mesh_bounds. Required under
         # @jax.jit / jax.grad wrt eval_points because segment count
@@ -405,7 +411,9 @@ def adaptive_convolve(
         n_eval = int(eval_points.shape[0])
         if n_eval == 0:
             return xp.zeros((0,), dtype=xp.float64)
-        segments = _fixed_grid_segments(n_eval, emin, emax)
+        segments, _fixed_grid_window_span, _fixed_grid_per_window = (
+            _fixed_grid_segments(n_eval, emin, emax)
+        )
     else:
         n_eval = int(eval_points.shape[0])
         if n_eval == 0:
@@ -428,9 +436,23 @@ def adaptive_convolve(
                     f"mesh_bounds must satisfy emax > emin; got "
                     f"({emin}, {emax})"
                 )
-            segments = _fixed_grid_segments(n_eval, emin, emax)
+            segments, _fixed_grid_window_span, _fixed_grid_per_window = (
+                _fixed_grid_segments(n_eval, emin, emax)
+            )
+        elif effective_wkw == float('inf'):
+            # Single-window shortcut (default): skip the point-centric
+            # merge, build one segment covering every eval point. This
+            # is the predictable fast path for jit workflows that
+            # capture ``eval_points`` as a concrete Python closure
+            # (and for eager callers who have not opted into windowing).
+            segments = [(
+                0, n_eval,
+                float(eval_points[0]) - margin,
+                float(eval_points[-1]) + margin,
+            )]
         else:
-            # Point-centric merge: each eval point sprouts a
+            # Point-centric merge (opt-in via explicit finite
+            # ``window_kernel_widths``): each eval point sprouts a
             # [p - margin, p + margin] interval; overlapping
             # intervals coalesce into disjoint segments.
             segments = []
@@ -451,15 +473,168 @@ def adaptive_convolve(
             segments.append((seg_start, n_eval, seg_lo, seg_hi))
 
     # ---- Run segments and concatenate -------------------------------
+    # Fixed-grid partitions (same width across windows) can be routed
+    # through ``xp.scan`` so the body is traced once; under jax that
+    # keeps the XLA trace size O(1) in the window count rather than
+    # unrolling W copies of the mesh-doubling loop. Point-centric
+    # segments have varying widths (merged intervals) and stay on
+    # the Python for-loop.
+    use_scan = (
+        _fixed_grid_window_span is not None
+        and len(segments) > 1
+    )
+    if use_scan:
+        return _run_scan_windows(
+            segments, _fixed_grid_window_span,
+            _single_window, eval_points, n_eval, xp,
+        )
     if len(segments) == 1:
         start, stop, win_lo, win_hi = segments[0]
-        return _single_window(eval_points[start:stop], win_lo, win_hi)
+        win_span = float(win_hi) - float(win_lo)
+        return _single_window(
+            eval_points[start:stop], win_lo, win_hi, win_span,
+        )
+
+    # Multi-segment point-centric path. If all segments share the
+    # same shape (``per_window`` and ``win_span``), batch them via
+    # ``xp.map`` so the dispatcher produces one body for the whole
+    # batch. The per-backend map strategy lives in ``xp.map`` on
+    # each backend: numpy iterates with ``np.stack``, jax jit uses
+    # ``jax.lax.map`` (one body in the XLA graph), jax eager falls
+    # back to a jnp-stack loop. Non-uniform segments stay on the
+    # Python for-loop below.
+    if len(segments) > 1:
+        first_pw = segments[0][1] - segments[0][0]
+        first_span = segments[0][3] - segments[0][2]
+        uniform = all(
+            (s[1] - s[0]) == first_pw and
+            abs((s[3] - s[2]) - first_span)
+            <= 1e-9 * max(1.0, abs(first_span))
+            for s in segments[1:]
+        )
+        if uniform:
+            return _run_map_point_centric(
+                segments, first_span, first_pw,
+                _single_window, eval_points, xp,
+            )
     parts = []
     for start, stop, win_lo, win_hi in segments:
+        win_span = float(win_hi) - float(win_lo)
         parts.append(
-            _single_window(eval_points[start:stop], win_lo, win_hi),
+            _single_window(
+                eval_points[start:stop], win_lo, win_hi, win_span,
+            ),
         )
     return xp.concatenate(parts, axis=-1)
+
+
+def _run_map_point_centric(segments, win_span, per_window,
+                           single_window, eval_points, xp):
+    """Batch uniform-shape point-centric segments through
+    ``xp.map`` so the ``_single_window`` body traces once under
+    jax jit (and falls back to a Python for-loop under jax eager
+    where ``jax.lax.map``'s per-invocation compile cost would
+    exceed the dispatch savings).
+
+    All segments share ``per_window`` points and ``win_span``
+    width; only ``win_emin`` / ``win_emax`` vary per segment.
+    """
+    n_segs = len(segments)
+    eval_batch = xp.stack(
+        [eval_points[s[0]:s[1]] for s in segments], axis=0,
+    )
+    win_lo_arr = xp.asarray(
+        [float(s[2]) for s in segments], dtype=xp.float64,
+    )
+    win_hi_arr = xp.asarray(
+        [float(s[3]) for s in segments], dtype=xp.float64,
+    )
+
+    def body(args):
+        win_eval, win_lo, win_hi = args
+        return single_window(win_eval, win_lo, win_hi, win_span)
+
+    stacked = xp.map(body, (eval_batch, win_lo_arr, win_hi_arr))
+    moved = xp.moveaxis(stacked, 0, -2)
+    flat_shape = moved.shape[:-2] + (n_segs * per_window,)
+    return moved.reshape(flat_shape)
+
+
+def _run_scan_windows(segments, window_span, single_window,
+                      eval_points, n_eval, xp):
+    """Run uniform-span windows via ``xp.scan`` and reassemble.
+
+    All segments share the same ``window_span`` (a static Python
+    float, equal to ``win_emax - win_emin`` for every slot). Each
+    scan iteration consumes one static-size slice of a padded
+    ``eval_points`` plus a per-iteration ``(win_lo, win_hi)`` pair,
+    produces a static-shape output, and the stack is reshaped and
+    sliced back to ``n_eval``.
+    """
+    W = len(segments)
+    per_window = segments[0][1] - segments[0][0]
+    # Pad eval_points to length W * per_window with trailing copies
+    # of the last real value so the dropped tail doesn't contaminate
+    # the kept output after slicing.
+    n_padded = W * per_window
+    if n_padded == n_eval:
+        eval_pts_padded = eval_points
+    else:
+        pad = xp.full(
+            (n_padded - n_eval,),
+            eval_points[-1],
+            dtype=eval_points.dtype,
+        )
+        eval_pts_padded = xp.concatenate([eval_points, pad], axis=0)
+
+    # Pre-compute per-window (win_lo, win_hi) as static xp arrays
+    # of shape (W,). Pass to scan as xs so the body sees one row
+    # per iteration.
+    win_lo_arr = xp.asarray(
+        [float(s[2]) for s in segments], dtype=xp.float64,
+    )
+    win_hi_arr = xp.asarray(
+        [float(s[3]) for s in segments], dtype=xp.float64,
+    )
+    starts_arr = xp.asarray(
+        [s[0] for s in segments], dtype=xp.int64,
+    )
+
+    # Dynamic gather: ``xp.take`` with a static-shape index array
+    # whose values depend on ``start`` works on both backends.
+    # NumpyBackend: numpy integer indexing. JaxBackend: compiles to
+    # ``jax.lax.gather`` with tracer-safe index arithmetic.
+    offsets = xp.arange(per_window)
+
+    def body(carry, idx_tuple):
+        start, win_lo, win_hi = idx_tuple
+        win_eval = xp.take(
+            eval_pts_padded, start + offsets, axis=0,
+        )
+        y = single_window(win_eval, win_lo, win_hi, window_span)
+        return carry, y
+
+    # ``xp.scan`` on NumpyBackend expects xs as an iterable of
+    # elements; on jax it uses lax.scan which takes a pytree with
+    # a leading axis. Build xs as a list of per-iteration tuples so
+    # both backends iterate the same way.
+    if xp.name == 'jax':
+        xs = (starts_arr, win_lo_arr, win_hi_arr)
+        _, stacked = xp.scan(body, None, xs)
+    else:
+        xs = list(zip(
+            [int(x) for x in starts_arr],
+            [float(x) for x in win_lo_arr],
+            [float(x) for x in win_hi_arr],
+        ))
+        _, stacked = xp.scan(body, None, xs)
+
+    # stacked shape: (W, leading..., per_window). Move axis 0 to
+    # second-to-last, flatten the two last axes, strip the padding.
+    moved = xp.moveaxis(stacked, 0, -2)
+    flat_shape = moved.shape[:-2] + (W * per_window,)
+    flat = moved.reshape(flat_shape)
+    return flat[..., :n_eval]
 
 
 def _interp_last_axis(arr, x_in, x_out, xp=None):
@@ -479,6 +654,25 @@ def _interp_last_axis(arr, x_in, x_out, xp=None):
     if xp is None:
         xp = array_ns.get_backend('numpy')
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
+
+    if _is_jax_tracer(x_in):
+        # Tracer mesh (e.g. ``xp.linspace(tracer_lo, tracer_hi, n)``
+        # under ``xp.scan`` in adaptive_convolve's window loop):
+        # keep every arithmetic step xp-native so x_in flows through
+        # jit/grad. Mesh shape is still static (``n`` is a Python
+        # int at trace time).
+        n_in = int(x_in.shape[0])
+        x0 = x_in[0]
+        h = (x_in[-1] - x_in[0]) / (n_in - 1)
+        idx_raw = xp.floor((x_out - x0) / h).astype(xp.int32)
+        idx = xp.clip(idx_raw, 0, n_in - 2)
+        x_left = xp.take(x_in, idx, axis=0)
+        x_right = xp.take(x_in, idx + 1, axis=0)
+        t = (x_out - x_left) / (x_right - x_left)
+        left = xp.take(arr, idx, axis=-1)
+        right = xp.take(arr, idx + 1, axis=-1)
+        return left * (1.0 - t) + right * t
+
     x_in_np = np.asarray(x_in)
     n_in = x_in_np.shape[0]
     x0 = float(x_in_np[0])

@@ -616,6 +616,7 @@ def _get_particle_production_dxs_dE_impl(
     zap = physconst.get_zap_for_particle(particle)
     xp = options.backend
     broadening_mesh_bounds = options.broadening_mesh_bounds
+    broadening_wkw = options.broadening_window_kernel_widths
     kernel, kernel_width = _normalize_broadening(broadening, xp=xp)
     # Widened MT iteration (issue #130): see _get_particle_production_xs_impl.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
@@ -653,6 +654,7 @@ def _get_particle_production_dxs_dE_impl(
             kernel=kernel, kernel_width=kernel_width, xp=xp,
             options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
+            window_kernel_widths=broadening_wkw,
         )
 
     def _admitted_cont_mts():
@@ -718,6 +720,7 @@ def _get_particle_production_dxs_dE_impl(
             kernel=kernel, kernel_width=kernel_width, xp=xp,
             options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
+            window_kernel_widths=broadening_wkw,
         )
     else:
         cont = quant_mt_zap.compute_cumulative_quantity(
@@ -902,6 +905,7 @@ def _get_particle_production_ddxs_impl(
     zap = physconst.get_zap_for_particle(particle)
     xp = options.backend
     broadening_mesh_bounds = options.broadening_mesh_bounds
+    broadening_wkw = options.broadening_window_kernel_widths
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
     _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _query_state)
 
@@ -965,6 +969,7 @@ def _get_particle_production_ddxs_impl(
             kernel=kernel, kernel_width=kernel_width, xp=xp,
             options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
+            window_kernel_widths=broadening_wkw,
         )
 
     def cont_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -1035,6 +1040,7 @@ def _get_particle_production_ddxs_impl(
             kernel=kernel, kernel_width=kernel_width, xp=xp,
             options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
+            window_kernel_widths=broadening_wkw,
         )
 
     def mf15_cont_select(endf_dict, mt, zap, einc, eouts, mus):
@@ -1062,6 +1068,7 @@ def _get_particle_production_ddxs_impl(
             kernel=kernel, kernel_width=kernel_width, xp=xp,
             options=options, _query_state=_query_state,
             mesh_bounds=broadening_mesh_bounds,
+            window_kernel_widths=broadening_wkw,
         )
     else:
         cont = quant_mt_zap.compute_cumulative_quantity(

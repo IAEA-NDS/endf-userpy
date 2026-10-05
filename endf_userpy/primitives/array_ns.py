@@ -61,6 +61,24 @@ def _validate_accelerator(name: str) -> None:
         )
 
 
+def _inside_jit_trace() -> bool:
+    """True iff the caller sits inside an active ``@jax.jit`` /
+    ``jax.grad`` trace. Falls back to False when jax is unavailable
+    or the detection helper disappears in a future release; the
+    eager fallback path is always correct, just not jit-optimal.
+    Uses the private ``jax._src.core.trace_state_clean`` helper
+    because jax has no public ``is_tracing()`` as of jax 0.5.x.
+    """
+    try:
+        from jax._src.core import trace_state_clean
+    except Exception:
+        return False
+    try:
+        return not trace_state_clean()
+    except Exception:
+        return False
+
+
 def _numba_importable() -> bool:
     try:
         import numba  # noqa: F401
@@ -120,6 +138,27 @@ class NumpyBackend:
         if all(y is None for y in ys):
             return carry, None
         return carry, self._np.stack(ys)
+
+    def map(self, fn, xs):
+        """Independent-iteration map: ``y_i = fn(x_i)``, with ``xs``
+        carrying iteration along its leading axis; returns the
+        ``y_i`` stacked along that axis.
+
+        ``xs`` may be a single array (iterated as ``xs[0], xs[1],
+        ...``) or a tuple/list of arrays sharing a common leading
+        axis (iterated zip-style, with ``fn`` receiving the same
+        tuple shape as ``xs``). NumpyBackend runs this as a
+        Python for-loop with ``np.stack`` on the outputs; this is
+        the behavioural counterpart of ``jax.lax.map`` on
+        :class:`JaxBackend`.
+        """
+        if isinstance(xs, (tuple, list)):
+            n = int(xs[0].shape[0])
+            ys = [fn(tuple(x[i] for x in xs)) for i in range(n)]
+        else:
+            n = int(xs.shape[0])
+            ys = [fn(xs[i]) for i in range(n)]
+        return self._np.stack(ys)
 
     def solve(self, a, b):
         """Solve `a @ x == b`. Delegates to `np.linalg.solve`."""
@@ -193,6 +232,32 @@ class JaxBackend:
 
     def scan(self, fn, init, xs):
         return self._lax.scan(fn, init, xs)
+
+    def map(self, fn, xs):
+        """Independent-iteration map; see :meth:`NumpyBackend.map`.
+
+        Under an active ``@jax.jit`` / ``jax.grad`` trace this
+        dispatches to ``jax.lax.map`` so XLA sees one body
+        regardless of iteration count. In eager mode (no active
+        trace) ``jax.lax.map`` has to compile per invocation,
+        which on complex bodies can exhaust the LLVM memory
+        allocator -- there we fall back to a Python for-loop with
+        ``jnp.stack``, letting jax's per-op cache amortise the
+        compile across elements with matching shape. The
+        detection uses the private ``jax._src.core.trace_state_clean``
+        helper (there is no public ``is_tracing()`` as of jax
+        0.5.x); if that symbol disappears, we fall back to the
+        eager path, which is always correct.
+        """
+        if _inside_jit_trace():
+            return self._lax.map(fn, xs)
+        if isinstance(xs, (tuple, list)):
+            n = int(xs[0].shape[0])
+            ys = [fn(tuple(x[i] for x in xs)) for i in range(n)]
+        else:
+            n = int(xs.shape[0])
+            ys = [fn(xs[i]) for i in range(n)]
+        return self._jnp.stack(ys)
 
     def solve(self, a, b):
         return self._jnp.linalg.solve(a, b)
