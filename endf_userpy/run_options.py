@@ -81,6 +81,28 @@ class RunOptions:
         tracer ``energies_out``. Include the
         ``n_kernel_widths * kernel_width`` margin on both sides.
         See Phase 5 of #290.
+    broadening_window_kernel_widths : float, optional
+        Target span of each windowed sub-convolution inside
+        ``adaptive_convolve``, in units of ``kernel_width``.
+        Controls the memory-vs-compile-time trade-off for broadened
+        DDX / dxs_dE queries. ``None`` (default) resolves inside
+        ``adaptive_convolve`` to ``200`` for concrete ``energies_out``
+        and ``inf`` (= single window) for tracer. The 200 default
+        keeps the window count bounded (1-10 for most realistic
+        queries), so jit workflows that capture ``energies_out`` as
+        a Python closure get a small XLA trace while still enjoying
+        most of the memory savings on wide, resonance-dense queries.
+
+        Tune per workflow:
+
+        * Set to ``50`` to maximise eager-memory savings on actinide
+          broadening at the cost of a larger jit trace graph.
+        * Set to ``inf`` to disable windowing entirely (single mesh
+          over the full range; use when a jit workflow needs the
+          smallest possible XLA graph).
+
+        No effect unless a ``broadening=`` sigma is passed to the
+        top-level entry point.
     urr_quadrature : {'gauss_legendre_32', 'ross_10'}, default ``'gauss_legendre_32'``
         LRU=2 URR fluctuation-integral quadrature. ``'ross_10'`` is
         the NJOY-unresr-parity choice; ``'gauss_legendre_32'``
@@ -95,6 +117,7 @@ class RunOptions:
     mt5_contrib: bool = True
     backend: Any = 'auto'
     broadening_mesh_bounds: tuple[float, float] | None = None
+    broadening_window_kernel_widths: float | None = None
     urr_quadrature: str = 'gauss_legendre_32'
 
     def __post_init__(self):
