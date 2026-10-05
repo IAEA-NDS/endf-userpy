@@ -60,6 +60,8 @@ def adaptive_convolve(
     richardson=True,
     xp=None,
     mesh_bounds=None,
+    chunk_size=1024,
+    window_kernel_widths=None,
 ):
     """Compute `(f * kernel)(E)` at `eval_points` via adaptive FFT
     convolution on a doubling uniform internal mesh.
@@ -121,6 +123,55 @@ def adaptive_convolve(
         ``eval_points.min() - margin`` / ``.max() + margin``. When
         passed, the ``n_kernel_widths * kernel_width`` margin is
         assumed to be already included; do not double-count.
+    chunk_size : int, default 1024
+        Memory-cap chunk size applied at two independent stages:
+
+        1. **f-eval chunking** -- the internal mesh is split into
+           chunks of this size, ``f`` is evaluated on each chunk,
+           and the results are concatenated along the last axis.
+           Caps the peak size of the (..., n_mesh) tensor that
+           ``f`` materialises (the MF6 LAW=1 kernel's
+           ``(n_Ein, n_mesh, n_mu)`` reconstruction grows to GB of
+           intermediates on a resonance-dense file after a few mesh
+           doublings).
+        2. **fftconvolve chunking** -- the flattened leading axes
+           of ``values`` are processed in blocks of this size
+           before the FFT convolution, with results reassembled by
+           reshape. Each FFT invocation allocates a complex128
+           workspace of shape ``(block, n_mesh)``, so chunking the
+           leading axes caps that too.
+
+        Both splits are numerically no-ops; they only trade peak
+        memory for a small Python loop. Set to ``None`` to disable
+        both.
+    window_kernel_widths : float or None, default None
+        Target span of each windowed sub-convolution, in units of
+        ``kernel_width``. ``None`` auto-selects per backend state:
+
+        * **concrete eval_points** (eager numpy / eager jax):
+          auto value is ``50.0``; function partitions the query
+          via point-centric interval merge (each query point
+          sprouts a ``[E - margin, E + margin]`` segment; overlapping
+          segments are merged). Cost is proportional to the number
+          of merged disjoint segments, not the span of ``eval_points``.
+        * **tracer eval_points** (``@jax.jit`` / ``jax.grad``):
+          auto value is ``inf`` -> single-window. This preserves
+          the pre-windowing XLA trace graph; windowing under jit
+          unrolls ``W x max_iter`` adaptive doublings at trace
+          time, which can push jit compile time from seconds to
+          many minutes for scattered ``eval_points``. Pass an
+          explicit float to opt into windowing under jit (memory
+          reduction at the cost of compile time).
+
+        When set to an explicit float, both branches use fixed-grid
+        partition: ``W = ceil((eval_hi - eval_lo) / (
+        window_kernel_widths * kernel_width))`` static windows,
+        with ``eval_points`` split by index into contiguous slices
+        under the "sorted eval_points" precondition. XLA sees a
+        static graph.
+
+        Pass ``inf`` or a very large value (e.g. ``1e9``) to force
+        single-window behaviour explicitly.
 
     Returns
     -------
@@ -143,22 +194,12 @@ def adaptive_convolve(
     if xp is None:
         xp = array_ns.get_backend('numpy')
 
-    # eval_points may be a jax tracer under @jax.jit or when the
-    # caller took jax.grad wrt eval_points. Skip the numpy dtype
-    # normalisation in that case; the final interp step in
-    # _interp_last_axis works with a tracer eval_points as long as
-    # the internal mesh (always concrete) can be built from static
-    # bounds. Bounds come from ``mesh_bounds`` when provided; else
-    # derived from concrete eval_points as before (which fails
-    # helpfully if the caller forgot to pass mesh_bounds under jit).
     from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
-    if not _is_jax_tracer(eval_points):
+    is_tracer = _is_jax_tracer(eval_points)
+    if not is_tracer:
         eval_points = np.asarray(eval_points, dtype=float)
-        if eval_points.ndim != 1:
-            raise ValueError("eval_points must be 1D")
-    else:
-        if eval_points.ndim != 1:
-            raise ValueError("eval_points must be 1D")
+    if eval_points.ndim != 1:
+        raise ValueError("eval_points must be 1D")
     if kernel_width <= 0:
         raise ValueError("kernel_width must be positive")
     if max_iter < 1:
@@ -168,8 +209,184 @@ def adaptive_convolve(
         h0 = kernel_width / 2.0
 
     margin = n_kernel_widths * kernel_width
-    if mesh_bounds is None:
-        if _is_jax_tracer(eval_points):
+
+    def _single_window(win_eval_points, win_emin, win_emax):
+        """One adaptive_convolve pass over a single [win_emin,
+        win_emax] range at the eval points ``win_eval_points``.
+        Closes over all tuning parameters of the outer call."""
+        n_intervals = max(1, int(np.ceil((win_emax - win_emin) / h0)))
+        n_intervals = 1 << int(np.ceil(np.log2(n_intervals)))
+        mesh = np.linspace(win_emin, win_emax, n_intervals + 1)
+        h = (win_emax - win_emin) / n_intervals
+
+        def _f_chunked(points_1d):
+            if chunk_size is None or points_1d.shape[0] <= chunk_size:
+                return f(points_1d)
+            parts = []
+            for start in range(0, points_1d.shape[0], chunk_size):
+                parts.append(f(points_1d[start:start + chunk_size]))
+            return xp.concatenate(parts, axis=-1)
+
+        values = _f_chunked(mesh)
+        if xp.name == 'numpy':
+            values = np.asarray(values)
+        if values.shape[-1] != mesh.shape[0]:
+            raise ValueError(
+                f"f(mesh) must return shape (..., {mesh.shape[0]}); "
+                f"got {values.shape}"
+            )
+
+        def _convolve_and_sample(values, h, mesh):
+            n_half = int(np.ceil(n_kernel_widths * kernel_width / h))
+            delta = np.arange(-n_half, n_half + 1) * h
+            k_vals = kernel(delta)
+            if xp.name == 'jax':
+                k_vals = xp.asarray(k_vals)
+            else:
+                k_vals = np.asarray(k_vals)
+
+            def _conv_block(block):
+                k_vals_b = k_vals.reshape(
+                    (1,) * (block.ndim - 1) + k_vals.shape,
+                )
+                conv = _fftconvolve(block, k_vals_b, xp) * h
+                return _interp_last_axis(
+                    conv, mesh, win_eval_points, xp,
+                )
+
+            lead_shape = values.shape[:-1]
+            n_lead = 1
+            for s in lead_shape:
+                n_lead *= int(s)
+            if (chunk_size is None or values.ndim <= 1
+                    or n_lead <= chunk_size):
+                return _conv_block(values)
+            flat = values.reshape(n_lead, values.shape[-1])
+            parts = []
+            for start in range(0, n_lead, chunk_size):
+                parts.append(_conv_block(flat[start:start + chunk_size]))
+            stacked = xp.concatenate(parts, axis=0)
+            return stacked.reshape(
+                lead_shape + (int(stacked.shape[-1]),),
+            )
+
+        def _to_host_max_abs(arr):
+            try:
+                return float(np.max(np.abs(np.asarray(arr))))
+            except Exception:
+                return float('nan')
+
+        R_prev_prev = None
+        R_prev = _convolve_and_sample(values, h, mesh)
+        converged = False
+        is_traced_local = False
+
+        for it in range(1, max_iter + 1):
+            new_mesh = np.empty(2 * mesh.shape[0] - 1)
+            new_mesh[0::2] = mesh
+            new_mesh[1::2] = 0.5 * (mesh[:-1] + mesh[1:])
+
+            mid_values = _f_chunked(new_mesh[1::2])
+            if xp.name == 'jax':
+                new_values = xp.zeros(
+                    values.shape[:-1] + (new_mesh.shape[0],),
+                    dtype=values.dtype,
+                )
+                new_values = new_values.at[..., 0::2].set(values)
+                new_values = new_values.at[..., 1::2].set(
+                    xp.asarray(mid_values),
+                )
+            else:
+                new_values = np.empty(
+                    values.shape[:-1] + (new_mesh.shape[0],),
+                )
+                new_values[..., 0::2] = values
+                new_values[..., 1::2] = mid_values
+
+            mesh = new_mesh
+            values = new_values
+            h = h / 2.0
+
+            R_cur = _convolve_and_sample(values, h, mesh)
+
+            diff = _to_host_max_abs(R_cur - R_prev)
+            scale = _to_host_max_abs(R_cur)
+            tol = rtol * scale + atol
+
+            if np.isnan(diff) or np.isnan(scale):
+                is_traced_local = True
+            else:
+                recent_ok = diff <= tol
+                prior_ok = (
+                    R_prev_prev is None
+                    or _to_host_max_abs(R_prev - R_prev_prev) <= 4 * tol
+                )
+                if recent_ok and prior_ok and it >= min_iter:
+                    converged = True
+
+            R_prev_prev = R_prev
+            R_prev = R_cur
+
+            if converged:
+                break
+
+        if not converged and not is_traced_local:
+            warnings.warn(
+                f"adaptive_convolve did not converge in {max_iter} "
+                f"doublings (last diff={diff:.3e}, tol={tol:.3e})",
+                ConvergenceWarning,
+                stacklevel=3,
+            )
+
+        if richardson and R_prev_prev is not None:
+            return (4.0 * R_prev - R_prev_prev) / 3.0
+        return R_prev
+
+    # ---- Segment partition ------------------------------------------
+    # Each segment is (slice_start, slice_stop, win_emin, win_emax).
+    # eval_points[slice_start:slice_stop] is the segment's query
+    # subset; [win_emin, win_emax] is its internal mesh range
+    # (already including the kernel margin on both sides).
+    if window_kernel_widths is None:
+        # Auto: 50 kernel widths per window for concrete, infinity
+        # (= single window) for tracer. See docstring for the trace
+        # time rationale.
+        effective_wkw = float('inf') if is_tracer else 50.0
+    else:
+        effective_wkw = float(window_kernel_widths)
+    window_span = effective_wkw * kernel_width
+    def _fixed_grid_segments(n_eval, emin, emax):
+        """Partition sorted eval_points by index into slots that
+        uniformly subdivide the eval_points' *own* range [emin+margin,
+        emax-margin] (``mesh_bounds`` is the mesh extent, so
+        ``emin + margin`` is the lower eval_points bound by
+        convention). Returns a list of
+        (slice_start, slice_stop, win_emin, win_emax)."""
+        eval_lo = emin + margin
+        eval_hi = emax - margin
+        if eval_hi <= eval_lo:
+            raise ValueError(
+                f"mesh_bounds=({emin}, {emax}) does not leave room "
+                f"for the kernel margin on both sides "
+                f"(2 * n_kernel_widths * kernel_width = {2 * margin})"
+            )
+        W = max(1, int(np.ceil((eval_hi - eval_lo) / window_span)))
+        per_window = max(1, int(np.ceil(n_eval / W)))
+        n_segments = int(np.ceil(n_eval / per_window))
+        out = []
+        for i in range(n_segments):
+            start = i * per_window
+            stop = min(start + per_window, n_eval)
+            slot_lo = eval_lo + (eval_hi - eval_lo) * i / n_segments
+            slot_hi = eval_lo + (eval_hi - eval_lo) * (i + 1) / n_segments
+            out.append((start, stop, slot_lo - margin, slot_hi + margin))
+        return out
+
+    if is_tracer:
+        # Fixed-grid partition from static mesh_bounds. Required under
+        # @jax.jit / jax.grad wrt eval_points because segment count
+        # and bounds must be static Python ints/floats at trace time.
+        if mesh_bounds is None:
             raise TypeError(
                 "adaptive_convolve was called with a jax tracer for "
                 "eval_points but no mesh_bounds override. Under "
@@ -179,124 +396,70 @@ def adaptive_convolve(
                 "n_kernel_widths * kernel_width margin should be "
                 "included on both sides."
             )
-        emin = float(eval_points.min()) - margin
-        emax = float(eval_points.max()) + margin
-    else:
         emin, emax = float(mesh_bounds[0]), float(mesh_bounds[1])
         if emax <= emin:
             raise ValueError(
                 f"mesh_bounds must satisfy emax > emin; got "
                 f"({emin}, {emax})"
             )
-
-    n_intervals = max(1, int(np.ceil((emax - emin) / h0)))
-    n_intervals = 1 << int(np.ceil(np.log2(n_intervals)))  # round up to power of 2
-    mesh = np.linspace(emin, emax, n_intervals + 1)
-    h = (emax - emin) / n_intervals
-
-    values = f(mesh)
-    if xp.name == 'numpy':
-        values = np.asarray(values)
-    if values.shape[-1] != mesh.shape[0]:
-        raise ValueError(
-            f"f(mesh) must return shape (..., {mesh.shape[0]}); "
-            f"got {values.shape}"
-        )
-
-    def _convolve_and_sample(values, h):
-        n_half = int(np.ceil(n_kernel_widths * kernel_width / h))
-        delta = np.arange(-n_half, n_half + 1) * h
-        k_vals = kernel(delta)
-        if xp.name == 'jax':
-            k_vals = xp.asarray(k_vals)
-        else:
-            k_vals = np.asarray(k_vals)
-        # fftconvolve requires matching ndim. Broadcast the kernel along
-        # the leading axes of values by adding singleton dims.
-        k_vals_b = k_vals.reshape((1,) * (values.ndim - 1) + k_vals.shape)
-        conv = _fftconvolve(values, k_vals_b, xp) * h
-        return _interp_last_axis(conv, mesh, eval_points, xp)
-
-    def _to_host_max_abs(arr):
-        # The convergence check drives Python control flow; force a
-        # host materialisation so no traced comparisons leak into the
-        # doubling loop. Independent of ``xp``: numpy is a no-op,
-        # jax with a concrete array materialises via np.asarray. Under
-        # ``jax.grad`` the input is an abstract tracer that cannot be
-        # materialised; there we return ``nan`` so the caller's
-        # convergence comparisons return False and the loop runs to
-        # ``max_iter`` (a compile-time constant, safe under trace).
-        try:
-            return float(np.max(np.abs(np.asarray(arr))))
-        except Exception:
-            return float('nan')
-
-    R_prev_prev = None
-    R_prev = _convolve_and_sample(values, h)
-    converged = False
-    is_traced = False   # set once we detect an abstract-tracer sample
-
-    for it in range(1, max_iter + 1):
-        new_mesh = np.empty(2 * mesh.shape[0] - 1)
-        new_mesh[0::2] = mesh
-        new_mesh[1::2] = 0.5 * (mesh[:-1] + mesh[1:])
-
-        mid_values = f(new_mesh[1::2])
-        if xp.name == 'jax':
-            new_values = xp.zeros(
-                values.shape[:-1] + (new_mesh.shape[0],),
-                dtype=values.dtype,
+        n_eval = int(eval_points.shape[0])
+        if n_eval == 0:
+            return xp.zeros((0,), dtype=xp.float64)
+        segments = _fixed_grid_segments(n_eval, emin, emax)
+    else:
+        n_eval = int(eval_points.shape[0])
+        if n_eval == 0:
+            return np.zeros((0,), dtype=float)
+        # Point-centric interval merge; requires eval_points sorted
+        # so each merged segment covers a contiguous index range.
+        if n_eval > 1 and np.any(np.diff(eval_points) < 0):
+            raise ValueError(
+                "adaptive_convolve requires eval_points to be sorted "
+                "ascending when the point-centric windowing path is "
+                "used (concrete eval_points, no mesh_bounds override)."
             )
-            new_values = new_values.at[..., 0::2].set(values)
-            new_values = new_values.at[..., 1::2].set(xp.asarray(mid_values))
+        if mesh_bounds is not None:
+            # User gave explicit bounds: fixed-grid partition (same
+            # path as tracer, so caller-tuned mesh_bounds is honoured
+            # as the global mesh range).
+            emin, emax = float(mesh_bounds[0]), float(mesh_bounds[1])
+            if emax <= emin:
+                raise ValueError(
+                    f"mesh_bounds must satisfy emax > emin; got "
+                    f"({emin}, {emax})"
+                )
+            segments = _fixed_grid_segments(n_eval, emin, emax)
         else:
-            new_values = np.empty(values.shape[:-1] + (new_mesh.shape[0],))
-            new_values[..., 0::2] = values
-            new_values[..., 1::2] = mid_values
+            # Point-centric merge: each eval point sprouts a
+            # [p - margin, p + margin] interval; overlapping
+            # intervals coalesce into disjoint segments.
+            segments = []
+            seg_start = 0
+            seg_lo = float(eval_points[0]) - margin
+            seg_hi = float(eval_points[0]) + margin
+            for i in range(1, n_eval):
+                p_lo = float(eval_points[i]) - margin
+                p_hi = float(eval_points[i]) + margin
+                if p_lo <= seg_hi:
+                    if p_hi > seg_hi:
+                        seg_hi = p_hi
+                else:
+                    segments.append((seg_start, i, seg_lo, seg_hi))
+                    seg_start = i
+                    seg_lo = p_lo
+                    seg_hi = p_hi
+            segments.append((seg_start, n_eval, seg_lo, seg_hi))
 
-        mesh = new_mesh
-        values = new_values
-        h = h / 2.0
-
-        R_cur = _convolve_and_sample(values, h)
-
-        diff = _to_host_max_abs(R_cur - R_prev)
-        scale = _to_host_max_abs(R_cur)
-        tol = rtol * scale + atol
-
-        if np.isnan(diff) or np.isnan(scale):
-            # Under a jax.grad / jax.jit trace: convergence cannot be
-            # evaluated on symbolic tracers. Run the full ``max_iter``
-            # (a compile-time Python constant) and skip the not-
-            # converged warning; the caller opted into JAX tracing and
-            # is responsible for picking ``max_iter`` large enough.
-            is_traced = True
-        else:
-            recent_ok = diff <= tol
-            prior_ok = (
-                R_prev_prev is None
-                or _to_host_max_abs(R_prev - R_prev_prev) <= 4 * tol
-            )
-            if recent_ok and prior_ok and it >= min_iter:
-                converged = True
-
-        R_prev_prev = R_prev
-        R_prev = R_cur
-
-        if converged:
-            break
-
-    if not converged and not is_traced:
-        warnings.warn(
-            f"adaptive_convolve did not converge in {max_iter} doublings "
-            f"(last diff={diff:.3e}, tol={tol:.3e})",
-            ConvergenceWarning,
-            stacklevel=2,
+    # ---- Run segments and concatenate -------------------------------
+    if len(segments) == 1:
+        start, stop, win_lo, win_hi = segments[0]
+        return _single_window(eval_points[start:stop], win_lo, win_hi)
+    parts = []
+    for start, stop, win_lo, win_hi in segments:
+        parts.append(
+            _single_window(eval_points[start:stop], win_lo, win_hi),
         )
-
-    if richardson and R_prev_prev is not None:
-        return (4.0 * R_prev - R_prev_prev) / 3.0
-    return R_prev
+    return xp.concatenate(parts, axis=-1)
 
 
 def _interp_last_axis(arr, x_in, x_out, xp=None):
