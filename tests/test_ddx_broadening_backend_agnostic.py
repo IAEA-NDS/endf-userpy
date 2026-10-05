@@ -146,6 +146,45 @@ def test_get_particle_production_ddxs_broadened_parity(al27_endf_dict):
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jit_top_level_ddxs_broadening_al27(al27_endf_dict):
+    """``@jax.jit`` on the top-level ``get_particle_production_ddxs``
+    with ``broadening=`` set and tracer ``energies_in``. Pre-#325
+    this raised ``TracerArrayConversionError`` because the DDX
+    broadening dispatcher materialised ``energies_in`` to numpy
+    unconditionally. The guard added in #325 lets the tracer flow
+    through; result must match the numpy baseline bit-identically
+    (same adaptive_convolve path, no numerical approximations
+    change)."""
+    import jax
+    import jax.numpy as jnp
+
+    xp_jx = array_ns.get_backend('jax')
+    ein = np.array([1.4e7])
+    eout = np.linspace(1e5, 5e6, 12)
+    mus = np.linspace(-0.9, 0.9, 4)
+    xp_np = array_ns.get_backend('numpy')
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = np.asarray(get_particle_production_ddxs(
+            al27_endf_dict, '(n,2n)', 'n', ein, eout, mus,
+            broadening=SIGMA, options=RunOptions(backend=xp_np),
+        ))
+
+    @jax.jit
+    def fn(e):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            return get_particle_production_ddxs(
+                al27_endf_dict, '(n,2n)', 'n', e, eout, mus,
+                broadening=SIGMA, options=RunOptions(backend=xp_jx),
+            )
+
+    got = np.asarray(fn(jnp.asarray(ein)))
+    np.testing.assert_allclose(got, ref, rtol=1e-6, atol=1e-14)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
 def test_jax_grad_wrt_broadening_sigma_top_level(al27_endf_dict):
     """Differentiable-broadening flagship demo: ``jax.grad`` of a
     scalar summary of the top-level ``get_particle_production_dxs_dE``
