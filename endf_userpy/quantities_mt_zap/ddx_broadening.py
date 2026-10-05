@@ -148,13 +148,22 @@ def compute_ddx_continuous_broadened(
     """
     from ..primitives import array_ns
     from ..run_options import RunOptions
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
     if options is None:
         options = RunOptions()
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
-    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    # Materialise to numpy only when the inputs are concrete; under
+    # ``@jax.jit`` with a tracer ``energies_in`` the unconditional
+    # ``np.asarray`` would raise ``TracerArrayConversionError``.
+    # Mirrors the guard already in ``compute_dxs_dE_broadened``
+    # (issue #325).
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
+    if not _is_jax_tracer(angle_cosines_out):
+        angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
 
     def f(eout_internal):
         # compute_dist2d_values returns (n_einc, n_eout, n_mus); we need
@@ -544,13 +553,17 @@ def compute_ddx_discrete_broadened(
     """
     from ..primitives import array_ns
     from ..run_options import RunOptions
+    from ..mfsec_interpretation.mf6_law1_kernel import _is_jax_tracer
     if xp is None:
         xp = array_ns.get_backend('numpy')
     if options is None:
         options = RunOptions()
-    energies_in = np.asarray(energies_in, dtype=float)
-    energies_out = np.asarray(energies_out, dtype=float)
-    angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
+    if not _is_jax_tracer(energies_in):
+        energies_in = np.asarray(energies_in, dtype=float)
+    if not _is_jax_tracer(energies_out):
+        energies_out = np.asarray(energies_out, dtype=float)
+    if not _is_jax_tracer(angle_cosines_out):
+        angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
 
     angdist = _compute_discrete_angdist(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
