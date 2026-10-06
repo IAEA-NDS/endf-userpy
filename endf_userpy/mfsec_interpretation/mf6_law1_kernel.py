@@ -720,7 +720,10 @@ def reconstruct(data, energies_in, energies_out, angle_cosines_out,
             f'available for this subsection ({e}); routing through '
             f'the Python-loop fallback instead. Under @jax.jit this '
             f'path unrolls one per-panel body per panel into the '
-            f'jaxpr and may OOM for large panel counts (issue #328).',
+            f'jaxpr and may OOM for large panel counts (issue #328). '
+            f'To avoid the blowup, call this reaction in eager mode '
+            f'(drop the enclosing @jax.jit) so no XLA buffer plan is '
+            f'built.',
             UserWarning, stacklevel=3,
         )
 

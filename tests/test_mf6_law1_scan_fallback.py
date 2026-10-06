@@ -334,6 +334,7 @@ def test_reconstruct_warns_on_scan_fallthrough_unsupported_lang(
     msg = str(scan_warnings[0].message)
     assert 'lang' in msg
     assert 'OOM' in msg or 'issue #328' in msg
+    assert 'eager' in msg
 
 
 @pytest.mark.skipif(not _jax_available(), reason='jax not installed')
