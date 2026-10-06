@@ -21,6 +21,7 @@ import os
 
 _HERE = os.path.dirname(__file__)
 _CORPUS_DIR = os.path.join(_HERE, 'data_law1_adhoc')
+_LAW5_CORPUS_DIR = os.path.join(_HERE, 'data_law5_adhoc')
 
 
 def _first_existing(*paths):
@@ -123,4 +124,25 @@ def resolve_c12() -> str | None:
     return _first_existing(
         os.environ.get('C12_ENDF'),
         os.path.join(_CORPUS_DIR, 'jendl5_n_C-12.endf'),
+    )
+
+
+def resolve_p_he3_law5() -> str | None:
+    """Resolve the ENDF/B-VIII.0 proton on He-3 file. MF6 LAW=5
+    LTP=1 LIDP=0 (distinguishable charged-particle elastic);
+    smallest LTP=1 proton evaluation (NE=42) and the primary test
+    target for issue #264 first increment."""
+    return _first_existing(
+        os.environ.get('P_HE3_LAW5_ENDF'),
+        os.path.join(_LAW5_CORPUS_DIR, 'p-002_He_003.endf'),
+    )
+
+
+def resolve_p_b10_law5() -> str | None:
+    """Resolve the ENDF/B-VIII.0 proton on B-10 file. MF6 LAW=5
+    LTP=1 LIDP=0; heavier-target cross-check for the issue #264
+    first increment."""
+    return _first_existing(
+        os.environ.get('P_B10_LAW5_ENDF'),
+        os.path.join(_LAW5_CORPUS_DIR, 'p-005_B_010.endf'),
     )

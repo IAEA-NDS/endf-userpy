@@ -1318,6 +1318,12 @@ def compute_angdist_from_subsec(
             endf_dict, mt, subsec_num,
             energies_in, angle_cosines_out, to_lab, xp=xp,
         )
+    if law == 5:
+        from . import mf6_law5
+        return mf6_law5.get_angdist_from_subsec_law5(
+            endf_dict, mt, subsec_num,
+            energies_in, angle_cosines_out, to_lab, xp=xp,
+        )
     raise NotImplementedError(
         f'Angular distribution interpretation for LAW={law} '
         'not implemented.'
