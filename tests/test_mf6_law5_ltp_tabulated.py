@@ -188,6 +188,46 @@ def test_p_c12_top_level_dxs_dE_broadened(p_c12_endf_dict):
 # ---- Outside the tabulated mu range reduces to Rutherford only ------
 
 
+def test_p_c12_njoy_pinned_point(p_c12_endf_dict):
+    """Hard-coded NJOY-verified regression pin at p + C-12, Ein=5 MeV,
+    CM-frame mu=0.0. Verified against NJOY2016 ACER's processed p_NI
+    PDF output on this file: at Ein=5 MeV NJOY reports elastic
+    integral = 14.62756 b and pdf(mu_CM=0) = 2.035625e-02 (over the
+    stored mu grid [-1, 0.9962]), giving
+
+        sigma_e(mu_CM=0, Ein=5 MeV) [b/mu] = 14.62756 * 2.035625e-02
+                                           = 2.977622e-01 b/mu
+
+    which equals ``handler * MF3`` where ``handler`` is our LAW=5
+    LTP=12 LIDP=0 reconstruction (CM frame) and ``MF3`` is the
+    file-stored sigma_NI at 5 MeV (-9.959e-02 b, negative at this
+    destructive-interference energy). Pins the full LTP=12
+    composition pipeline (p_NI interpolation + Rutherford + the
+    'angdist = sigma_e / MF3' convention) against NJOY ACER.
+
+    Any future shift larger than 1e-6 relative on the composite flags
+    a regression in the LTP=12 reconstruction, the MF3 fetch, or the
+    composition convention.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        angdist = float(mf6_law5.get_angdist_from_subsec_law5(
+            p_c12_endf_dict, mt=2, subsec_num=1,
+            energies_in=np.array([5.0e6]),
+            angle_cosines_out=np.array([0.0]),
+            to_lab=False,
+        )[0, 0])
+    xst = p_c12_endf_dict[3][2]['xstable']
+    sigma_ni_file = float(np.interp(5.0e6, xst['E'], xst['xs']))
+    composite = sigma_ni_file * angdist
+    expected = 0.29776224      # NJOY: 14.62756 * 2.035625e-02 b/mu
+    rel = abs(composite - expected) / expected
+    assert rel < 1e-6, (
+        f'composite MF3 * angdist = {composite:.6e} b/mu, NJOY-ACE '
+        f'reference = {expected:.6e} b/mu, rel = {rel:.3e}'
+    )
+
+
 def test_outside_tabulated_mu_reduces_to_rutherford(p_c12_endf_dict):
     """p + C-12's tabulated mu grid spans [-1, +0.9962]. A query at
     mu = -0.9999 (inside [-1, mu_min=-1]... actually mu_min IS -1
