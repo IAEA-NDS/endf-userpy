@@ -263,33 +263,143 @@ def test_lidp1_raises_not_implemented():
 
 
 def test_p_he3_njoy_pinned_point(p_he3_endf_dict):
-    """Hard-coded regression pin at p + He-3, Ein=100 keV, mu=0.0:
-    the reconstruction returns dsigma/dmu = 23.3428... barns.
+    """Hard-coded regression pin at p + He-3, Ein=100 keV,
+    mu_CM=0.0: the CM-frame reconstruction returns
+    dsigma/dmu = 23.3428... barns.
 
-    Verified against a direct Python transcription of NJOY2016
-    acefc.f90::coul (LTP=1 LIDP=0 branch) with NJOY phys.f90 CGS
-    constants, which produced dsigma/dOmega = 3.715123504778457
-    b/sr i.e. dsigma/dmu = 2 pi x that = 23.342809... b. Our value
-    matches to ~1e-9 relative; the residual 1e-10-level drift
-    comes from the 10th-digit difference between
-    PARTICLE_MASSES_AMU['n'] = 1.00866491578 and NJOY's
-    amassn = 1.00866491595, which is well below double-precision
-    arithmetic noise.
+    NJOY2016 acefc.f90::coul (LTP=1 LIDP=0 branch) with NJOY
+    phys.f90 CGS constants produced dsigma/dOmega = 3.715123504778457
+    b/sr; multiplied by 2 pi for the per-mu convention gives
+    23.342809... b. Pinned against the NJOY output in the stored
+    (CM) frame; the ``to_lab=True`` branch adds the two-body
+    kinematic Jacobian and is covered by a separate test.
 
-    Any future shift larger than 1e-7 relative on this value flags
-    a formula regression (interference-term sign, Coulomb-phase
-    convention, AWP/amu unit confusion, Legendre indexing)."""
+    Any shift larger than 1e-7 relative on this value flags a
+    regression in the CM-frame formula (interference-term sign,
+    Coulomb-phase convention, AWP/amu unit confusion, Legendre
+    indexing)."""
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         got = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
             p_he3_endf_dict, mt=2, subsec_num=1,
             energies_in=np.array([1.0e5]),
             angle_cosines_out=np.array([0.0]),
-            to_lab=True,
+            to_lab=False,
         ))
-    expected = 23.342809431  # dsigma/dmu, barns
+    expected = 23.342809431  # dsigma/dmu, barns, CM frame
     rel = abs(float(got[0, 0]) - expected) / expected
     assert rel < 1e-7, f'got {got[0, 0]!r}, expected ~{expected}, rel={rel:.3e}'
+
+
+def test_lab_differs_from_cm_on_light_target(p_he3_endf_dict):
+    """On a light target (He-3, awr~3), the CM-to-LAB Jacobian
+    shifts the angular shape by several percent at interior mu.
+    Pins the Jacobian is actually applied for ``to_lab=True``
+    (not a no-op) by requiring the LAB and CM outputs to differ
+    materially at mu=0.5, Ein=1 MeV: a user who passed to_lab=True
+    before #334 landed got the CM-frame result labelled as LAB
+    (a bug the first-increment UserWarning documented)."""
+    e_in = np.array([1.0e6])
+    mu = np.array([0.5])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        cm = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_he3_endf_dict, mt=2, subsec_num=1,
+            energies_in=e_in, angle_cosines_out=mu, to_lab=False,
+        ))
+        lab = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_he3_endf_dict, mt=2, subsec_num=1,
+            energies_in=e_in, angle_cosines_out=mu, to_lab=True,
+        ))
+    rel = abs(float(lab[0, 0]) - float(cm[0, 0])) / float(cm[0, 0])
+    assert rel > 0.05, (
+        f'to_lab=True must differ from to_lab=False on p+He-3 by '
+        f'more than ~5pct at mu=0.5, Ein=1 MeV; got rel={rel:.3e}'
+    )
+
+
+def test_lab_frame_matches_textbook_two_body_jacobian(p_he3_endf_dict):
+    """Validate the CM-to-LAB conversion against a textbook two-body
+    elastic Jacobian, independent of the handler's own primitives.
+
+    Non-relativistic two-body elastic kinematics for a projectile of
+    mass m1 scattering off a stationary target of mass m2 (A = m2/m1):
+
+        mu_LAB = (A mu_CM + 1) / sqrt(A^2 + 2 A mu_CM + 1)
+
+    Differentiating with xw = A^2 + 2 A mu_CM + 1 gives
+
+        d mu_LAB / d mu_CM = A^2 (A + mu_CM) / xw^(3/2)
+
+    and so, by azimuthal symmetry and invariance of dsigma,
+
+        dsigma/dmu_LAB = dsigma/dmu_CM * (d mu_CM / d mu_LAB)
+                      = dsigma/dmu_CM * xw^(3/2) / (A^2 |A + mu_CM|)
+
+    which exactly matches the ``convert_angdist_to_labsys`` form.
+    Pin the handler against this textbook identity so a regression
+    on either side (the handler, or the shared primitive) surfaces.
+
+    Cross-checked at a smooth interior mu on p + He-3 (A ~ 3), far
+    from mu = 1 to avoid the Coulomb singularity.
+    """
+    sec = p_he3_endf_dict[6][2]
+    sub = sec['subsection'][1]
+    awp = float(sub['AWP'])
+    awr = float(sec['AWR'])
+    A = awr / awp  # target / projectile mass ratio
+    e_in = np.array([5.0e6])  # 5 MeV, interior point not on a knot
+    mu_cm_target = np.array([0.3])
+    denom = np.sqrt(A ** 2 + 2 * A * mu_cm_target + 1.0)
+    mu_lab_target = (A * mu_cm_target + 1.0) / denom
+    xw = 1.0 + 2.0 * A * mu_cm_target + A ** 2
+    jacobian = xw * np.sqrt(xw) / (A ** 2 * np.abs(A + mu_cm_target))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        got_cm = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_he3_endf_dict, mt=2, subsec_num=1,
+            energies_in=e_in, angle_cosines_out=mu_cm_target,
+            to_lab=False,
+        ))
+        got_lab = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_he3_endf_dict, mt=2, subsec_num=1,
+            energies_in=e_in, angle_cosines_out=mu_lab_target,
+            to_lab=True,
+        ))
+
+    expected_lab = got_cm[0, 0] * jacobian[0]
+    rel = abs(got_lab[0, 0] - expected_lab) / expected_lab
+    assert rel < 1e-10, (
+        f'LAB from handler = {got_lab[0, 0]:.6e}  '
+        f'textbook CM * J = {expected_lab:.6e}  rel={rel:.3e}'
+    )
+
+
+def test_lab_equals_cm_in_heavy_target_limit(p_he3_endf_dict):
+    """In the limit awr >> awp the CM and LAB frames coincide; a
+    user querying a heavy-target evaluation should get the same
+    numeric from to_lab=True and to_lab=False. We don't have a
+    neutron-adjacent corpus file heavier than Bi-209, so forge a
+    synthetic one by patching awr to a very large value and
+    re-running on p+He-3's own coefficients. The CM / LAB
+    difference should fall below 1e-3 relative at interior mu."""
+    import copy
+    d = copy.deepcopy(p_he3_endf_dict)
+    d[6][2]['AWR'] = 1.0e6  # effectively infinite target mass
+    e_in = np.array([1.0e6])
+    mu = np.array([-0.5, 0.0, 0.5])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        cm = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            d, mt=2, subsec_num=1,
+            energies_in=e_in, angle_cosines_out=mu, to_lab=False,
+        ))
+        lab = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            d, mt=2, subsec_num=1,
+            energies_in=e_in, angle_cosines_out=mu, to_lab=True,
+        ))
+    np.testing.assert_allclose(lab, cm, rtol=1e-3)
 
 
 def _jax_available():

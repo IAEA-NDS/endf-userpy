@@ -31,11 +31,14 @@ pipeline composition ``MF3 * angdist`` is already in barns.
 """
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 
 from ..primitives import array_ns
+from ..primitives.conversion import (
+    compute_r2,
+    convert_angcos_to_cmsys,
+    convert_angdist_to_labsys,
+)
 from ..primitives.interpolation import endf_interp1d
 from ..primitives.physical_constants import (
     AMU_TO_MEV,
@@ -157,16 +160,20 @@ def _unpack_ltp1_distinguishable(a_arr, nl):
 
 def _legendre_poly_table(mu, lmax, xp):
     """Return the Legendre polynomials ``P_0(mu) ... P_lmax(mu)``
-    stacked along a leading axis of size ``lmax + 1``. ``mu`` is a
-    1-D array; the output has shape ``(lmax + 1, mu.size)``.
+    stacked along a leading axis of size ``lmax + 1``.
+
+    ``mu`` may have any rank; the output has shape
+    ``(lmax + 1, *mu.shape)``. 1-D ``mu`` is the CM-frame
+    reconstruction shape; 2-D ``mu`` of shape ``(n_e, n_mu)`` is
+    the LAB-frame shape after the per-Ein ``mu_LAB -> mu_CM``
+    kinematic map (one CM cosine per (E, mu) query point).
 
     Bonnet recurrence, built as a Python list of rows and stacked
-    once at the end so no in-place indexing is needed; tracer-safe
-    under ``xp.name == 'jax'`` end-to-end.
+    once at the end; tracer-safe under ``xp.name == 'jax'`` end-to-end.
     """
     n = lmax + 1
     if n == 0:
-        return xp.zeros((0, mu.shape[0]), dtype=mu.dtype)
+        return xp.zeros((0,) + tuple(mu.shape), dtype=mu.dtype)
     p0 = xp.ones_like(mu)
     if n == 1:
         return xp.stack([p0], axis=0)
@@ -223,7 +230,7 @@ def _reconstruct_ltp1_lidp0_single_ein(b, a_complex, mu, eta, k, xp):
 
 
 def _reconstruct_ltp1_lidp0_vectorized(
-    coef_at_e, mu, eta_e, k_e, nl, xp,
+    coef_at_e, mu_bc, eta_e, k_e, nl, xp,
 ):
     """Vectorised sibling of :func:`_reconstruct_ltp1_lidp0_single_ein`
     broadcasting over both an incident-energy axis and a mu axis.
@@ -231,13 +238,18 @@ def _reconstruct_ltp1_lidp0_vectorized(
     ``coef_at_e`` has shape ``(n_e, 4*NL+3)`` and carries the
     coefficient array ``[b_0, ..., b_{2NL}, Re(a_0), Im(a_0), ...,
     Re(a_NL), Im(a_NL)]`` at each requested Ein (already
-    section-level interpolated). ``mu`` has shape ``(n_mu,)``;
+    section-level interpolated). ``mu_bc`` carries the CM-frame
+    cosine for every (E, query) point and has shape
+    ``(n_e, n_mu)``: either the user query broadcast against the
+    E axis (CM-frame caller) or the per-E ``mu_CM(mu_LAB)`` map
+    produced by :func:`convert_angcos_to_cmsys` (LAB-frame caller).
     ``eta_e`` and ``k_e`` have shape ``(n_e,)``. Returns
-    ``dsigma/dOmega`` of shape ``(n_e, n_mu)``.
+    ``dsigma/dOmega`` in CM at every ``mu_bc[i, j]`` as an array
+    of shape ``(n_e, n_mu)``.
 
     Backend-agnostic: every operation routes through ``xp``. Under
     ``xp.name == 'jax'`` the function is both ``jax.jit``-safe and
-    ``jax.grad``-transparent wrt ``mu``, ``eta_e``, ``k_e``, and
+    ``jax.grad``-transparent wrt ``mu_bc``, ``eta_e``, ``k_e``, and
     the ``coef_at_e`` leaves.
     """
     nb = 2 * nl + 1
@@ -246,24 +258,30 @@ def _reconstruct_ltp1_lidp0_vectorized(
     a_im = coef_at_e[:, nb + 1::2]              # (n_e, NL+1)
     a_complex = a_re + 1j * a_im                 # (n_e, NL+1)
     lmax = max(nl, 2 * nl)
-    p_table = _legendre_poly_table(mu, lmax, xp)  # (lmax+1, n_mu)
-    # Pure nuclear sum: (n_e, 2*NL+1) @ (2*NL+1, n_mu) = (n_e, n_mu)
-    l_range_b = xp.arange(nb, dtype=mu.dtype)
+    p_table = _legendre_poly_table(mu_bc, lmax, xp)  # (lmax+1, n_e, n_mu)
+    # Pure nuclear sum: sum_l (2l+1)/2 b_l(E) P_l(mu_bc[e, m])
+    # Shape of einsum: (n_e, 2*NL+1) · (2*NL+1, n_e, n_mu) -> (n_e, n_mu)
+    # Contract over the L axis only; the Ein axis of b and p_table
+    # tracks together ("el,len->en").
+    l_range_b = xp.arange(nb, dtype=mu_bc.dtype)
     weights_b = (2.0 * l_range_b + 1.0) / 2.0
-    nuclear = (b * weights_b) @ p_table[:nb, :]
-    # Interference sum: complex (n_e, n_mu)
-    l_range_a = xp.arange(nl + 1, dtype=mu.dtype)
-    weights_a = (2.0 * l_range_a + 1.0) / 2.0
-    cs = (a_complex * weights_a) @ p_table[: nl + 1, :]
-    # Coulomb phase factor exp(i eta(E) log((1-mu)/2))
-    one_minus_mu_half = (1.0 - mu)[None, :] / 2.0
-    phase = xp.exp(1j * eta_e[:, None] * xp.log(one_minus_mu_half))
-    interference = -(2.0 * eta_e[:, None] / (1.0 - mu)[None, :]) \
-        * (phase * cs).real
-    # Rutherford Coulomb cross section
-    coulomb = eta_e[:, None] ** 2 / (
-        k_e[:, None] ** 2 * (1.0 - mu)[None, :] ** 2
+    nuclear = xp.einsum(
+        'el,len->en', b * weights_b, p_table[:nb],
     )
+    # Interference sum: complex (n_e, n_mu)
+    l_range_a = xp.arange(nl + 1, dtype=mu_bc.dtype)
+    weights_a = (2.0 * l_range_a + 1.0) / 2.0
+    cs = xp.einsum(
+        'el,len->en', a_complex * weights_a, p_table[: nl + 1],
+    )
+    # Coulomb phase factor exp(i eta(E) log((1-mu)/2))
+    eta_bc = eta_e[:, None]
+    k_bc = k_e[:, None]
+    one_minus_mu_half = (1.0 - mu_bc) / 2.0
+    phase = xp.exp(1j * eta_bc * xp.log(one_minus_mu_half))
+    interference = -(2.0 * eta_bc / (1.0 - mu_bc)) * (phase * cs).real
+    # Rutherford Coulomb cross section
+    coulomb = eta_bc ** 2 / (k_bc ** 2 * (1.0 - mu_bc) ** 2)
     return coulomb + interference + nuclear
 
 
@@ -284,15 +302,19 @@ def get_angdist_from_subsec_law5(
     ``MF3 * angdist`` composition is already the physical
     differential cross section.
 
-    Current scope (issue #264 first increment): ``LTP == 1`` and
-    ``LIDP == 0``. Covers 6 of 49 MF6 LAW=5 subsections in the
+    Current scope (issue #264 first increment plus #334): ``LTP == 1``
+    and ``LIDP == 0``. Covers 6 of 49 MF6 LAW=5 subsections in the
     ENDF/B-VIII.0 incident-proton sublibrary. ``LIDP == 1``
     (identical particles, p+p only) and the tabulated LTP forms
     (12, 14, 15) raise ``NotImplementedError`` for the caller to
-    handle. The frame is CM for every LAW=5 subsection in the
-    public neutron-adjacent corpora we checked (LCT=2 on all 49),
-    so to_lab=True without a CM-to-LAB conversion matches the file
-    convention; LCT=1 LAW=5 would be rejected explicitly.
+    handle. The stored frame is CM for every LAW=5 subsection in
+    the public neutron-adjacent corpora we checked (LCT=2 on all
+    49); ``to_lab=True`` applies the two-body elastic Jacobian
+    (``conversion.compute_r2`` + ``convert_angcos_to_cmsys`` +
+    ``convert_angdist_to_labsys``) to return a LAB-frame
+    ``dsigma/dmu``. ``to_lab=False`` returns the stored CM-frame
+    distribution directly. LCT=1 LAW=5 (file already in LAB)
+    would need a different branch and is rejected explicitly.
 
     Backend-agnostic through ``xp``; the Legendre recurrence,
     Coulomb-phase complex exponential, and interference sum all
@@ -422,29 +444,51 @@ def get_angdist_from_subsec_law5(
     eta_e = _sommerfeld_eta(z_proj, z_target, m1_amu, e_safe, xp)
     k_e = _cm_wavenumber_per_sqrt_barn(a_ratio, m1_amu, e_safe, xp)
 
-    sigma_omega = _reconstruct_ltp1_lidp0_vectorized(
-        coef_at_queries, mu, eta_e, k_e, nl, xp,
-    )  # (n_e, n_mu), dsigma/dOmega in b/sr
+    # Build the broadcast CM-frame cosines mu_bc of shape
+    # (n_e, n_mu) that the reconstruction evaluates P_l and the
+    # Rutherford formula at.
+    #
+    # - to_lab=False: user mu is already a CM cosine (LCT=2 file,
+    #   caller asked for the stored frame). Broadcast once against
+    #   the E axis so every (E, mu) pair maps to the same mu_CM.
+    # - to_lab=True: user mu is a LAB cosine; map it to the CM
+    #   cosine via the two-body elastic kinematics (eq. 6.2 /
+    #   section 6.2 of the ENDF-6 manual). For charged-particle
+    #   elastic Q=0 and awi=awp (projectile == ejectile), so
+    #   compute_r2 reduces to the pure mass-ratio factor
+    #   r^2 = (awr/awp)^2 independent of E. r > 1 for every
+    #   neutron-adjacent target heavier than the proton, so the
+    #   LAB->CM map is single-valued and the forbidden-angle
+    #   mask is physically empty for this scope.
+    if to_lab:
+        r2 = compute_r2(e_in, awi=awp, awr=awr, awp=awp, q=0.0, xp=xp)
+        mu_cm_bc = convert_angcos_to_cmsys(mu, r2, xp=xp)
+    else:
+        mu_cm_bc = xp.broadcast_to(mu[None, :], (e_in.shape[0], mu.shape[0]))
+
+    sigma_omega_cm = _reconstruct_ltp1_lidp0_vectorized(
+        coef_at_queries, mu_cm_bc, eta_e, k_e, nl, xp,
+    )  # (n_e, n_mu), dsigma/dOmega in CM frame, b/sr
+
+    if to_lab:
+        # Apply the CM -> LAB angular Jacobian so the output is a
+        # LAB-frame dsigma/dOmega at the user's mu_LAB.
+        sigma_omega = convert_angdist_to_labsys(
+            mu_cm_bc, sigma_omega_cm, r2, xp=xp,
+        )
+        # Forbidden LAB angles (NaN from the mu_LAB->mu_CM map) go
+        # to zero: the pattern matches the LAW=2 / LAW=4 paths and
+        # issue #45 for below-threshold / unreachable-cosine cases.
+        sigma_omega = xp.where(
+            xp.isnan(sigma_omega), xp.zeros_like(sigma_omega),
+            sigma_omega,
+        )
+    else:
+        sigma_omega = sigma_omega_cm
+
     # Convert from barns/sr to barns/mu (azimuthal symmetry).
     out = sigma_omega * (2.0 * np.pi)
     # Mask below-threshold rows (where the clamp above hid the issue).
     e_pos_mask = (e_in > 0.0)[:, None]
     out = xp.where(e_pos_mask, out, xp.zeros_like(out))
-
-    # to_lab=True: for LCT=2 the stored distribution is in CM. A
-    # proper CM->LAB conversion for charged-particle elastic
-    # requires the two-body kinematics module. We flag the gap
-    # explicitly rather than return a mislabelled distribution.
-    if to_lab:
-        warnings.warn(
-            f'MF6/MT{mt} LAW=5 (charged-particle elastic): the '
-            f'reconstruction returns the CM-frame dsigma/dmu even '
-            f'when to_lab=True. The CM-to-LAB Jacobian for '
-            f'charged-particle two-body kinematics is not applied '
-            f'in the first #264 increment (deferred follow-up). '
-            f'For heavy targets the CM and LAB frames differ by '
-            f'at most awp/awr ~ 1/awr, which is small; for light '
-            f'targets this is a noticeable approximation.',
-            UserWarning, stacklevel=2,
-        )
     return out
