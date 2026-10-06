@@ -161,7 +161,7 @@ def has_angdist_part(endf_dict, mt, zap):
     subsecs = get_subsecs(endf_dict, mt, zap)
     for subsec in subsecs:
         law = subsec['LAW']
-        if law in (2, 3, 4):
+        if law in (2, 3, 4, 5):
             return True
     return False
 
