@@ -310,6 +310,40 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
     return contains_residual_za(endf_dict, mt, residual_za)
 
 
+def is_target_conserving_mt(endf_dict, mt):
+    """True if ``mt`` is a target-conserving channel on this file.
+
+    A target-conserving channel re-emits a single particle of the
+    same type as the projectile and leaves the nucleus in a state
+    that de-excites to the target ground state (MT2 elastic, MT4
+    inelastic sum, MT51..MT90 discrete inelastic, MT91 continuum
+    inelastic for a neutron projectile). "Target-conserving" is the
+    activation-library notion of a channel that does not transmute
+    the nucleus: the final nuclide is the target in LFS=0.
+
+    MF8 overrides: when MF8 declares ``mt`` producing the target at
+    any non-ground LFS, the MT is NOT purely target-conserving
+    (it produces an isomer) and this returns False.
+
+    The projectile and target ZA are read from the file via
+    ``prop.get_projectile`` and ``prop.get_ZA``, matching the
+    signature pattern of :func:`contains_residual_za_and_lfs` and
+    :func:`satisfies_residual_select`. Used by
+    ``get_residual_production_xs`` to implement the
+    ``RunOptions.include_target`` policy (issue #137).
+    """
+    projectile = prop.get_projectile(endf_dict)
+    target_za = prop.get_ZA(endf_dict)
+    ejectiles = reac.get_ejectiles(projectile, mt)
+    if ejectiles != ((1, projectile),):
+        return False
+    if 8 in endf_dict and mt in endf_dict[8]:
+        for sub in endf_dict[8][mt].get('subsection', {}).values():
+            if sub['ZAP'] == target_za and sub['LFS'] != 0:
+                return False
+    return True
+
+
 def satisfies_residual_select(endf_dict, mt):
     """Admission rule for `get_residual_production_xs`-style queries.
 

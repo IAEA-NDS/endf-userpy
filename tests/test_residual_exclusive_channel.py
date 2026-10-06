@@ -128,12 +128,23 @@ def test_target_residual_no_double_count(fn_name, target):
     MT51..90 are in MF3 (double-counting risk). The residual-tuned
     rule handles this via `exist_associated_child_mts`, same as the
     old heuristic. Result must be a plausible total-scattering value
-    (bounded above by MT1 total XS)."""
+    (bounded above by MT1 total XS).
+
+    Pinned under ``include_target=True`` because the activation-
+    library default (``include_target=False``, issue #137) drops the
+    target-conserving block entirely and returns zero for the
+    target-residual query. The double-count invariant this test
+    guards is only meaningful when those channels are included.
+    """
+    from endf_userpy.run_options import RunOptions
     endf = _load(fn_name)
     einc = np.array([1.0e7])  # 10 MeV
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        xs = get_residual_production_xs(endf, target, einc)
+        xs = get_residual_production_xs(
+            endf, target, einc,
+            options=RunOptions(include_target=True),
+        )
     # Compare against MT1 (total XS): target-residual production
     # must be less than or equal to total (all elastic + inelastic
     # contributes to target; other MTs like (n,x) reduce it).

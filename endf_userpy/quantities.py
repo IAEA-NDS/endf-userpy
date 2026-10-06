@@ -483,6 +483,17 @@ def _get_residual_production_xs_impl(
             endf_dict, residual_nucleus, za_residual, level,
             options.mt5_contrib,
         )
+    # When the queried residual is the target in its ground state (or
+    # the user omitted the isomer suffix, which carries the same
+    # intent in practice), apply the activation-library convention:
+    # drop target-conserving MTs. Isomer queries (level >= 1) always
+    # keep every admitted MT because the isomer is a genuine
+    # different nuclide. See issue #137.
+    apply_target_conserving_filter = (
+        not options.include_target
+        and za_residual == prop.get_ZA(endf_dict)
+        and (level is None or level == 0)
+    )
     xs = quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt: quant_mt_zap.compute_residual_xs(
             endf_dict, mt, za_residual, level, energies_in,
@@ -504,7 +515,11 @@ def _get_residual_production_xs_impl(
             # only when their children are present in MF3 (would
             # double-count), which is the only correctness concern
             # here.
-            selectors.satisfies_residual_select(endf_dict, mt)
+            selectors.satisfies_residual_select(endf_dict, mt) and
+            not (
+                apply_target_conserving_filter and
+                selectors.is_target_conserving_mt(endf_dict, mt)
+            )
         ),
         endf_dict
     )
