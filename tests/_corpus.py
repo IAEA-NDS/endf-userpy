@@ -157,3 +157,14 @@ def resolve_p_c12_law5() -> str | None:
         os.environ.get('P_C12_LAW5_ENDF'),
         os.path.join(_LAW5_CORPUS_DIR, 'p-006_C_012.endf'),
     )
+
+
+def resolve_p_p_law5() -> str | None:
+    """Resolve the ENDF/B-VIII.0 proton on H-1 file (p+p elastic).
+    MF6 LAW=5 LTP=1 LIDP=1 (identical particles, nuclear amplitude
+    Legendre expansion with eq. 6.14 reconstruction); the unique
+    LIDP=1 test target for issue #332."""
+    return _first_existing(
+        os.environ.get('P_P_LAW5_ENDF'),
+        os.path.join(_LAW5_CORPUS_DIR, 'p-001_H_001.endf'),
+    )

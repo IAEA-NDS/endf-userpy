@@ -129,6 +129,37 @@ def _sigma_coulomb_distinguishable(mu, eta, k):
     return eta ** 2 / (k ** 2 * (1.0 - mu) ** 2)
 
 
+def _sigma_coulomb_identical(mu, eta, k, spi, xp):
+    """Pointwise Rutherford dsigma/dOmega(mu, E) for IDENTICAL
+    particles [manual eq. 6.10]:
+
+        sigma_ci = (2 eta^2 / (k^2 (1 - mu^2))) *
+                   [ (1 + mu^2) / (1 - mu^2)
+                     + ((-1)^(2 s) / (2 s + 1))
+                       * cos(eta * ln((1 + mu) / (1 - mu))) ]
+                                                        (barns/sr)
+
+    ``spi`` is the particle spin ``s`` (e.g. 1/2 for p+p elastic);
+    the ``(-1)^(2 s)`` sign flips between even- and odd-integer-
+    multiplicity spin cases. Diverges at ``mu == +/- 1`` through
+    the ``(1 - mu^2)`` denominators, and the ``cos`` term oscillates
+    rapidly near those limits because of the ``log((1+mu)/(1-mu))``
+    singularity. The caller is responsible for keeping the query
+    grid away from ``mu == +/- 1``.
+
+    Backend-agnostic through ``xp``.
+    """
+    one_minus_mu2 = 1.0 - mu ** 2
+    two_s_int = int(round(2.0 * spi))
+    sign = -1.0 if (two_s_int & 1) == 1 else 1.0
+    cos_term = xp.cos(eta * xp.log((1.0 + mu) / (1.0 - mu)))
+    bracket = (
+        (1.0 + mu ** 2) / one_minus_mu2
+        + sign / (2.0 * spi + 1.0) * cos_term
+    )
+    return (2.0 * eta ** 2 / (k ** 2 * one_minus_mu2)) * bracket
+
+
 # ---- LTP=1 nuclear amplitude expansion.
 
 
@@ -151,6 +182,35 @@ def _unpack_ltp1_distinguishable(a_arr, nl):
         raise ValueError(
             f'LTP=1 LIDP=0 record has {a_arr.size} entries; '
             f'expected 4*NL+3 = {expected} for NL={nl}.'
+        )
+    b = a_arr[:nb]
+    a_flat = a_arr[nb:]
+    a_re = a_flat[0::2]
+    a_im = a_flat[1::2]
+    a_complex = a_re + 1j * a_im
+    return b, a_complex
+
+
+def _unpack_ltp1_identical(a_arr, nl):
+    """Split the LTP=1 LIDP=1 LIST record into (b_coeffs, a_coeffs).
+
+    Layout per manual Section 6.2.7:
+
+        A = [b_0, b_1, ..., b_NL, Re(a_0), Im(a_0),
+             Re(a_1), Im(a_1), ..., Re(a_NL), Im(a_NL)]
+
+    with ``NW = 3 * NL + 3`` total entries. The ``b_l`` are
+    coefficients of ``P_{2l}(mu)`` (even Legendre only; manual
+    eq. 6.14 pure-nuclear sum), so there are ``NL + 1`` of them.
+    The ``a_l`` are complex, same as the LIDP=0 case.
+    """
+    nb = nl + 1
+    na = nl + 1
+    expected = nb + 2 * na
+    if a_arr.size != expected:
+        raise ValueError(
+            f'LTP=1 LIDP=1 record has {a_arr.size} entries; '
+            f'expected 3*NL+3 = {expected} for NL={nl}.'
         )
     b = a_arr[:nb]
     a_flat = a_arr[nb:]
@@ -228,6 +288,84 @@ def _reconstruct_ltp1_lidp0_single_ein(b, a_complex, mu, eta, k, xp):
     nuclear = ((weights_b * b)[:, None] * p_table[: 2 * nl + 1, :]).sum(axis=0)
     # Coulomb
     coulomb = _sigma_coulomb_distinguishable(mu, eta, k)
+    return coulomb + interference + nuclear
+
+
+def _reconstruct_ltp1_lidp1_vectorized(
+    coef_at_e, mu_bc, eta_e, k_e, nl, spi, xp,
+):
+    """Vectorised reconstruction of eq. 6.14 (nuclear amplitude
+    Legendre expansion for IDENTICAL particles, LIDP=1).
+
+    ``coef_at_e`` has shape ``(n_e, 3*NL+3)`` and carries the
+    coefficient array ``[b_0, ..., b_NL, Re(a_0), Im(a_0), ...,
+    Re(a_NL), Im(a_NL)]`` already section-level interpolated.
+    ``mu_bc`` has shape ``(n_e, n_mu)``: CM-frame cosines where the
+    reconstruction is evaluated. ``eta_e``, ``k_e`` are per-E
+    scalars; ``spi`` is the particle spin ``s`` (file-level, Python
+    static float). Returns ``dsigma/dOmega`` of shape
+    ``(n_e, n_mu)`` in CM, b/sr.
+
+    The formula per manual eq. 6.14:
+
+        sigma_ei(mu) = sigma_ci(mu)
+                     - (2 eta / (1 - mu^2))
+                       * Re{ sum_l [(1 + mu) exp(i eta ln((1-mu)/2))
+                             + (-1)^l (1 - mu) exp(i eta ln((1+mu)/2))]
+                             * (2 l + 1) / 2 * a_l(E) * P_l(mu) }
+                     + sum_l (4 l + 1) / 2 * b_l(E) * P_{2l}(mu)
+
+    Matches NJOY2016 ``acefc.f90::coul`` LIDP=1 branch (lines
+    8366-8386) line-for-line: ``cs1`` is the ``sum_l (2l+1)/2 a_l
+    P_l``, ``cs2`` the alternating-sign ``sum_l (-1)^l (2l+1)/2
+    a_l P_l``; the pure-nuclear ``sigr`` uses even-only Legendre
+    with weight ``(4l+1)/2``.
+
+    Backend-agnostic: every operation routes through ``xp``.
+    """
+    nb = nl + 1
+    b = coef_at_e[:, :nb]                       # (n_e, NL+1)
+    a_re = coef_at_e[:, nb::2]                   # (n_e, NL+1)
+    a_im = coef_at_e[:, nb + 1::2]              # (n_e, NL+1)
+    a_complex = a_re + 1j * a_im                 # (n_e, NL+1)
+    lmax_pure = 2 * nl                            # highest P_{2l} order
+    p_table = _legendre_poly_table(mu_bc, lmax_pure, xp)  # (lmax_pure+1, n_e, n_mu)
+
+    # Pure-nuclear sum sigr = sum_l (4l+1)/2 b_l P_{2l}(mu)  (even Legendre only).
+    # Extract rows [0, 2, 4, ..., 2*NL] from the P_l table.
+    even_rows = p_table[0::2]                     # (NL+1, n_e, n_mu)
+    l_vec = xp.arange(nb, dtype=mu_bc.dtype)
+    weights_b = (4.0 * l_vec + 1.0) / 2.0         # (NL+1,)
+    nuclear = xp.einsum('el,len->en', b * weights_b, even_rows)
+
+    # Interference sums.
+    l_vec_a = xp.arange(nl + 1, dtype=mu_bc.dtype)
+    weights_a = (2.0 * l_vec_a + 1.0) / 2.0
+    # cs1 = sum_l (2l+1)/2 a_l P_l(mu)
+    cs1 = xp.einsum('el,len->en', a_complex * weights_a,
+                    p_table[: nl + 1])
+    # cs2 = sum_l (-1)^l (2l+1)/2 a_l P_l(mu)
+    alt_sign = (-1.0) ** l_vec_a                  # (NL+1,)
+    cs2 = xp.einsum('el,len->en', a_complex * weights_a * alt_sign,
+                    p_table[: nl + 1])
+
+    # Coulomb phases exp(i eta ln((1 +/- mu) / 2)).
+    eta_bc = eta_e[:, None]
+    k_bc = k_e[:, None]
+    one_minus_mu_half = (1.0 - mu_bc) / 2.0
+    one_plus_mu_half = (1.0 + mu_bc) / 2.0
+    phase1 = xp.exp(1j * eta_bc * xp.log(one_minus_mu_half))
+    phase2 = xp.exp(1j * eta_bc * xp.log(one_plus_mu_half))
+
+    one_minus_mu2 = 1.0 - mu_bc ** 2
+    interference_sum = (
+        (1.0 + mu_bc) * phase1 * cs1
+        + (1.0 - mu_bc) * phase2 * cs2
+    )
+    interference = -(2.0 * eta_bc / one_minus_mu2) * interference_sum.real
+
+    # Identical-particle Rutherford.
+    coulomb = _sigma_coulomb_identical(mu_bc, eta_bc, k_bc, spi, xp)
     return coulomb + interference + nuclear
 
 
@@ -453,13 +591,16 @@ def get_angdist_from_subsec_law5(
         )
 
     lidp = int(subsec['LIDP'])
-    if lidp == 1:
+    if lidp == 1 and (set(int(v) for v in subsec['LTP'].values()) - {1}):
+        # Identical-particle tabulated LTP forms (hypothetical: no
+        # file in the ENDF/B-VIII.0 proton sublibrary uses this
+        # combination). Deferred: eq. 6.14 is LTP=1 only, and the
+        # tabulated eq. 6.19-6.20 forms are defined for LIDP=0 in
+        # the manual's current working examples.
         raise NotImplementedError(
-            f'MF6/MT{mt} LAW=5 with LIDP=1 (identical particles, '
-            f'e.g. p+p) is not implemented in the first #264 '
-            f'increment. Requires the eq. 6.14 reconstruction '
-            f'(two Coulomb-phase terms, even-only Legendre pure-'
-            f'nuclear expansion). Deferred as #264 follow-up.'
+            f'MF6/MT{mt} LAW=5 LIDP=1 with tabulated LTP (12/14/15) '
+            f'is not implemented; no file in the known neutron-'
+            f'adjacent corpora uses this combination.'
         )
 
     # Supported LTP forms: 1 (nuclear amplitude Legendre expansion,
@@ -499,7 +640,13 @@ def get_angdist_from_subsec_law5(
         )
     nl = nl_set.pop()
     if ltp == 1:
-        nw = 4 * nl + 3
+        # Per manual Section 6.2.7:
+        # LIDP=0 nuclear amplitude expansion stores (2*NL+1) b
+        # coefficients + (NL+1) complex a coefficients -> NW=4*NL+3.
+        # LIDP=1 (identical particles) stores (NL+1) b coefficients
+        # of the EVEN-only Legendre expansion + (NL+1) complex a
+        # coefficients -> NW=3*NL+3.
+        nw = 4 * nl + 3 if lidp == 0 else 3 * nl + 3
     else:
         # LTP in {12, 14, 15}: tabulated form stores (mu, p_NI) pairs,
         # NW = 2 * NL per manual Section 6.2.7.
@@ -581,14 +728,54 @@ def get_angdist_from_subsec_law5(
     #   mask is physically empty for this scope.
     if to_lab:
         r2 = compute_r2(e_in, awi=awp, awr=awr, awp=awp, q=0.0, xp=xp)
+        if lidp == 1:
+            # Identical-particle elastic (p+p): both outgoing
+            # particles are the same species, so the "ejectile" is
+            # inherently ambiguous and the LAB angular range is the
+            # forward hemisphere mu_LAB in [0, 1] only. The mass
+            # ratio awr/awp is close to unity (not exactly 1 due to
+            # the H-1 vs proton AWR/AWP distinction in the file), so
+            # the LAB->CM mapping is still single-valued and the
+            # primary-branch primitive produces a finite result.
+            # However, the LAB density for r ~ 1 picks up contributions
+            # from BOTH CM branches that map to the same mu_LAB and
+            # our primary-branch primitive returns only one; the
+            # LAB-frame output is therefore the single-branch result,
+            # not the full identical-particle LAB density. Flag it
+            # explicitly so a user plotting LAB-frame p+p elastic
+            # knows the stored CM-frame data is more authoritative.
+            warnings.warn(
+                f'MF6/MT{mt} LAW=5 LIDP=1 (identical particles) with '
+                f'to_lab=True returns only the primary CM-branch '
+                f'contribution to the LAB-frame angular distribution. '
+                f'For identical-particle elastic the physical LAB '
+                f'density at each mu_LAB sums contributions from two '
+                f'CM branches that map to the same LAB cosine; this '
+                f'handler currently returns only one. Query '
+                f'to_lab=False for the stored CM-frame distribution, '
+                f'which the ENDF manual (Section 6.2.7) uses as the '
+                f'authoritative reference for identical-particle '
+                f'cases.',
+                UserWarning, stacklevel=2,
+            )
         mu_cm_bc = convert_angcos_to_cmsys(mu, r2, xp=xp)
     else:
         mu_cm_bc = xp.broadcast_to(mu[None, :], (e_in.shape[0], mu.shape[0]))
 
     if ltp == 1:
-        sigma_omega_cm = _reconstruct_ltp1_lidp0_vectorized(
-            coef_at_queries, mu_cm_bc, eta_e, k_e, nl, xp,
-        )  # (n_e, n_mu), dsigma/dOmega in CM frame, b/sr
+        if lidp == 0:
+            sigma_omega_cm = _reconstruct_ltp1_lidp0_vectorized(
+                coef_at_queries, mu_cm_bc, eta_e, k_e, nl, xp,
+            )  # (n_e, n_mu), dsigma/dOmega in CM frame, b/sr
+        else:
+            # LIDP=1 identical particles (eq. 6.14). ``SPI`` is the
+            # subsection-level particle spin stored by ENDF, needed
+            # for the identical-particle Rutherford branch
+            # (eq. 6.10).
+            spi = float(subsec['SPI'])
+            sigma_omega_cm = _reconstruct_ltp1_lidp1_vectorized(
+                coef_at_queries, mu_cm_bc, eta_e, k_e, nl, spi, xp,
+            )
     else:
         # Tabulated form: fetch MF3/MT=2 ``sigma_NI(E)`` which the
         # manual (eq. 6.19) defines as the integrated NI piece and
