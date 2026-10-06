@@ -39,6 +39,8 @@ the specific formalism / INT code seen.
 
 import warnings
 
+import numpy as np
+
 from ..mfsec_interpretation import mf3_interpretation
 from ..mfsec_interpretation import mf2_interpretation_mlbw
 from ..mfsec_interpretation import mf2_interpretation_mlbw_preproc
@@ -203,6 +205,53 @@ def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp,
     return recon, _URR_MT_TO_KEYS
 
 
+def _accumulate_range_contrib(total, e, in_range, keys, xp, reco_fn):
+    """Add one resonance range's contribution onto ``total``.
+
+    Numpy-backend fast path (issue #307): materialise the in-range
+    indices, slice ``e`` to that subset, run ``reco_fn`` on the
+    slice, scatter the result back. Avoids evaluating the formalism
+    on Ein points that would be zeroed by the ``xp.where`` mask
+    (log-spaced XS queries that straddle an actinide RRR waste 25
+    to 94 pct of the work on points above the RRR upper bound).
+
+    JAX fallback: slicing by boolean mask materialises an index
+    array whose size is data-dependent, which breaks ``jax.jit``
+    tracing. Keep the pre-#307 "evaluate full ``e``, mask after"
+    shape there.
+
+    Returns the new running total, or ``None`` when the formalism
+    could not reconstruct the range (``reco_fn`` returned ``None``);
+    callers propagate that into their own error-tracking.
+    """
+    if xp.name == 'jax':
+        recon = reco_fn(e)
+        if recon is None:
+            return None
+        contrib = xp.zeros_like(e)
+        for k in keys:
+            if k in recon:
+                contrib = contrib + recon[k]
+        return total + xp.where(in_range, contrib, xp.zeros_like(e))
+
+    in_range_np = np.asarray(in_range)
+    idx_in = np.where(in_range_np)[0]
+    if idx_in.size == 0:
+        return total
+    e_np = np.asarray(e)
+    e_slice = e_np[idx_in]
+    recon = reco_fn(e_slice)
+    if recon is None:
+        return None
+    contrib_in = np.zeros_like(e_slice)
+    for k in keys:
+        if k in recon:
+            contrib_in = contrib_in + np.asarray(recon[k])
+    total_np = np.asarray(total).copy()
+    total_np[idx_in] += contrib_in
+    return total_np
+
+
 def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
                              urr_quadrature='gauss_legendre_32',
                              _query_state=None):
@@ -286,16 +335,15 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
             any_in = True    # JAX tracer: always run
         if not any_in:
             continue
-        recon, _ = _reconstruct_lru1_range(
-            endf_dict, iso_i, rng_i, rng, e, xp,
+        new_total = _accumulate_range_contrib(
+            total, e, in_range, keys, xp,
+            lambda e_slice: _reconstruct_lru1_range(
+                endf_dict, iso_i, rng_i, rng, e_slice, xp,
+            )[0],
         )
-        if recon is None:
+        if new_total is None:
             continue
-        contrib = xp.zeros_like(e)
-        for k in keys:
-            if k in recon:
-                contrib = contrib + recon[k]
-        total = total + xp.where(in_range, contrib, xp.zeros_like(e))
+        total = new_total
 
     if lru1_unsupported and not saw_lru1_supported:
         parts = ', '.join(f'iso={i} rng={j} LRF={f}'
@@ -335,18 +383,26 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
             any_in = True
         if not any_in:
             continue
-        recon, err = _reconstruct_urr_range(
-            endf_dict, iso_i, rng_i, rng, e, xp,
-            urr_quadrature=urr_quadrature,
+
+        _err_box = [None]
+
+        def _reco_urr(e_slice, _err=_err_box):
+            recon_, err_ = _reconstruct_urr_range(
+                endf_dict, iso_i, rng_i, rng, e_slice, xp,
+                urr_quadrature=urr_quadrature,
+            )
+            _err[0] = err_
+            return recon_
+
+        new_total = _accumulate_range_contrib(
+            total, e, in_range, keys_urr, xp, _reco_urr,
         )
-        if recon is None:
-            urr_unsupported.append((iso_i, rng_i, err))
+        if new_total is None:
+            # Reconstruction kernel refused the range; carry the error
+            # out and keep the running total untouched.
+            urr_unsupported.append((iso_i, rng_i, _err_box[0]))
             continue
-        contrib = xp.zeros_like(e)
-        for k in keys_urr:
-            if k in recon:
-                contrib = contrib + recon[k]
-        total = total + xp.where(in_range, contrib, xp.zeros_like(e))
+        total = new_total
 
     if urr_unsupported:
         parts = ', '.join(
