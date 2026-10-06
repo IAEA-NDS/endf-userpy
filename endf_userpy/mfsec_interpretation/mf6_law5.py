@@ -37,19 +37,19 @@ import numpy as np
 
 from ..primitives import array_ns
 from ..primitives.interpolation import endf_interp1d
+from ..primitives.physical_constants import (
+    AMU_TO_MEV,
+    FINE_STRUCTURE_ALPHA,
+    HBARC_MEV_FM,
+    PARTICLE_MASSES_AMU,
+)
 
-
-# ---- Fundamental constants (CODATA 2018; dimensional analysis in docstrings).
-
-# Fine-structure constant (dimensionless).
-_ALPHA = 7.2973525693e-3
-
-# h-bar * c in MeV * fm. Used to convert sqrt(m_amu * E_MeV) to a
-# wavenumber in inverse fm.
-_HBARC_MEV_FM = 197.3269804
-
-# Atomic mass unit in MeV (u * c^2).
-_AMU_MEV = 931.49410242
+# Neutron mass in amu. ENDF-6 stores AWR, AWP in "neutron mass
+# units"; the Rutherford / Sommerfeld formulas take masses in amu,
+# so AWP must be multiplied by this constant before being passed
+# into the k and eta helpers. Matches NJOY2016 acefc.f90::coul's
+# ``ai = awp * amassn`` conversion.
+_NEUTRON_MASS_AMU = PARTICLE_MASSES_AMU['n']
 
 
 # ---- Kinematic helpers.
@@ -83,7 +83,9 @@ def _sommerfeld_eta(z1, z2, m1_amu, e_lab_ev, xp):
     energy. The result is backend-agnostic through ``xp``.
     """
     e_mev = e_lab_ev * 1e-6
-    return z1 * z2 * _ALPHA * xp.sqrt(m1_amu * _AMU_MEV / (2.0 * e_mev))
+    return z1 * z2 * FINE_STRUCTURE_ALPHA * xp.sqrt(
+        m1_amu * AMU_TO_MEV / (2.0 * e_mev)
+    )
 
 
 def _cm_wavenumber_per_sqrt_barn(a_ratio, m1_amu, e_lab_ev, xp):
@@ -100,8 +102,8 @@ def _cm_wavenumber_per_sqrt_barn(a_ratio, m1_amu, e_lab_ev, xp):
     e_mev = e_lab_ev * 1e-6
     k_per_fm = (
         (a_ratio / (1.0 + a_ratio))
-        * xp.sqrt(2.0 * m1_amu * _AMU_MEV * e_mev)
-        / _HBARC_MEV_FM
+        * xp.sqrt(2.0 * m1_amu * AMU_TO_MEV * e_mev)
+        / HBARC_MEV_FM
     )
     return k_per_fm * 10.0
 
@@ -346,8 +348,13 @@ def get_angdist_from_subsec_law5(
     z_proj = zap // 1000
     awp = float(subsec['AWP'])         # projectile mass in neutron units
     awr = float(sec['AWR'])            # target mass in neutron units
-    # Target/projectile mass ratio A = AWR / AWP (both in neutron units).
+    # Target/projectile mass ratio A = AWR / AWP; the AMU/neutron
+    # unit factor cancels so the ratio is the same in either system.
     a_ratio = awr / awp
+    # Convert projectile mass to amu for the Sommerfeld / wave-number
+    # formulas (manual eq 6.11-6.12 give m1 in amu). Matches NJOY's
+    # ``ai = awp * amassn`` in acefc.f90::coul.
+    m1_amu = awp * _NEUTRON_MASS_AMU
 
     # Interpolate coefficients at each requested Ein; keep this on
     # numpy for the array-length-varying case even when xp is jax.
@@ -369,10 +376,10 @@ def get_angdist_from_subsec_law5(
             # return zero like the MF4/MF6 LAW=2 paths do for
             # kinematic failures (issue #45 pattern).
             continue
-        eta_i = float(_sommerfeld_eta(z_proj, z_target, awp,
+        eta_i = float(_sommerfeld_eta(z_proj, z_target, m1_amu,
                                        ei_val, np))
-        k_i = float(_cm_wavenumber_per_sqrt_barn(a_ratio, awp, ei_val,
-                                                   np))
+        k_i = float(_cm_wavenumber_per_sqrt_barn(a_ratio, m1_amu,
+                                                   ei_val, np))
         b_i, a_i = _unpack_ltp1_distinguishable(
             coef_at_queries[i], nl,
         )

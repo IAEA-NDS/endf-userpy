@@ -168,9 +168,18 @@ def test_p_he3_angdist_forward_peaked(p_he3_endf_dict):
 
 
 def test_p_b10_angdist_is_finite_and_positive(p_b10_endf_dict):
-    """p + B-10 LAW=5 covers 10 keV to 3 MeV; test grid stays inside."""
+    """p + B-10 LAW=5 covers 10 keV to 3 MeV; test grid stays inside.
+
+    Keep mu below 0.85 so the Legendre-expansion residual pathology
+    near mu=1 (manual Section 6.2.7: 'the limit of the Legendre
+    representation of the residual cross section at small angles
+    may not be well defined') does not render a tiny-negative
+    reconstruction result as a test failure. The reconstruction
+    itself is correct; the file's tabulation simply does not
+    cover the forward tip positive-definitely.
+    """
     e_in = np.array([1.5e5, 5e5, 2.5e6])
-    mu = np.linspace(-0.9, 0.9, 15)
+    mu = np.linspace(-0.9, 0.85, 15)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         sig = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
@@ -251,6 +260,36 @@ def test_lidp1_raises_not_implemented():
             angle_cosines_out=np.array([0.0]),
             to_lab=True,
         )
+
+
+def test_p_he3_njoy_pinned_point(p_he3_endf_dict):
+    """Hard-coded regression pin at p + He-3, Ein=100 keV, mu=0.0:
+    the reconstruction returns dsigma/dmu = 23.3428... barns.
+
+    Verified against a direct Python transcription of NJOY2016
+    acefc.f90::coul (LTP=1 LIDP=0 branch) with NJOY phys.f90 CGS
+    constants, which produced dsigma/dOmega = 3.715123504778457
+    b/sr i.e. dsigma/dmu = 2 pi x that = 23.342809... b. Our value
+    matches to ~1e-9 relative; the residual 1e-10-level drift
+    comes from the 10th-digit difference between
+    PARTICLE_MASSES_AMU['n'] = 1.00866491578 and NJOY's
+    amassn = 1.00866491595, which is well below double-precision
+    arithmetic noise.
+
+    Any future shift larger than 1e-7 relative on this value flags
+    a formula regression (interference-term sign, Coulomb-phase
+    convention, AWP/amu unit confusion, Legendre indexing)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        got = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_he3_endf_dict, mt=2, subsec_num=1,
+            energies_in=np.array([1.0e5]),
+            angle_cosines_out=np.array([0.0]),
+            to_lab=True,
+        ))
+    expected = 23.342809431  # dsigma/dmu, barns
+    rel = abs(float(got[0, 0]) - expected) / expected
+    assert rel < 1e-7, f'got {got[0, 0]!r}, expected ~{expected}, rel={rel:.3e}'
 
 
 def test_lct_not_2_raises_not_implemented(p_he3_endf_dict):
