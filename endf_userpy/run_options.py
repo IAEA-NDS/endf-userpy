@@ -52,6 +52,25 @@ class RunOptions:
     mt5_contrib : bool, default ``True``
         Whether to redistribute the MT5 catch-all contribution into
         specific residual products.
+    include_target : bool, default ``False``
+        Whether ``get_residual_production_xs`` includes
+        target-conserving channels (elastic MT2, short-lived
+        discrete-level inelastic MT51..MT90, continuum inelastic
+        MT91, and the inelastic sum MT4) in the sum when the queried
+        residual is the target nuclide in its ground state. ``False``
+        (default) follows the activation-library convention
+        (IRDFF / EAF / NJOY-ACTIVA): channels whose only residual is
+        the target in LFS=0 do not count toward "production of the
+        target", because elastic and short-lived inelastic
+        de-excite back to the ground state and leave the nucleus
+        unchanged. ``True`` restores the inclusive sum (every MT
+        matching the queried residual), which is the right answer
+        when the user wants event-classification bookkeeping rather
+        than activation. Isomer queries (e.g. ``'Nb-93m'``) are
+        unaffected because the metastable state is a genuine
+        different nuclide; the specific MF8-declared isomer-
+        producing MT stays in the sum regardless of
+        ``include_target``.
     backend : {'auto', 'numpy', 'numba', 'jax'} or adapter object, default ``'auto'``
         Backend selection for the whole reconstruction.
 
@@ -115,6 +134,7 @@ class RunOptions:
     resonance_range: str = 'warn'
     include_resonance: bool = True
     mt5_contrib: bool = True
+    include_target: bool = False
     backend: Any = 'auto'
     broadening_mesh_bounds: tuple[float, float] | None = None
     broadening_window_kernel_widths: float | None = None
