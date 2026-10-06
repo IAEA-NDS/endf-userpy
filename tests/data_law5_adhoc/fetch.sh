@@ -25,6 +25,7 @@ cd "$(dirname "$0")"
 files=(
   "p-002_He_003.endf  dd68902b7acc518799581ed992a0271291d77f10a0713523a2619f6147d7d115"
   "p-005_B_010.endf   6109e7be3daf4ef88911b78d8fe1a18921cdbf6eeeb5e2f09e7692da65cbba45"
+  "p-006_C_012.endf   771f7c5f7f3336a05a05463fe711593284af39c8c93f3bdf4b3a1e76640302a0"
 )
 
 zip_url="https://www.nndc.bnl.gov/endf-b8.0/zips/ENDF-B-VIII.0_protons.zip"

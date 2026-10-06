@@ -216,12 +216,13 @@ def test_compute_angdist_dispatch_reaches_law5_handler(p_he3_endf_dict):
 # ---- Explicit NotImplementedError for deferred cases ------------------
 
 
-def test_ltp12_raises_not_implemented():
-    """Pick a corpus file that uses LTP=12 and confirm the handler
-    raises with a message pointing at #264 so the gap is visible."""
-    # Use p_he3 fixture dict (LTP=1) and monkey-patch its LTP flag
-    # to simulate a LTP=12 subsection; cleaner than requiring
-    # another corpus download. Deep-copy avoids fixture pollution.
+def test_ltp2_raises_not_implemented():
+    """LTP=2 (residual cross section Legendre expansion, manual
+    eq. 6.15-6.18) is not implemented in any #264 increment; no
+    corpus file in the neutron-adjacent sublibraries uses it, and
+    the format differs from both LTP=1 (nuclear amplitude Legendre)
+    and LTP=12/14/15 (tabulated p_NI). Simulate by patching the
+    LTP flag and confirm the handler raises with a clear message."""
     import copy
     path = resolve_p_he3_law5()
     if path is None:
@@ -231,7 +232,7 @@ def test_ltp12_raises_not_implemented():
     )
     sub = d[6][2]['subsection'][1]
     for k in list(sub['LTP'].keys()):
-        sub['LTP'][k] = 12
+        sub['LTP'][k] = 2
     with pytest.raises(NotImplementedError, match='LTP'):
         mf6_law5.get_angdist_from_subsec_law5(
             d, mt=2, subsec_num=1,

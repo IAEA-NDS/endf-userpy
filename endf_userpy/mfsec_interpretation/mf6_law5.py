@@ -31,6 +31,8 @@ pipeline composition ``MF3 * angdist`` is already in barns.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from ..primitives import array_ns
@@ -229,6 +231,109 @@ def _reconstruct_ltp1_lidp0_single_ein(b, a_complex, mu, eta, k, xp):
     return coulomb + interference + nuclear
 
 
+def _reconstruct_ltp_tabulated_vectorized(
+    coef_at_e, mu_bc, eta_e, k_e, sigma_ni_e, nl, ltp, xp,
+):
+    """Vectorised reconstruction of eq. 6.19/6.20 (tabulated
+    nuclear-plus-interference form) for LAW=5 LTP in {12, 14, 15},
+    LIDP=0.
+
+    ``coef_at_e`` has shape ``(n_e, 2*NL)`` and carries the per-Ein
+    coefficient array ``[mu_1, p_NI(mu_1), mu_2, p_NI(mu_2), ...,
+    mu_NL, p_NI(mu_NL)]`` already section-level interpolated.
+    ``mu_bc`` has shape ``(n_e, n_mu)``: CM-frame cosines where the
+    reconstruction is evaluated. ``sigma_ni_e`` has shape
+    ``(n_e,)`` and carries MF3/MT=2 interpolated at each Ein (the
+    file-side ``sigma_NI`` per manual eq. 6.19). ``eta_e``,
+    ``k_e`` same as the LTP=1 path.
+
+    Returns the CM-frame ``dsigma/dOmega`` of shape ``(n_e, n_mu)``:
+
+        sigma_e(mu, E) = sigma_c(mu, E) + sigma_NI(E) * p_NI(mu, E)
+
+    where ``p_NI`` is interpolated per the stored LTP code:
+    LTP=12 or 15 use linear-in-mu interpolation of ``p_NI``;
+    LTP=14 uses linear-in-mu interpolation of ``ln(p_NI)`` with the
+    exponential re-applied. ``p_NI`` evaluates to zero outside the
+    tabulated ``[mu_min, mu_max]`` range (manual eq. 6.20), leaving
+    only the pointwise Coulomb term there.
+    """
+    # Unpack (mu_k, p_NI_k) pairs. coef_at_e[:, 0::2] = mu values,
+    # coef_at_e[:, 1::2] = p_NI values. For a given Ein we expect
+    # the mu grid to be the same across the NE grid (checked by the
+    # caller via a NL-uniform guard), so collapse along the Ein axis.
+    mu_knots = coef_at_e[:, 0::2]        # (n_e, NL)
+    p_knots = coef_at_e[:, 1::2]         # (n_e, NL)
+    if int(ltp) == 14:
+        # Clamp strictly-positive floor so log is finite; a zero
+        # p_NI entry would otherwise feed log(0) = -inf into the
+        # interpolation. Downstream the result is masked outside the
+        # tabulated mu range anyway, so a floor-replaced sample does
+        # not leak into physical regions.
+        p_floor = xp.where(p_knots > 0.0, p_knots, 1e-300)
+        p_interp_src = xp.log(p_floor)
+    else:
+        p_interp_src = p_knots
+
+    # Linear-in-mu interpolation of ``p_interp_src`` evaluated at
+    # ``mu_bc[e, m]``. For each Ein row this is a 1D interpolation
+    # on the (mu_knots[e], p_interp_src[e]) pair; vectorise with
+    # xp.searchsorted on the NL knot grid plus per-element indexing.
+    # The ENDF convention stores mu_knots in ascending order from
+    # mu_min to mu_max for the tabulated LTP forms.
+    n_e = mu_bc.shape[0]
+    # Per-row searchsorted into the mu_knots grid.
+    # Use a padded index to make xp.take_along_axis safe at the edges;
+    # mu samples outside [mu_min, mu_max] are masked back to zero below.
+    # searchsorted expects a sorted 1D array; apply row-wise via a
+    # Python list comp (NE is small, typically O(100)).
+    pdf_bc = xp.stack([
+        _row_linear_interp_1d(
+            mu_knots[i], p_interp_src[i], mu_bc[i], xp,
+        )
+        for i in range(n_e)
+    ])
+    if int(ltp) == 14:
+        pdf_bc = xp.exp(pdf_bc)
+
+    # Mask outside the tabulated mu range (manual eq. 6.20: p_NI
+    # = 0 outside [mu_min, mu_max]). Use the Ein-independent knot
+    # extremes along axis -1.
+    mu_min = mu_knots[:, :1]              # (n_e, 1)
+    mu_max = mu_knots[:, -1:]             # (n_e, 1)
+    in_range = (mu_bc >= mu_min) & (mu_bc <= mu_max)
+    pdf_bc = xp.where(in_range, pdf_bc, xp.zeros_like(pdf_bc))
+
+    # Compose: sigma_e = sigma_c + sigma_NI(E) * p_NI(mu, E).
+    coulomb = eta_e[:, None] ** 2 / (
+        k_e[:, None] ** 2 * (1.0 - mu_bc) ** 2
+    )
+    return coulomb + sigma_ni_e[:, None] * pdf_bc
+
+
+def _row_linear_interp_1d(x_knots, y_knots, x_query, xp):
+    """1D linear interpolation along ``x_knots`` evaluated at
+    ``x_query``, clamped at the knot extremes (no extrapolation).
+
+    All inputs are 1D xp-native arrays. Backend-agnostic.
+    Operations are tracer-safe: ``xp.searchsorted`` + per-element
+    arithmetic without Python-side branches.
+    """
+    idx = xp.searchsorted(x_knots, x_query, side='right')
+    n = x_knots.shape[0]
+    idx = xp.where(idx < 1, 1, idx)
+    idx = xp.where(idx > n - 1, n - 1, idx)
+    i1 = (idx - 1).astype(xp.int32)
+    i2 = idx.astype(xp.int32)
+    x1 = xp.take(x_knots, i1, axis=0)
+    x2 = xp.take(x_knots, i2, axis=0)
+    y1 = xp.take(y_knots, i1, axis=0)
+    y2 = xp.take(y_knots, i2, axis=0)
+    denom = xp.where(x2 == x1, 1.0, x2 - x1)
+    slope = (y2 - y1) / denom
+    return y1 + slope * (x_query - x1)
+
+
 def _reconstruct_ltp1_lidp0_vectorized(
     coef_at_e, mu_bc, eta_e, k_e, nl, xp,
 ):
@@ -357,25 +462,34 @@ def get_angdist_from_subsec_law5(
             f'nuclear expansion). Deferred as #264 follow-up.'
         )
 
-    # Only LTP=1 supported in this increment.
+    # Supported LTP forms: 1 (nuclear amplitude Legendre expansion,
+    # manual eq. 6.13) and 12 / 14 / 15 (tabulated p_NI vs mu,
+    # manual eq. 6.19-6.20). LTP=2 (residual-XS Legendre expansion
+    # of eq. 6.15-6.18) still raises; no corpus file in the
+    # neutron-adjacent sublibraries exercises it.
     ltps = {int(v) for v in subsec['LTP'].values()}
-    unsupported = ltps - {1}
+    _SUPPORTED_LTPS = {1, 12, 14, 15}
+    unsupported = ltps - _SUPPORTED_LTPS
     if unsupported:
         raise NotImplementedError(
             f'MF6/MT{mt} LAW=5 has LTP values {sorted(unsupported)} '
-            f'(tabulated nuclear-plus-interference forms per '
-            f'manual eq. 6.19/6.20). The first #264 increment '
-            f'implements only LTP=1 (nuclear amplitude Legendre '
-            f'expansion). Tabulated LTP=12/14/15 cover 42 of 49 '
-            f'proton-sublibrary files and are a #264 follow-up.'
+            f'that are not implemented. Supported: '
+            f'{sorted(_SUPPORTED_LTPS)}.'
         )
+    if len(ltps) != 1:
+        raise NotImplementedError(
+            f'MF6/MT{mt} LAW=5 mixes LTP values {sorted(ltps)} '
+            f'across the NE grid; the reconstruction assumes a '
+            f'single LTP code per subsection. Deferred.'
+        )
+    ltp = next(iter(ltps))
 
     # Interpolate per-Ein coefficient arrays onto the requested
     # incident-energy grid. Each per-Ein record carries NL, so the
     # arrays live in different shapes and the simplest approach is
     # a linear interpolation on a NL-static section. All public
-    # LTP=1 LIDP=0 proton files we checked keep NL fixed across
-    # the NE grid; reject the variable-NL case explicitly.
+    # proton-sublibrary LAW=5 subsections keep NL fixed across the
+    # NE grid; reject the variable-NL case explicitly.
     nl_set = {int(v) for v in subsec['NL'].values()}
     if len(nl_set) != 1:
         raise NotImplementedError(
@@ -384,6 +498,12 @@ def get_angdist_from_subsec_law5(
             f'of different lengths is not implemented. Deferred.'
         )
     nl = nl_set.pop()
+    if ltp == 1:
+        nw = 4 * nl + 3
+    else:
+        # LTP in {12, 14, 15}: tabulated form stores (mu, p_NI) pairs,
+        # NW = 2 * NL per manual Section 6.2.7.
+        nw = 2 * nl
 
     # Build the (NE, NW) coefficient matrix xp-natively. The dict
     # values stored under ``subsec['E'][i]`` and ``subsec['A'][i][k]``
@@ -394,7 +514,6 @@ def get_angdist_from_subsec_law5(
     # dependency alive. This replaces the earlier per-element
     # assignment into a numpy array, which collapsed any tracer
     # into a concrete float and silently broke leaf autodiff.
-    nw = 4 * nl + 3
     e_keys = sorted(subsec['E'].keys())
     a_keys = sorted(subsec['A'].keys())
     e_mesh = xp.stack([xp.asarray(subsec['E'][i], dtype=xp.float64)
@@ -466,9 +585,21 @@ def get_angdist_from_subsec_law5(
     else:
         mu_cm_bc = xp.broadcast_to(mu[None, :], (e_in.shape[0], mu.shape[0]))
 
-    sigma_omega_cm = _reconstruct_ltp1_lidp0_vectorized(
-        coef_at_queries, mu_cm_bc, eta_e, k_e, nl, xp,
-    )  # (n_e, n_mu), dsigma/dOmega in CM frame, b/sr
+    if ltp == 1:
+        sigma_omega_cm = _reconstruct_ltp1_lidp0_vectorized(
+            coef_at_queries, mu_cm_bc, eta_e, k_e, nl, xp,
+        )  # (n_e, n_mu), dsigma/dOmega in CM frame, b/sr
+    else:
+        # Tabulated form: fetch MF3/MT=2 ``sigma_NI(E)`` which the
+        # manual (eq. 6.19) defines as the integrated NI piece and
+        # the file stores point-wise. For LTP=1/2 the file forces
+        # MF3 to 1.0; for LTP=12/14/15 it is the real sigma_NI,
+        # possibly negative at destructive-interference energies.
+        sigma_ni_e = _interp_mf3(endf_dict, mt, e_in, xp)
+        sigma_omega_cm = _reconstruct_ltp_tabulated_vectorized(
+            coef_at_queries, mu_cm_bc, eta_e, k_e, sigma_ni_e,
+            nl, ltp, xp,
+        )  # (n_e, n_mu), dsigma/dOmega in CM frame, b/sr
 
     if to_lab:
         # Apply the CM -> LAB angular Jacobian so the output is a
@@ -491,4 +622,70 @@ def get_angdist_from_subsec_law5(
     # Mask below-threshold rows (where the clamp above hid the issue).
     e_pos_mask = (e_in > 0.0)[:, None]
     out = xp.where(e_pos_mask, out, xp.zeros_like(out))
+
+    # Pipeline composition convention: downstream DDX multiplies
+    # ``MF3(E) * angdist(mu, E)``. For LTP=1/2 the file forces
+    # MF3=1.0 (manual Section 6.2.7) so returning ``sigma_e``
+    # directly already produces the right composite. For LTP in
+    # {12, 14, 15} the file stores ``sigma_NI`` in MF3, so divide
+    # by it here to keep the invariant ``MF3 * angdist = sigma_e``.
+    # ``sigma_NI`` can be small or sign-change at destructive-
+    # interference energies (p + C-12 crosses zero twice over the
+    # file's E grid); clamp |sigma_NI| at a tiny floor so the
+    # ratio stays finite, and emit a one-shot warning when any
+    # queried E hits the clamp. The composite then goes to zero
+    # at that E rather than NaN; the dsigma/dmu reconstruction
+    # loses the Coulomb pole in a narrow neighbourhood of the
+    # crossing but stays well-behaved everywhere else.
+    if ltp != 1:
+        _TOL = 1e-30
+        abs_sigma_ni = xp.abs(sigma_ni_e)
+        sigma_ni_safe = xp.where(
+            abs_sigma_ni > _TOL,
+            sigma_ni_e,
+            xp.where(sigma_ni_e >= 0.0,
+                      xp.full_like(sigma_ni_e, _TOL),
+                      xp.full_like(sigma_ni_e, -_TOL)),
+        )
+        out = out / sigma_ni_safe[:, None]
+        try:
+            degenerate_count = int(xp.sum(abs_sigma_ni <= _TOL))
+            if degenerate_count > 0:
+                warnings.warn(
+                    f'MF6/MT{mt} LAW=5 LTP={ltp}: MF3/MT=2 sigma_NI '
+                    f'is near zero (|value| <= {_TOL}) at '
+                    f'{degenerate_count} of {int(e_in.shape[0])} '
+                    f'queried incident energies. The composite '
+                    f'MF3 * angdist goes to zero at those points '
+                    f'to avoid NaN; the point-wise Coulomb pole is '
+                    f'lost in a narrow neighbourhood of each '
+                    f'destructive-interference zero crossing of '
+                    f'sigma_NI(E).',
+                    UserWarning, stacklevel=2,
+                )
+        except Exception:
+            # Tracer path (jax jit): ``int()`` on a tracer scalar
+            # fails. Skip the warning rather than raise; the clamp
+            # is still applied.
+            pass
     return out
+
+
+def _interp_mf3(endf_dict, mt, e_in, xp):
+    """Interpolate MF3/MT (tabulated cross section) at ``e_in``.
+
+    For LAW=5 LTP in {12, 14, 15}, MF3 carries the file-stored
+    ``sigma_NI(E)`` (manual eq. 6.19) needed to compose the
+    tabulated nuclear-plus-interference distribution. Backend-
+    agnostic through ``xp``; ``e_in`` tracers propagate through
+    ``endf_interp1d``'s traced-x path.
+    """
+    xst = endf_dict[3][mt]['xstable']
+    e_mesh_np = np.asarray(xst['E'], dtype=float)
+    xs_np = np.asarray(xst['xs'], dtype=float)
+    int_arr = np.asarray(xst.get('INT', [2]), dtype=int)
+    nbt_arr = np.asarray(xst.get('NBT', [e_mesh_np.size]), dtype=int)
+    return endf_interp1d(
+        e_in, xp.asarray(e_mesh_np), xp.asarray(xs_np),
+        int_arr, nbt_arr, xp=xp,
+    )
