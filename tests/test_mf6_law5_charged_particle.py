@@ -242,10 +242,12 @@ def test_ltp2_raises_not_implemented():
         )
 
 
-def test_lidp1_raises_not_implemented():
-    """Simulate an identical-particle subsection (p+p pattern) by
-    patching LIDP=1 and confirm the handler raises with a message
-    pointing at eq. 6.14."""
+def test_lidp1_tabulated_ltp_raises_not_implemented():
+    """LIDP=1 combined with tabulated LTP (12/14/15) is not
+    implemented; no file in the ENDF/B-VIII.0 incident-proton
+    sublibrary uses this combination (only p+p LTP=1 uses LIDP=1,
+    the tabulated proton files all use LIDP=0). Pin that the
+    handler explicitly rejects the untested combination."""
     import copy
     path = resolve_p_he3_law5()
     if path is None:
@@ -253,13 +255,16 @@ def test_lidp1_raises_not_implemented():
     d = copy.deepcopy(
         EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
     )
-    d[6][2]['subsection'][1]['LIDP'] = 1
-    with pytest.raises(NotImplementedError, match='LIDP=1'):
+    sub = d[6][2]['subsection'][1]
+    sub['LIDP'] = 1
+    for k in list(sub['LTP'].keys()):
+        sub['LTP'][k] = 12
+    with pytest.raises(NotImplementedError, match='LIDP=1.*tabulated'):
         mf6_law5.get_angdist_from_subsec_law5(
             d, mt=2, subsec_num=1,
             energies_in=np.array([5e6]),
             angle_cosines_out=np.array([0.0]),
-            to_lab=True,
+            to_lab=False,
         )
 
 
