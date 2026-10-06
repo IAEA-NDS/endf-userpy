@@ -292,6 +292,151 @@ def test_p_he3_njoy_pinned_point(p_he3_endf_dict):
     assert rel < 1e-7, f'got {got[0, 0]!r}, expected ~{expected}, rel={rel:.3e}'
 
 
+def _jax_available():
+    from endf_userpy.primitives import array_ns
+    return 'jax' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jit_matches_numpy(p_he3_endf_dict):
+    """``@jax.jit`` over the full handler must trace cleanly (no
+    tracer-to-numpy conversion) and return the same value as the
+    numpy path. Catches a regression on the vectorise-and-keep-
+    tracers path."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.primitives import array_ns
+    xp_np = array_ns.get_backend('numpy')
+    xp_jax = array_ns.get_backend('jax')
+    e_test = np.array([5.0e5, 1.0e6, 1.5e6])
+    mu_test = np.array([-0.5, 0.0, 0.5])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        out_np = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_he3_endf_dict, mt=2, subsec_num=1,
+            energies_in=e_test, angle_cosines_out=mu_test, to_lab=True,
+            xp=xp_np,
+        ))
+
+        @jax.jit
+        def fn(e):
+            return mf6_law5.get_angdist_from_subsec_law5(
+                p_he3_endf_dict, mt=2, subsec_num=1,
+                energies_in=e, angle_cosines_out=jnp.asarray(mu_test),
+                to_lab=True, xp=xp_jax,
+            )
+        out_jit = np.asarray(fn(jnp.asarray(e_test)))
+    np.testing.assert_allclose(out_jit, out_np, rtol=1e-10, atol=0)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_grad_wrt_ein_matches_finite_difference(p_he3_endf_dict):
+    """``jax.grad`` wrt the incident energy must flow through the
+    section-level TAB2 interpolation of the coefficient matrix, the
+    eta / k dependence on E, and the Coulomb phase factor. Pinned
+    against central FD at a smooth interior point."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.primitives import array_ns
+    xp_jax = array_ns.get_backend('jax')
+    # Interior Ein point (not a stored knot: the TAB2 panel-boundary
+    # kink gives one-sided AD vs symmetric FD at a knot). He-3's
+    # LAW=5 stored grid has knots at 1.0 / 1.5 / 2.0 MeV; 1.4 MeV
+    # sits inside a lin-lin panel.
+    e_center = 1.4e6
+    mu_center = 0.3
+
+    def loss(e_scalar):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            out = mf6_law5.get_angdist_from_subsec_law5(
+                p_he3_endf_dict, mt=2, subsec_num=1,
+                energies_in=jnp.array([e_scalar]),
+                angle_cosines_out=jnp.array([mu_center]),
+                to_lab=True, xp=xp_jax,
+            )
+        return jnp.sum(out)
+
+    g_ad = float(jax.grad(loss)(e_center))
+    step = e_center * 1e-5
+    g_fd = (float(loss(e_center + step)) - float(loss(e_center - step))) / (2 * step)
+    rel = abs(g_ad - g_fd) / max(abs(g_fd), 1e-30)
+    assert rel < 1e-4, f'AD={g_ad:.6e}  FD={g_fd:.6e}  rel={rel:.3e}'
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_grad_wrt_mu_matches_finite_difference(p_he3_endf_dict):
+    """``jax.grad`` wrt an output cosine must flow through the
+    Legendre recurrence, the 1/(1-mu) prefactors in both the
+    Rutherford term and the interference, and the Coulomb phase
+    factor's log((1-mu)/2)."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.primitives import array_ns
+    xp_jax = array_ns.get_backend('jax')
+    e_center = 1.0e6
+    mu_center = 0.3
+
+    def loss(mu_scalar):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            out = mf6_law5.get_angdist_from_subsec_law5(
+                p_he3_endf_dict, mt=2, subsec_num=1,
+                energies_in=jnp.array([e_center]),
+                angle_cosines_out=jnp.array([mu_scalar]),
+                to_lab=True, xp=xp_jax,
+            )
+        return jnp.sum(out)
+
+    g_ad = float(jax.grad(loss)(mu_center))
+    step = 1e-5
+    g_fd = (float(loss(mu_center + step)) - float(loss(mu_center - step))) / (2 * step)
+    rel = abs(g_ad - g_fd) / max(abs(g_fd), 1e-30)
+    assert rel < 1e-5, f'AD={g_ad:.6e}  FD={g_fd:.6e}  rel={rel:.3e}'
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_grad_wrt_file_leaf_coefficient_matches_finite_difference(
+    p_he3_endf_dict,
+):
+    """``jax.grad`` wrt an injected tracer on ``subsec['A']`` (the
+    file-stored b_l / a_l coefficients) must propagate end-to-end.
+    This is the file-leaf autodiff pattern used elsewhere in the
+    codebase (e.g. MF6 LAW=1 b_panels tracers). Pins the xp.stack
+    build of coef_matrix: an earlier version that packed the
+    coefficients into a numpy array silently collapsed any tracer
+    into a concrete float and broke this gradient path."""
+    import copy
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.primitives import array_ns
+    xp_jax = array_ns.get_backend('jax')
+    orig = float(p_he3_endf_dict[6][2]['subsection'][1]['A'][1][1])
+    e_val = sorted(p_he3_endf_dict[6][2]['subsection'][1]['E'].values())[0]
+
+    def loss(coef_val):
+        d2 = copy.deepcopy(p_he3_endf_dict)
+        d2[6][2]['subsection'][1]['A'][1][1] = coef_val
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            out = mf6_law5.get_angdist_from_subsec_law5(
+                d2, mt=2, subsec_num=1,
+                energies_in=jnp.array([e_val]),
+                angle_cosines_out=jnp.array([0.0]),
+                to_lab=True, xp=xp_jax,
+            )
+        return jnp.sum(out)
+
+    g_ad = float(jax.grad(loss)(orig))
+    # For b_0 at mu=0, the analytic gradient is exactly pi
+    # (coefficient enters as 0.5 * b_0 * P_0(0) and we multiply by
+    # 2*pi for dsigma/dmu). FD for cross-check anyway.
+    step = max(abs(orig), 1e-6) * 1e-4
+    g_fd = (float(loss(orig + step)) - float(loss(orig - step))) / (2 * step)
+    rel = abs(g_ad - g_fd) / max(abs(g_fd), 1e-30)
+    assert rel < 1e-4, f'AD={g_ad:.6e}  FD={g_fd:.6e}  rel={rel:.3e}'
+
+
 def test_lct_not_2_raises_not_implemented(p_he3_endf_dict):
     """Any LCT other than 2 (CM) is outside the first-increment
     scope. Patch the section-level LCT and confirm the handler

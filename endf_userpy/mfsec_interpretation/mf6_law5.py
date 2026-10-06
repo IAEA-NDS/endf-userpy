@@ -160,31 +160,23 @@ def _legendre_poly_table(mu, lmax, xp):
     stacked along a leading axis of size ``lmax + 1``. ``mu`` is a
     1-D array; the output has shape ``(lmax + 1, mu.size)``.
 
-    Bonnet recurrence. Backend-agnostic through ``xp``.
+    Bonnet recurrence, built as a Python list of rows and stacked
+    once at the end so no in-place indexing is needed; tracer-safe
+    under ``xp.name == 'jax'`` end-to-end.
     """
     n = lmax + 1
-    out = xp.zeros((n, mu.shape[0]), dtype=mu.dtype)
     if n == 0:
-        return out
-    out = out.at[0].set(xp.ones_like(mu)) if hasattr(out, 'at') \
-        else _np_set_row(out, 0, xp.ones_like(mu))
+        return xp.zeros((0, mu.shape[0]), dtype=mu.dtype)
+    p0 = xp.ones_like(mu)
     if n == 1:
-        return out
-    out = out.at[1].set(mu) if hasattr(out, 'at') \
-        else _np_set_row(out, 1, mu)
+        return xp.stack([p0], axis=0)
+    rows = [p0, mu]
     for ll in range(1, lmax):
-        p_prev = out[ll - 1]
-        p_curr = out[ll]
-        p_next = ((2 * ll + 1) * mu * p_curr - ll * p_prev) / (ll + 1)
-        out = out.at[ll + 1].set(p_next) if hasattr(out, 'at') \
-            else _np_set_row(out, ll + 1, p_next)
-    return out
-
-
-def _np_set_row(arr, i, row):
-    arr = np.asarray(arr).copy()
-    arr[i] = np.asarray(row)
-    return arr
+        p_next = (
+            (2 * ll + 1) * mu * rows[-1] - ll * rows[-2]
+        ) / (ll + 1)
+        rows.append(p_next)
+    return xp.stack(rows, axis=0)
 
 
 def _reconstruct_ltp1_lidp0_single_ein(b, a_complex, mu, eta, k, xp):
@@ -230,6 +222,51 @@ def _reconstruct_ltp1_lidp0_single_ein(b, a_complex, mu, eta, k, xp):
     return coulomb + interference + nuclear
 
 
+def _reconstruct_ltp1_lidp0_vectorized(
+    coef_at_e, mu, eta_e, k_e, nl, xp,
+):
+    """Vectorised sibling of :func:`_reconstruct_ltp1_lidp0_single_ein`
+    broadcasting over both an incident-energy axis and a mu axis.
+
+    ``coef_at_e`` has shape ``(n_e, 4*NL+3)`` and carries the
+    coefficient array ``[b_0, ..., b_{2NL}, Re(a_0), Im(a_0), ...,
+    Re(a_NL), Im(a_NL)]`` at each requested Ein (already
+    section-level interpolated). ``mu`` has shape ``(n_mu,)``;
+    ``eta_e`` and ``k_e`` have shape ``(n_e,)``. Returns
+    ``dsigma/dOmega`` of shape ``(n_e, n_mu)``.
+
+    Backend-agnostic: every operation routes through ``xp``. Under
+    ``xp.name == 'jax'`` the function is both ``jax.jit``-safe and
+    ``jax.grad``-transparent wrt ``mu``, ``eta_e``, ``k_e``, and
+    the ``coef_at_e`` leaves.
+    """
+    nb = 2 * nl + 1
+    b = coef_at_e[:, :nb]                       # (n_e, 2*NL+1)
+    a_re = coef_at_e[:, nb::2]                   # (n_e, NL+1)
+    a_im = coef_at_e[:, nb + 1::2]              # (n_e, NL+1)
+    a_complex = a_re + 1j * a_im                 # (n_e, NL+1)
+    lmax = max(nl, 2 * nl)
+    p_table = _legendre_poly_table(mu, lmax, xp)  # (lmax+1, n_mu)
+    # Pure nuclear sum: (n_e, 2*NL+1) @ (2*NL+1, n_mu) = (n_e, n_mu)
+    l_range_b = xp.arange(nb, dtype=mu.dtype)
+    weights_b = (2.0 * l_range_b + 1.0) / 2.0
+    nuclear = (b * weights_b) @ p_table[:nb, :]
+    # Interference sum: complex (n_e, n_mu)
+    l_range_a = xp.arange(nl + 1, dtype=mu.dtype)
+    weights_a = (2.0 * l_range_a + 1.0) / 2.0
+    cs = (a_complex * weights_a) @ p_table[: nl + 1, :]
+    # Coulomb phase factor exp(i eta(E) log((1-mu)/2))
+    one_minus_mu_half = (1.0 - mu)[None, :] / 2.0
+    phase = xp.exp(1j * eta_e[:, None] * xp.log(one_minus_mu_half))
+    interference = -(2.0 * eta_e[:, None] / (1.0 - mu)[None, :]) \
+        * (phase * cs).real
+    # Rutherford Coulomb cross section
+    coulomb = eta_e[:, None] ** 2 / (
+        k_e[:, None] ** 2 * (1.0 - mu)[None, :] ** 2
+    )
+    return coulomb + interference + nuclear
+
+
 # ---- Public API.
 
 
@@ -259,8 +296,14 @@ def get_angdist_from_subsec_law5(
 
     Backend-agnostic through ``xp``; the Legendre recurrence,
     Coulomb-phase complex exponential, and interference sum all
-    run on the chosen backend. ``jax.grad`` wrt the stored ``a_l``
-    and ``b_l`` coefficients propagates through the reconstruction.
+    run on the chosen backend. The entire pipeline is
+    ``@jax.jit``-safe and ``jax.grad``-transparent wrt
+    ``energies_in``, ``angle_cosines_out``, and the file-stored
+    ``a_l`` / ``b_l`` coefficients (when the caller injects
+    tracers into ``subsec['A']`` for file-leaf autodiff). No
+    Python-side conversion of query or coefficient values to
+    concrete floats, no Python-side control flow on tracers; the
+    below-threshold mask uses ``xp.where``.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -320,83 +363,73 @@ def get_angdist_from_subsec_law5(
         )
     nl = nl_set.pop()
 
-    e_mesh = np.array(
-        [subsec['E'][i] for i in sorted(subsec['E'].keys())],
-        dtype=float,
-    )
-    # (NE, NW) coefficient matrix
+    # Build the (NE, NW) coefficient matrix xp-natively. The dict
+    # values stored under ``subsec['E'][i]`` and ``subsec['A'][i][k]``
+    # may be plain Python floats, numpy scalars, or JAX tracers
+    # (mesh-knot / file-leaf autodiff pattern); ``xp.asarray`` on a
+    # tracer is a no-op that preserves it, and ``xp.stack`` of a
+    # list of scalars produces one array that keeps every tracer
+    # dependency alive. This replaces the earlier per-element
+    # assignment into a numpy array, which collapsed any tracer
+    # into a concrete float and silently broke leaf autodiff.
     nw = 4 * nl + 3
-    coef_matrix = np.zeros((e_mesh.size, nw), dtype=float)
-    for row_i, ei in enumerate(sorted(subsec['A'].keys())):
-        a_row = subsec['A'][ei]
-        for k_idx in range(nw):
-            coef_matrix[row_i, k_idx] = a_row[k_idx + 1]  # 1-based keys
+    e_keys = sorted(subsec['E'].keys())
+    a_keys = sorted(subsec['A'].keys())
+    e_mesh = xp.stack([xp.asarray(subsec['E'][i], dtype=xp.float64)
+                       for i in e_keys])
+    coef_matrix = xp.stack([
+        xp.stack([xp.asarray(subsec['A'][i][k + 1], dtype=xp.float64)
+                  for k in range(nw)])
+        for i in a_keys
+    ])  # (NE, NW)
 
     # Section-level incident-energy interpolation (TAB2 across E).
     int_arr = np.asarray(subsec.get('INT', [2]), dtype=int)
-    nbt_arr = np.asarray(subsec.get('NBT', [e_mesh.size]), dtype=int)
+    nbt_arr = np.asarray(subsec.get('NBT', [len(e_keys)]), dtype=int)
 
     e_in = xp.asarray(energies_in, dtype=xp.float64)
     mu = xp.asarray(angle_cosines_out, dtype=xp.float64)
-    n_e = e_in.shape[0]
-    n_mu = mu.shape[0]
 
-    # Target / projectile charges and masses.
+    # Target / projectile charges and masses. Z and AWR are
+    # file-static integers / floats; AWP is a per-subsection float.
     za_target = int(float(endf_dict[1][451]['ZA']))
     z_target = za_target // 1000
     zap = int(float(subsec['ZAP']))
     z_proj = zap // 1000
-    awp = float(subsec['AWP'])         # projectile mass in neutron units
-    awr = float(sec['AWR'])            # target mass in neutron units
-    # Target/projectile mass ratio A = AWR / AWP; the AMU/neutron
-    # unit factor cancels so the ratio is the same in either system.
-    a_ratio = awr / awp
-    # Convert projectile mass to amu for the Sommerfeld / wave-number
-    # formulas (manual eq 6.11-6.12 give m1 in amu). Matches NJOY's
-    # ``ai = awp * amassn`` in acefc.f90::coul.
-    m1_amu = awp * _NEUTRON_MASS_AMU
+    awp = float(subsec['AWP'])
+    awr = float(sec['AWR'])
+    a_ratio = awr / awp  # amu / neutron-unit factor cancels in the ratio
+    m1_amu = awp * _NEUTRON_MASS_AMU  # NJOY-matched conversion (eq. 6.11-6.12)
 
-    # Interpolate coefficients at each requested Ein; keep this on
-    # numpy for the array-length-varying case even when xp is jax.
-    # (The static-NL branch above has fixed coef shape, so the
-    # interpolation is a plain per-column tab1 lookup.)
-    e_in_np = np.asarray(e_in, dtype=float)
-    coef_at_queries = np.zeros((n_e, nw), dtype=float)
-    for col in range(nw):
-        coef_at_queries[:, col] = np.asarray(endf_interp1d(
-            e_in_np, e_mesh, coef_matrix[:, col],
-            int_arr, nbt_arr,
-        ))
+    # Interpolate coefficients at each requested Ein, column by
+    # column. ``endf_interp1d`` under ``xp.name == 'jax'`` routes
+    # through the traced-x path, so both ``e_in`` tracers (query
+    # autodiff) and ``coef_matrix`` tracers (file-leaf autodiff)
+    # propagate; outputs are xp-native.
+    coef_at_queries = xp.stack([
+        endf_interp1d(
+            e_in, e_mesh, coef_matrix[:, col],
+            int_arr, nbt_arr, xp=xp,
+        )
+        for col in range(nw)
+    ], axis=-1)  # (n_e, nw)
 
-    out = xp.zeros((n_e, n_mu), dtype=xp.float64)
-    for i in range(n_e):
-        ei_val = float(e_in_np[i])
-        if ei_val <= 0.0:
-            # Below-threshold / zero-energy query: eta and k blow up;
-            # return zero like the MF4/MF6 LAW=2 paths do for
-            # kinematic failures (issue #45 pattern).
-            continue
-        eta_i = float(_sommerfeld_eta(z_proj, z_target, m1_amu,
-                                       ei_val, np))
-        k_i = float(_cm_wavenumber_per_sqrt_barn(a_ratio, m1_amu,
-                                                   ei_val, np))
-        b_i, a_i = _unpack_ltp1_distinguishable(
-            coef_at_queries[i], nl,
-        )
-        b_xp = xp.asarray(b_i)
-        a_xp = xp.asarray(a_i)
-        row_sigma_omega = _reconstruct_ltp1_lidp0_single_ein(
-            b_xp, a_xp, mu, eta_i, k_i, xp,
-        )
-        # Convert from barns/sr to barns/mu by multiplying with 2 pi
-        # (azimuthal symmetry: dOmega = 2 pi d mu).
-        row_sigma_mu = row_sigma_omega * (2.0 * np.pi)
-        if hasattr(out, 'at'):
-            out = out.at[i].set(row_sigma_mu)
-        else:
-            out_np = np.asarray(out).copy()
-            out_np[i] = np.asarray(row_sigma_mu)
-            out = xp.asarray(out_np)
+    # eta, k vectorised over e_in. Below-threshold / zero-energy
+    # queries blow up eta and k; clamp e_in with xp.where to a
+    # positive stand-in so the arithmetic stays finite, then mask
+    # the output to zero on those rows (issue #45 pattern).
+    e_safe = xp.where(e_in > 0.0, e_in, xp.ones_like(e_in))
+    eta_e = _sommerfeld_eta(z_proj, z_target, m1_amu, e_safe, xp)
+    k_e = _cm_wavenumber_per_sqrt_barn(a_ratio, m1_amu, e_safe, xp)
+
+    sigma_omega = _reconstruct_ltp1_lidp0_vectorized(
+        coef_at_queries, mu, eta_e, k_e, nl, xp,
+    )  # (n_e, n_mu), dsigma/dOmega in b/sr
+    # Convert from barns/sr to barns/mu (azimuthal symmetry).
+    out = sigma_omega * (2.0 * np.pi)
+    # Mask below-threshold rows (where the clamp above hid the issue).
+    e_pos_mask = (e_in > 0.0)[:, None]
+    out = xp.where(e_pos_mask, out, xp.zeros_like(out))
 
     # to_lab=True: for LCT=2 the stored distribution is in CM. A
     # proper CM->LAB conversion for charged-particle elastic
