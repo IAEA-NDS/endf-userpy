@@ -25,6 +25,8 @@ through :func:`reconstruct` here.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from ..primitives import array_ns
@@ -712,8 +714,15 @@ def reconstruct(data, energies_in, energies_out, angle_cosines_out,
             data, e_in, e_bc_full, tp_bc, w_bc, dinv_bc,
             n_e, n_ep, n_mu, xp,
         )
-    except NotImplementedError:
-        pass
+    except NotImplementedError as e:
+        warnings.warn(
+            f'MF6 LAW=1 scan-safe reconstruct fallback is not '
+            f'available for this subsection ({e}); routing through '
+            f'the Python-loop fallback instead. Under @jax.jit this '
+            f'path unrolls one per-panel body per panel into the '
+            f'jaxpr and may OOM for large panel counts (issue #328).',
+            UserWarning, stacklevel=3,
+        )
 
     # Legacy Python-loop fallback (lang=11..15 or mixed interp).
     n_panels = int(data.ei_mesh.shape[0])

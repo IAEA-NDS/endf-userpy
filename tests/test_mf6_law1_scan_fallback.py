@@ -283,3 +283,88 @@ def test_scan_fallback_rejects_unsupported_lang(al27_endf_dict):
     mu = np.linspace(-0.9, 0.9, 3)
     with pytest.raises(NotImplementedError, match='lang'):
         _reconstruct_via_scan_path(data_patched, e_in, e_out, mu, xp)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_reconstruct_warns_on_scan_fallthrough_unsupported_lang(
+    al27_endf_dict,
+):
+    """When the scan-safe path cannot handle the subsection (here:
+    lang=11 forced on an Al-27 LAW=1 case) and the kernel is in
+    the fallback branch (tracer mesh / query under @jax.jit),
+    ``reconstruct`` must emit one UserWarning that names the
+    reason AND the OOM-risk implication under @jax.jit, so the
+    user is not surprised by a silent slow / OOM fallback
+    (follow-up to issue #328).
+    """
+    import dataclasses
+    import warnings as _warnings
+
+    import jax
+    import jax.numpy as jnp
+
+    data = _pre.mf6_law1_data_from_endf_dict(al27_endf_dict, mt=91,
+                                              subsec_num=1)
+    data_patched = dataclasses.replace(data, lang=11)
+    xp = array_ns.get_backend('jax')
+    e_out_j = jnp.linspace(1e4, 1e7, 5)
+    mu_j = jnp.linspace(-0.9, 0.9, 3)
+
+    @jax.jit
+    def fn(e):
+        return reconstruct(data_patched, e, e_out_j, mu_j,
+                           to_lab=True, xp=xp)
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter('always')
+        try:
+            fn(jnp.linspace(float(data.ei_mesh[0]) * 1.01,
+                            float(data.ei_mesh[-1]) * 0.99, 3))
+        except Exception:
+            pass
+    scan_warnings = [
+        w for w in caught
+        if issubclass(w.category, UserWarning)
+        and 'scan-safe' in str(w.message)
+    ]
+    assert len(scan_warnings) >= 1, (
+        f'expected a scan-fallthrough UserWarning, got '
+        f'{[str(w.message) for w in caught]}'
+    )
+    msg = str(scan_warnings[0].message)
+    assert 'lang' in msg
+    assert 'OOM' in msg or 'issue #328' in msg
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_reconstruct_does_not_warn_on_supported_subsection(
+    al27_endf_dict,
+):
+    """The common lang=1 / lang=2 uniform-ei case is handled by
+    the scan path and must NOT emit the fallthrough UserWarning,
+    including in the jit-fallback branch (tracer e_in)."""
+    import warnings as _warnings
+    import jax
+    import jax.numpy as jnp
+
+    data = _pre.mf6_law1_data_from_endf_dict(al27_endf_dict, mt=91,
+                                              subsec_num=1)
+    xp = array_ns.get_backend('jax')
+    e_out_j = jnp.linspace(1e4, 1e7, 5)
+    mu_j = jnp.linspace(-0.9, 0.9, 3)
+
+    @jax.jit
+    def fn(e):
+        return reconstruct(data, e, e_out_j, mu_j,
+                           to_lab=True, xp=xp)
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter('always')
+        fn(jnp.linspace(float(data.ei_mesh[0]) * 1.01,
+                        float(data.ei_mesh[-1]) * 0.99, 3))
+    scan_warnings = [
+        w for w in caught
+        if issubclass(w.category, UserWarning)
+        and 'scan-safe' in str(w.message)
+    ]
+    assert scan_warnings == []
