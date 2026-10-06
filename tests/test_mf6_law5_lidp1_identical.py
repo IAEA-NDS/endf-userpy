@@ -228,6 +228,109 @@ def test_p_p_top_level_pipeline_matches_lab_handler(p_p_endf_dict):
     )
 
 
+def _jax_available():
+    from endf_userpy.primitives import array_ns
+    return 'jax' in array_ns.available_backends()
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_jit_matches_numpy_lidp1(p_p_endf_dict):
+    """``@jax.jit`` over the full LIDP=1 handler must trace cleanly
+    and match the numpy path to floating-point noise. Catches a
+    regression in the eq. 6.14 vectorised reconstruction (einsum
+    over the two Coulomb-phase branches, even-only Legendre
+    pure-nuclear sum, identical-particle Rutherford) if any step
+    accidentally converts a tracer through numpy."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.primitives import array_ns
+    xp_np = array_ns.get_backend('numpy')
+    xp_jax = array_ns.get_backend('jax')
+    e_test = np.array([5.0e6, 1.0e7, 2.0e7])
+    mu_test = np.array([-0.5, 0.0, 0.5])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        out_np = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_p_endf_dict, mt=2, subsec_num=1,
+            energies_in=e_test, angle_cosines_out=mu_test, to_lab=False,
+            xp=xp_np,
+        ))
+
+        @jax.jit
+        def fn(e):
+            return mf6_law5.get_angdist_from_subsec_law5(
+                p_p_endf_dict, mt=2, subsec_num=1,
+                energies_in=e, angle_cosines_out=jnp.asarray(mu_test),
+                to_lab=False, xp=xp_jax,
+            )
+        out_jit = np.asarray(fn(jnp.asarray(e_test)))
+    np.testing.assert_allclose(out_jit, out_np, rtol=1e-10, atol=0)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_grad_wrt_ein_matches_finite_difference_lidp1(p_p_endf_dict):
+    """``jax.grad`` wrt the incident energy on p+p must flow through
+    the section-level TAB2 interpolation of the eq. 6.14 coefficient
+    matrix, the eta(E) / k(E) dependence, and both Coulomb-phase
+    branches. 5.25 MeV sits inside a lin-lin panel between the
+    stored knots at 5.0 MeV and 5.5 MeV."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.primitives import array_ns
+    xp_jax = array_ns.get_backend('jax')
+    e_center = 5.25e6
+    mu_center = 0.3
+
+    def loss(e_scalar):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            out = mf6_law5.get_angdist_from_subsec_law5(
+                p_p_endf_dict, mt=2, subsec_num=1,
+                energies_in=jnp.array([e_scalar]),
+                angle_cosines_out=jnp.array([mu_center]),
+                to_lab=False, xp=xp_jax,
+            )
+        return jnp.sum(out)
+
+    g_ad = float(jax.grad(loss)(e_center))
+    step = e_center * 1e-5
+    g_fd = (float(loss(e_center + step)) - float(loss(e_center - step))) / (2 * step)
+    rel = abs(g_ad - g_fd) / max(abs(g_fd), 1e-30)
+    assert rel < 1e-4, f'AD={g_ad:.6e}  FD={g_fd:.6e}  rel={rel:.3e}'
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+def test_grad_wrt_mu_matches_finite_difference_lidp1(p_p_endf_dict):
+    """``jax.grad`` wrt an output cosine on p+p must flow through
+    the Legendre recurrence, the 1/(1-mu^2) prefactor shared by
+    the identical-particle Rutherford term and the interference
+    sum, and the two Coulomb phases log((1-mu)/2) / log((1+mu)/2)
+    (the LIDP=1-specific second branch, not present in LIDP=0)."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.primitives import array_ns
+    xp_jax = array_ns.get_backend('jax')
+    e_center = 5.0e6
+    mu_center = 0.3
+
+    def loss(mu_scalar):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            out = mf6_law5.get_angdist_from_subsec_law5(
+                p_p_endf_dict, mt=2, subsec_num=1,
+                energies_in=jnp.array([e_center]),
+                angle_cosines_out=jnp.array([mu_scalar]),
+                to_lab=False, xp=xp_jax,
+            )
+        return jnp.sum(out)
+
+    g_ad = float(jax.grad(loss)(mu_center))
+    step = 1e-5
+    g_fd = (float(loss(mu_center + step)) - float(loss(mu_center - step))) / (2 * step)
+    rel = abs(g_ad - g_fd) / max(abs(g_fd), 1e-30)
+    assert rel < 1e-5, f'AD={g_ad:.6e}  FD={g_fd:.6e}  rel={rel:.3e}'
+
+
 def test_p_p_to_lab_emits_identical_particle_warning(p_p_endf_dict):
     """to_lab=True on an identical-particle (p+p) file must emit a
     UserWarning about the two-branch LAB density gap, because the
