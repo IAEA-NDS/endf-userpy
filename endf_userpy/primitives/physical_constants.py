@@ -4,6 +4,17 @@ import re
 AMU_TO_EV = 9.3149410242e8  # eV / c^2
 AMU_TO_MEV = AMU_TO_EV * 1e-6  # MeV / c^2
 
+# Fine-structure constant (CODATA 2018 recommended value, dimensionless).
+# Used by charged-particle reconstructions where the Sommerfeld parameter
+# enters: eta = Z1 Z2 alpha sqrt(m1 c^2 / (2 E_cm)).
+FINE_STRUCTURE_ALPHA = 7.2973525693e-3
+
+# h-bar * c in MeV * fm (CODATA 2018). Converts sqrt(m[amu] c^2 * E[MeV])
+# to a wavenumber in inverse fm. Shared by charged-particle elastic
+# (Coulomb + nuclear) and any future handler that needs the natural
+# nuclear-physics length-energy unit factor.
+HBARC_MEV_FM = 197.3269804
+
 
 PARTICLE_MASSES_AMU = {
     # Photon rest mass is zero. Present so `get_particle_mass_for_zap`
