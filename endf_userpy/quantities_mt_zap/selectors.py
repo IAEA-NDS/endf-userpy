@@ -313,17 +313,35 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
 def is_target_conserving_mt(endf_dict, mt):
     """True if ``mt`` is a target-conserving channel on this file.
 
-    A target-conserving channel re-emits a single particle of the
-    same type as the projectile and leaves the nucleus in a state
-    that de-excites to the target ground state (MT2 elastic, MT4
-    inelastic sum, MT51..MT90 discrete inelastic, MT91 continuum
-    inelastic for a neutron projectile). "Target-conserving" is the
-    activation-library notion of a channel that does not transmute
-    the nucleus: the final nuclide is the target in LFS=0.
+    A target-conserving channel leaves the nucleus in a state that
+    de-excites to the target ground state. Two classification paths:
 
-    MF8 overrides: when MF8 declares ``mt`` producing the target at
-    any non-ground LFS, the MT is NOT purely target-conserving
-    (it produces an isomer) and this returns False.
+    1. **``REACTION_DICT``-backed MTs** whose ejectile is a single
+       particle of the projectile's type (MT2 elastic, MT4 inelastic
+       sum, MT51..MT90 discrete inelastic, MT91 continuum inelastic
+       for a neutron projectile; analogous for charged-particle
+       projectiles). Z and A are conserved by the ejectile pattern,
+       so the final residual is unambiguously the target.
+
+    2. **MT5 catch-all with MF6 declaring the target ZAP** (issue
+       #342). MT5 is absent from ``REACTION_DICT`` because it is a
+       deliberately open composite, so path 1 misses it. When MT5's
+       MF6 subsection list carries ``ZAP == target_ZA``, that
+       subsection represents the target-conserving portion of the
+       catch-all (by kinematics: any channel whose recoil-residual
+       has Z and A matching the target must have ejectiles summing
+       to the projectile's Z and A, i.e. the projectile is re-
+       emitted). ``get_residual_production_xs`` then yields exactly
+       that portion via ``mf6_interp.compute_yields(..., mt=5,
+       za_residual=target_za)``, so flagging MT5 here drops the
+       correct contribution without over-filtering MT5's non-target
+       transmutation channels (those live under other ZAPs and are
+       admitted separately by ``contains_residual_za_and_lfs`` for
+       the matching residual query).
+
+    MF8 overrides either path: when MF8 declares ``mt`` producing
+    the target at any non-ground LFS, the MT is NOT purely target-
+    conserving (it produces an isomer) and this returns False.
 
     The projectile and target ZA are read from the file via
     ``prop.get_projectile`` and ``prop.get_ZA``, matching the
@@ -335,7 +353,14 @@ def is_target_conserving_mt(endf_dict, mt):
     projectile = prop.get_projectile(endf_dict)
     target_za = prop.get_ZA(endf_dict)
     ejectiles = reac.get_ejectiles(projectile, mt)
-    if ejectiles != ((1, projectile),):
+    same_ejectile = ejectiles == ((1, projectile),)
+    mt5_mf6_target = (
+        mt == 5
+        and 6 in endf_dict
+        and 5 in endf_dict[6]
+        and mf6help.contains_zap(endf_dict, 5, target_za)
+    )
+    if not (same_ejectile or mt5_mf6_target):
         return False
     if 8 in endf_dict and mt in endf_dict[8]:
         for sub in endf_dict[8][mt].get('subsection', {}).values():

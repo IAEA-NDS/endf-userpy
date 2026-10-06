@@ -206,6 +206,156 @@ def test_isomer_query_unaffected_by_include_target_on_synthetic_dict():
     # pin; the helper check is the load-bearing part.)
 
 
+# ---- MT5 catch-all with MF6 target-ZA subsection (#342) -------------
+
+
+def _synthetic_proton_target_dict(target_za=6012.0, mf6_mt5_zaps=()):
+    """Minimal synthetic dict for the #342 MT5-via-MF6 path. Carries
+    MF1/MT451 for projectile='p' / target_za lookup, and an MF6/MT5
+    with one subsection per entry in ``mf6_mt5_zaps``. Values other
+    than ZAP are left absent since ``mf6_help.contains_zap`` only
+    reads the ZAP field."""
+    d = {1: {451: {'NSUB': 10010, 'ZA': target_za}}}
+    if mf6_mt5_zaps:
+        d[6] = {
+            5: {
+                'subsection': {
+                    i: {'ZAP': zap, 'LAW': 1}
+                    for i, zap in enumerate(mf6_mt5_zaps, start=1)
+                },
+            },
+        }
+    return d
+
+
+def test_mt5_mf6_target_zap_is_target_conserving():
+    """#342: when MT5 carries an MF6 subsection with ZAP=target_ZA,
+    the catch-all's target-nuclide portion must register as target-
+    conserving so ``get_residual_production_xs`` under
+    ``include_target=False`` subtracts it. Pre-fix the ejectile
+    check short-circuited False for MT5 because ``get_ejectiles``
+    returned None for the deliberately-open catch-all."""
+    stub = _synthetic_proton_target_dict(
+        target_za=6012.0,
+        mf6_mt5_zaps=(0.0, 1.0, 6012.0, 2004.0),  # includes target
+    )
+    assert is_target_conserving_mt(stub, 5)
+
+
+def test_mt5_mf6_without_target_zap_is_not_target_conserving():
+    """MT5 whose MF6 subsections do NOT include ZAP=target_ZA has
+    no target-conserving contribution; the catch-all is pure
+    transmutation (Li, Be, B residuals etc.) and must stay in the
+    sum under both policies."""
+    stub = _synthetic_proton_target_dict(
+        target_za=6012.0,
+        mf6_mt5_zaps=(0.0, 1.0, 2004.0, 3006.0),  # no target
+    )
+    assert not is_target_conserving_mt(stub, 5)
+
+
+def test_mt5_without_mf6_is_not_target_conserving():
+    """MT5 absent from MF6 (older-style ENDF, or files where MT5 is
+    only a cross-section stub) cannot be inspected for target-ZA
+    contributions and must fall through as not target-conserving.
+    The ejectile check also returns False for MT5 because MT5 is
+    absent from ``REACTION_DICT``."""
+    stub = _synthetic_proton_target_dict(target_za=6012.0)
+    assert not is_target_conserving_mt(stub, 5)
+
+
+def test_mt5_mf6_target_with_mf8_isomer_declaration_disqualifies():
+    """#342 + #137 isomer rule: when MT5's MF6 declares the target
+    ZAP but MF8/MT5 also declares the target at LFS >= 1, MT5
+    produces an isomer and is NOT purely target-conserving."""
+    stub = _synthetic_proton_target_dict(
+        target_za=6012.0,
+        mf6_mt5_zaps=(6012.0,),
+    )
+    stub[8] = {
+        5: {'subsection': {1: {'ZAP': 6012.0, 'LFS': 1}}},
+    }
+    assert not is_target_conserving_mt(stub, 5)
+
+
+# ---- End-to-end on the p + C-12 corpus file -------------------------
+#
+# p-006_C_012.endf carries both MT2 elastic (target-conserving via
+# the ejectile path) AND MT5 with an MF6 subsection ZAP=6012 (target-
+# conserving via the #342 MT5-MF6 path). This exercises the full
+# admission flow with both paths in the same query.
+
+
+def _resolve_p_c12():
+    import sys
+    sys.path.insert(0, 'tests')
+    from _corpus import resolve_p_c12_law5
+    return resolve_p_c12_law5()
+
+
+@pytest.fixture(scope='module')
+def p_c12_endf_dict():
+    path = _resolve_p_c12()
+    if path is None:
+        pytest.skip('p + C-12 corpus file not available '
+                    '(run tests/data_law5_adhoc/fetch.sh)')
+    return EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
+
+
+def test_p_c12_default_excludes_mt5_target_contribution(p_c12_endf_dict):
+    """``get_residual_production_xs('C-12')`` on a p + C-12 target
+    under default ``include_target=False`` must drop MT2 (elastic)
+    AND MT5's ZAP=6012 subsection contribution. Pre-#342 the MT5
+    portion stayed in because the helper mis-classified it."""
+    e_in = np.array([30.0e6, 100.0e6])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        got = get_residual_production_xs(p_c12_endf_dict, 'C-12', e_in)
+    np.testing.assert_allclose(got, 0.0, atol=1e-14)
+
+
+def test_p_c12_include_target_true_restores_mt5_target_contribution(
+    p_c12_endf_dict,
+):
+    """Under ``include_target=True`` the C-12 target-residual query
+    returns the MT2 elastic + MT5-via-MF6 target portion. Pin the
+    numeric value as a positive, non-trivial regression anchor."""
+    e_in = np.array([30.0e6])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        got = get_residual_production_xs(
+            p_c12_endf_dict, 'C-12', e_in,
+            options=RunOptions(include_target=True),
+        )
+    assert got[0] > 0, 'MT2 + MT5 target contribution should be > 0'
+    assert got[0] < 10.0, 'and should be a plausible elastic-like value in b'
+
+
+def test_p_c12_non_target_residual_unaffected_by_include_target(
+    p_c12_endf_dict,
+):
+    """Be-9 is produced by (p,x) through MT5's ZAP=4009 subsection
+    on p + C-12. Non-target residuals pass through the admission
+    layer unchanged under either policy (the target-conserving
+    filter fires only when queried residual == target in ground
+    state), so the two settings must give identical numbers."""
+    e_in = np.array([50.0e6, 100.0e6])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        default = get_residual_production_xs(p_c12_endf_dict, 'Be-9', e_in)
+        inclusive = get_residual_production_xs(
+            p_c12_endf_dict, 'Be-9', e_in,
+            options=RunOptions(include_target=True),
+        )
+    np.testing.assert_allclose(default, inclusive, rtol=1e-12)
+    # Both must be > 0 at the higher energy (there is C-12 -> Be-9
+    # production via MT5 at 100 MeV).
+    assert inclusive[1] > 0
+
+
+# ---- RunOptions contract -------------------------------------------
+
+
 def test_include_target_appears_on_runoptions_defaults_to_false():
     """Compile-time contract: ``include_target`` is an attribute on
     ``RunOptions`` and defaults to ``False``. A rename or default
