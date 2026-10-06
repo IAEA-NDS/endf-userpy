@@ -146,3 +146,14 @@ def resolve_p_b10_law5() -> str | None:
         os.environ.get('P_B10_LAW5_ENDF'),
         os.path.join(_LAW5_CORPUS_DIR, 'p-005_B_010.endf'),
     )
+
+
+def resolve_p_c12_law5() -> str | None:
+    """Resolve the ENDF/B-VIII.0 proton on C-12 file. MF6 LAW=5
+    LTP=12 LIDP=0 (tabulated nuclear-plus-interference form, 42
+    of 49 proton-sublibrary files use this LTP code); the primary
+    test target for issue #333."""
+    return _first_existing(
+        os.environ.get('P_C12_LAW5_ENDF'),
+        os.path.join(_LAW5_CORPUS_DIR, 'p-006_C_012.endf'),
+    )

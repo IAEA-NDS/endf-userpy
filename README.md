@@ -263,14 +263,17 @@ each include the `wget` command to fetch the JENDL-5 file they need.
   MF6 LAW=3 (charged-particle elastic isotropic in CM), LAW=4
   (recoil); MF14 LTT=2 (tabulated photon angular). MF6 LAW=5
   (charged-particle elastic with phase shift): angular distribution
-  supported for `LTP=1` `LIDP=0` (nuclear amplitude Legendre
-  expansion, distinguishable particles) in both the stored (CM)
-  frame and after a two-body elastic CM-to-LAB conversion;
-  the DDX pipeline (`get_particle_production_dxs_dE`,
+  supported for `LIDP=0` (distinguishable particles) across LTP=1
+  (nuclear amplitude Legendre expansion, manual eq. 6.13) and the
+  tabulated `LTP in {12, 14, 15}` forms (`p_NI(mu)` or
+  `ln p_NI(mu)` linear-in-mu, manual eq. 6.19-6.20), in both the
+  stored CM frame and after a two-body elastic CM-to-LAB
+  conversion; the DDX pipeline (`get_particle_production_dxs_dE`,
   `get_particle_production_ddxs`) accepts LAW=5 subsections and
   folds the kinematic outgoing energy with a user `broadening=`
-  kernel, same pattern as LAW=2/3/4. `LIDP=1` (identical particles)
-  and tabulated `LTP in {2, 12, 14, 15}` still raise.
+  kernel, same pattern as LAW=2/3/4. `LIDP=1` (identical
+  particles) and `LTP=2` (residual-XS Legendre expansion) still
+  raise.
 - **Stubs.** `endf_userpy/discrete_quantities.py` and
   `endf_userpy/translation.py` are work-in-progress sketches; do not
   rely on them.
