@@ -26,10 +26,15 @@ piece of data lives in.
 > cut. Recent additions that are on `main` but not yet on PyPI
 > include end-to-end JAX autodiff through the top-level API across
 > all supported MF sections, resolved-resonance reconstruction
-> (MLBW and Reich-Moore) with numpy / numba / JAX backends, the
-> gamma production pipeline (MF12/13/14/15), and the tabulated
-> photon spectra path. If you need those, **install from source**
-> (see below). `pip install endf-userpy` gives you the last tagged
+> (MLBW, Reich-Moore, and R-Matrix Limited with KRM=3) plus
+> unresolved-resonance URR Case C with Gauss-Legendre or Ross-10
+> fluctuation-integral quadrature, numpy / numba / JAX backends on
+> every resonance formalism, the gamma production pipeline
+> (MF12/13/14/15), the tabulated photon spectra path, and MF6
+> LAW=5 charged-particle elastic scattering (nuclear-amplitude
+> Legendre and tabulated LTP forms, with CM-to-LAB conversion). If
+> you need those, **install from source** (see below).
+> `pip install endf-userpy` gives you the last tagged
 > release, which may be missing recent work.
 
 ```bash
@@ -39,8 +44,8 @@ pip install endf-userpy
 Prebuilt wheels are available for cpython 3.9–3.13 on:
 
 - Linux x86_64 (`manylinux_2_28`)
-- macOS arm64 (>= 14.0)
-- macOS x86_64 (>= 15.0)
+- macOS arm64 (>= 11.0)
+- macOS x86_64 (>= 10.12)
 - Windows AMD64
 
 Other platforms or Python versions install from the sdist
@@ -82,7 +87,7 @@ print(get_available_reactions(endf_dict))
 
 eincs = np.array([0.0253, 1e3, 1e6, 1.4e7])  # eV
 print(get_reaction_xs(endf_dict, "(n,total)", eincs))
-# [6.154 6.144 3.341 1.528]   barn
+# [6.162 6.144 3.341 1.528]   barn
 ```
 
 ## Public API
@@ -93,6 +98,9 @@ an `endf_dict` (already parsed) plus user-friendly string identifiers.
 | Function | Returns | What it does |
 | --- | --- | --- |
 | `get_available_reactions(endf_dict)` | list of reaction strings | introspect a file |
+| `get_declared_residuals(endf_dict)` | list of residual strings | every MF8-declared (ZAP, LFS) pair |
+| `is_residual_declared(endf_dict, residual)` | bool | whether a specific residual is MF8-declared |
+| `get_declared_isomer_states(endf_dict, residual)` | list of suffix strings | isomer states declared for a residual |
 | `get_incident_energies(endf_dict, reaction)` | array | tabulated Einc mesh for a channel |
 | `get_emission_energies(endf_dict, reaction, particle)` | array | tabulated Eout mesh |
 | `get_reaction_xs(endf_dict, reaction, eincs)` | array | cross section of a named channel |
@@ -101,6 +109,7 @@ an `endf_dict` (already parsed) plus user-friendly string identifiers.
 | `get_particle_production_dxs_dE(endf_dict, reaction, particle, eincs, eouts)` | array | dσ/dE energy spectrum of emitted particle |
 | `get_particle_production_dxs_dmu(endf_dict, reaction, particle, eincs, mus)` | array | dσ/dΩ angular distribution |
 | `get_particle_production_ddxs(endf_dict, reaction, particle, eincs, eouts, mus)` | array | d²σ/dE/dΩ double-differential |
+| `get_particle_production_discrete_gamma_lines(endf_dict, reaction, eincs)` | list of per-line records | per-line `(Eg, y_per_ein, angdist_per_ein)` for MF12 discrete gammas |
 
 Reaction strings for a neutron projectile follow the ENDF-6 MT
 convention:
@@ -158,7 +167,7 @@ Residual nuclei: `"Z-Sym-A"` (e.g. `"27-Co-60"`) or `"Sym-A"`
 
 ## Examples
 
-Seven runnable examples in `examples/`:
+Nine runnable examples in `examples/`:
 
 | File | What it shows |
 | --- | --- |
@@ -169,33 +178,43 @@ Seven runnable examples in `examples/`:
 | `05_emission_spectra_14mev.py` | classic 14 MeV neutron emission spectrum from U-238 |
 | `06_ddx_uranium_14mev.py` | double-differential cross section heatmap |
 | `07_photonuclear_residuals.py` | (g,Nn) cascade on Au-197 |
+| `08_policies_and_broadening.py` | the `RunOptions` policy knobs and the `broadening=` Gaussian folder |
+| `09_isomer_introspection.py` | enumerate declared residuals and isomer states before querying |
 
-Examples 1-2 use a small file shipped under `tests/data/`. Examples 3-7
-each include the `wget` command to fetch the JENDL-5 file they need.
+Examples 1-2 use a small file shipped under `tests/data/`. Examples
+3-9 each include the `wget` command to fetch the JENDL-5 file(s)
+they need.
 
 ## Known limitations
 
-- **Resonance reconstruction is opt-in.** The default cross-section
-  path returns raw MF3, which for evaluations that store the
-  resolved-resonance region (RRR) as a **subtractive background** is
-  not the physical cross section and can be negative (e.g. JENDL-5
-  Cu-63 MT1/MT2 tabulate `-0.9 barn` at thermal energies). One
-  summary `UserWarning` per call names the affected MTs and RRR
-  bounds; configure with the `resonance_range=` kwarg
-  (`'warn'` default, `'warn_nan'`, `'nan'`, `'raise'`). To compose
-  the reconstruction on top of the MF3 background instead, pass
-  `include_resonance=True` to every `get_*` XS API. Supported
-  formalisms: **LRU=1 LRF=2 MLBW**, **LRU=1 LRF=3 Reich-Moore**,
-  **LRU=1 LRF=7 R-Matrix Limited (KRM=3, KRL=0, IFG=0, NRO=0,
-  KBK=0, KPS=0)**, and **LRU=2 LRF=2 URR (Case C, INT=2)** with
-  Gauss-Legendre or Ross-10 fluctuation-integral quadratures.
+- **Resonance reconstruction defaults to on.** Every runtime policy
+  lives on `RunOptions` (passed via a keyword-only `options=`
+  argument to every `get_*` XS API):
+  `options=RunOptions(include_resonance=False)` opts out and returns
+  raw MF3. The default `RunOptions()` has `include_resonance=True`
+  and composes the resonance reconstruction on top of the MF3
+  background per the ENDF-6 additive convention. Raw MF3 for
+  evaluations that store the resolved-resonance region (RRR) as a
+  **subtractive background** is not the physical cross section and
+  can be negative (e.g. JENDL-5 Cu-63 MT1/MT2 tabulate `-0.9 barn`
+  at thermal energies); when `include_resonance=False`, one summary
+  `UserWarning` per call names the affected MTs and RRR bounds, and
+  the `resonance_range` policy on `RunOptions` controls what gets
+  written for the in-RRR points (`'warn'` default, `'warn_nan'`,
+  `'nan'`, `'raise'`). Supported formalisms: **LRU=1 LRF=2 MLBW**,
+  **LRU=1 LRF=3 Reich-Moore**, **LRU=1 LRF=7 R-Matrix Limited
+  (KRM=3, KRL=0, IFG=0, NRO=0, KBK=0, KPS=0)**, and **LRU=2 LRF=2
+  URR (Case C, INT=2)** with Gauss-Legendre (default) or Ross-10
+  fluctuation-integral quadrature (set via `RunOptions(urr_quadrature=...)`).
   Unsupported ranges (Adler-Adler LRF=4, LRF=7 with KRM≠3 or with
   KBK/KPS/IFG/NRO out of range, URR with non-INT=2 tables)
   contribute zero and a `UserWarning` names the specific formalism.
-  All backends (`resonance_backend=` numpy/numba/JAX) are supported;
-  JAX propagates `jax.grad` to file-side ER / Γn / Γγ / Γf leaves.
+  All backends supported via `RunOptions(backend=...)` with
+  `'auto'` (default), `'numpy'`, `'numba'`, or `'jax'`; JAX
+  propagates `jax.grad` to file-side ER / Γn / Γγ / Γf leaves.
   For files that pre-process to a full PENDF (e.g. NJOY RECONR
-  output), pass the PENDF file in and leave `include_resonance=False`.
+  output), pass the PENDF file in with
+  `options=RunOptions(include_resonance=False)`.
 - **Aggregate-reaction sum-MT queries under-count on sparse files.**
   `get_reaction_xs("(n,n)")` resolves to MT4 (inelastic-scattering
   sum over MT51..90). The admission heuristic drops the parent MT4
@@ -257,22 +276,28 @@ each include the `wget` command to fetch the JENDL-5 file they need.
 - **`sigma` above the file's Ein mesh.** By default,
   `get_reaction_xs` and the other `get_*` XS APIs fill above-range
   incident energies with `NaN` and emit one summary `UserWarning`
-  per call. Configure with the `above_range=` kwarg (`'warn_nan'`
-  default, or `'nan'`, `'warn_zero'`, `'zero'`, `'raise'`).
+  per call. Configure via the `above_range` policy on `RunOptions`
+  (`options=RunOptions(above_range='nan')`); accepted values are
+  `'warn_nan'` (default), `'nan'`, `'warn_zero'`, `'zero'`, `'raise'`.
 - **Unimplemented representations** raise `NotImplementedError`:
-  MF6 LAW=3 (charged-particle elastic isotropic in CM), LAW=4
-  (recoil); MF14 LTT=2 (tabulated photon angular). MF6 LAW=5
-  (charged-particle elastic with phase shift): angular distribution
-  supported for both `LIDP=0` (distinguishable particles) and
-  `LIDP=1` (identical particles, p+p via manual eq. 6.14 with
-  the eq. 6.10 Rutherford formula), across LTP=1 (nuclear
-  amplitude Legendre expansion) and the LIDP=0 tabulated `LTP in
-  {12, 14, 15}` forms (manual eq. 6.19-6.20), in both the stored
-  CM frame and after a two-body elastic CM-to-LAB conversion; the
-  DDX pipeline (`get_particle_production_dxs_dE`,
-  `get_particle_production_ddxs`) accepts LAW=5 subsections and
-  folds the kinematic outgoing energy with a user `broadening=`
-  kernel, same pattern as LAW=2/3/4. `LTP=2` (residual-XS Legendre
+  MF14 LTT=2 (tabulated photon angular, blocked upstream in
+  `endf_parserpy`'s recipe). MF6 LAW=3 (two-body isotropic in CM),
+  LAW=4 (recoil), and LAW=5 (charged-particle elastic with phase
+  shift): angular distributions are **supported** via the per-LAW
+  reconstructions, but their continuous double-differential path
+  (`compute_dist2d_from_subsec`) raises because the outgoing energy
+  for these laws is a Dirac delta pinned by two-body kinematics,
+  not a tabulated (E', mu) distribution. The DDX pipeline accepts
+  LAW=2/3/4/5 subsections and folds the kinematic delta with a
+  user `broadening=` kernel when the caller supplies one; without
+  `broadening=`, those channels drop with a `UserWarning` (see the
+  DDX kinematic-delta note above). MF6 LAW=5 scope: nuclear-amplitude
+  Legendre `LTP=1` for both `LIDP=0` (distinguishable particles)
+  and `LIDP=1` (identical particles, p+p via manual eq. 6.14 with
+  the eq. 6.10 Rutherford formula), plus the `LIDP=0` tabulated
+  `LTP in {12, 14, 15}` nuclear-plus-interference forms (manual
+  eq. 6.19-6.20), in both the stored CM frame and after a two-body
+  elastic CM-to-LAB conversion. `LTP=2` (residual-XS Legendre
   expansion) and the hypothetical `LIDP=1` + tabulated-LTP
   combination (not used in any neutron-adjacent corpus file)
   still raise.
