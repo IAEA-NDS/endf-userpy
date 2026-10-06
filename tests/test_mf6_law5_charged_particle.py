@@ -318,6 +318,64 @@ def test_lab_differs_from_cm_on_light_target(p_he3_endf_dict):
     )
 
 
+def test_lab_frame_matches_textbook_two_body_jacobian(p_he3_endf_dict):
+    """Validate the CM-to-LAB conversion against a textbook two-body
+    elastic Jacobian, independent of the handler's own primitives.
+
+    Non-relativistic two-body elastic kinematics for a projectile of
+    mass m1 scattering off a stationary target of mass m2 (A = m2/m1):
+
+        mu_LAB = (A mu_CM + 1) / sqrt(A^2 + 2 A mu_CM + 1)
+
+    Differentiating with xw = A^2 + 2 A mu_CM + 1 gives
+
+        d mu_LAB / d mu_CM = A^2 (A + mu_CM) / xw^(3/2)
+
+    and so, by azimuthal symmetry and invariance of dsigma,
+
+        dsigma/dmu_LAB = dsigma/dmu_CM * (d mu_CM / d mu_LAB)
+                      = dsigma/dmu_CM * xw^(3/2) / (A^2 |A + mu_CM|)
+
+    which exactly matches the ``convert_angdist_to_labsys`` form.
+    Pin the handler against this textbook identity so a regression
+    on either side (the handler, or the shared primitive) surfaces.
+
+    Cross-checked at a smooth interior mu on p + He-3 (A ~ 3), far
+    from mu = 1 to avoid the Coulomb singularity.
+    """
+    sec = p_he3_endf_dict[6][2]
+    sub = sec['subsection'][1]
+    awp = float(sub['AWP'])
+    awr = float(sec['AWR'])
+    A = awr / awp  # target / projectile mass ratio
+    e_in = np.array([5.0e6])  # 5 MeV, interior point not on a knot
+    mu_cm_target = np.array([0.3])
+    denom = np.sqrt(A ** 2 + 2 * A * mu_cm_target + 1.0)
+    mu_lab_target = (A * mu_cm_target + 1.0) / denom
+    xw = 1.0 + 2.0 * A * mu_cm_target + A ** 2
+    jacobian = xw * np.sqrt(xw) / (A ** 2 * np.abs(A + mu_cm_target))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        got_cm = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_he3_endf_dict, mt=2, subsec_num=1,
+            energies_in=e_in, angle_cosines_out=mu_cm_target,
+            to_lab=False,
+        ))
+        got_lab = np.asarray(mf6_law5.get_angdist_from_subsec_law5(
+            p_he3_endf_dict, mt=2, subsec_num=1,
+            energies_in=e_in, angle_cosines_out=mu_lab_target,
+            to_lab=True,
+        ))
+
+    expected_lab = got_cm[0, 0] * jacobian[0]
+    rel = abs(got_lab[0, 0] - expected_lab) / expected_lab
+    assert rel < 1e-10, (
+        f'LAB from handler = {got_lab[0, 0]:.6e}  '
+        f'textbook CM * J = {expected_lab:.6e}  rel={rel:.3e}'
+    )
+
+
 def test_lab_equals_cm_in_heavy_target_limit(p_he3_endf_dict):
     """In the limit awr >> awp the CM and LAB frames coincide; a
     user querying a heavy-target evaluation should get the same
