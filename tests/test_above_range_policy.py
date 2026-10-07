@@ -255,12 +255,22 @@ def test_get_particle_production_xs_takes_above_range(al27):
 def test_get_residual_production_xs_takes_above_range(al27):
     """Naohiko's exact API path. Same MT 2 elastic on Al-27 stays
     Al-27; use Al-27 as the residual so we get a positive result
-    in the mesh interior."""
+    in the mesh interior. Pass ``include_target=True`` so MT 2
+    counts toward the Al-27 residual (the #137 default
+    ``include_target=False`` drops target-conserving channels and
+    the diagonal case would return zero everywhere, defeating the
+    above-range test)."""
     E = np.array([1e6, 2e8])
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        xs_nan = get_residual_production_xs(al27, 'Al-27', E)
-        xs_zero = get_residual_production_xs(al27, 'Al-27', E, options=RunOptions(above_range='zero'))
+        xs_nan = get_residual_production_xs(
+            al27, 'Al-27', E,
+            options=RunOptions(include_target=True),
+        )
+        xs_zero = get_residual_production_xs(
+            al27, 'Al-27', E,
+            options=RunOptions(include_target=True, above_range='zero'),
+        )
     assert np.isnan(xs_nan[-1])
     assert xs_zero[-1] == 0.0
     # Below-mesh point unchanged.

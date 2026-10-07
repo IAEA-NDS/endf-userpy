@@ -60,7 +60,7 @@ def stub_quantities(monkeypatch):
     def fake_has_mf6_law1_discrete_lines(endf_dict, mt, zap):
         return state['mt_kind'].get(mt) == 'law1_disc'
 
-    def fake_satisfies_select_heuristic(endf_dict, mt, user_mts=None):
+    def fake_satisfies_select_heuristic(endf_dict, mt, user_mts=None, **_):
         return True
 
     def fake_cont_broadened(endf_dict, mt, zap, einc, eouts, mus,
