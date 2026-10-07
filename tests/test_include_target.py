@@ -28,6 +28,7 @@ from endf_userpy.mfsec_interpretation.mf3_interpretation import (
 )
 from endf_userpy.quantities import get_residual_production_xs
 from endf_userpy.quantities_mt_zap.selectors import (
+    contains_residual_za_and_lfs,
     is_target_conserving_mt,
 )
 from endf_userpy.run_options import RunOptions
@@ -351,6 +352,165 @@ def test_p_c12_non_target_residual_unaffected_by_include_target(
     # Both must be > 0 at the higher energy (there is C-12 -> Be-9
     # production via MT5 at 100 MeV).
     assert inclusive[1] > 0
+
+
+# ---- MF9 / MF10 isomer admission and disqualification (#343) --------
+#
+# contains_residual_za_and_lfs and is_target_conserving_mt both read
+# only MF8 pre-#343. Files that declare an MT's isomer branch via
+# MF9 (multiplicity by IZAP+LFS) or MF10 (production XS by IZAP+LFS)
+# without MF8 are invisible to both filters. Fix extends both to
+# consult MF9/MF10 when MF8 is absent (admission path) and as part
+# of the isomer-disqualification sweep (target-conserving helper).
+# Field name differs: MF8 uses ZAP, MF9/MF10 use IZAP.
+
+
+def _synthetic_neutron_mf9_mf10_dict(
+    target_za=4009.0, mf8=None, mf9=None, mf10=None,
+):
+    """Minimal synthetic dict carrying MF1/MT451 plus any of
+    MF8/MF9/MF10 the caller supplies. Each argument is a plain
+    ``{mt: {'subsection': {idx: {...}}}}`` dict; MF9/MF10 subsections
+    must use ``IZAP`` (not ``ZAP``)."""
+    d = {1: {451: {'NSUB': 10, 'ZA': target_za}}}
+    if mf8 is not None:
+        d[8] = mf8
+    if mf9 is not None:
+        d[9] = mf9
+    if mf10 is not None:
+        d[10] = mf10
+    return d
+
+
+# ---- contains_residual_za_and_lfs with MF9 / MF10 --------------------
+
+
+def test_contains_mf9_isomer_match_without_mf8():
+    """MF8 absent, MF9/MT51 declares (IZAP=target, LFS=1). An isomer
+    query must now admit MT51 (pre-fix returned False because the
+    MF9 catalog was never consulted)."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf9={
+        51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 1}}},
+    })
+    assert contains_residual_za_and_lfs(stub, 51, 4009.0, 1)
+
+
+def test_contains_mf10_isomer_match_without_mf8():
+    """Same case via MF10 (production cross section)."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf10={
+        51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 1}}},
+    })
+    assert contains_residual_za_and_lfs(stub, 51, 4009.0, 1)
+
+
+def test_contains_mf9_ground_state_match():
+    """MF8 absent, MF9/MT51 declares (IZAP=target, LFS=0). The
+    ground-state query must admit MT51 via the MF9 catalog."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf9={
+        51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 0}}},
+    })
+    assert contains_residual_za_and_lfs(stub, 51, 4009.0, 0)
+    assert contains_residual_za_and_lfs(stub, 51, 4009.0, None)
+
+
+def test_contains_mf9_authoritative_when_present():
+    """MF9 is authoritative when present and MF8 is absent: an MT
+    whose MF9 subsections do NOT declare the queried residual must
+    return False, not fall through to MF6/reaction-string. Pre-fix
+    the function skipped MF9 entirely and fell through to the
+    reaction-string lookup, over-admitting MT51 for every residual
+    name that resolves via the reaction table."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf9={
+        51: {'subsection': {1: {'IZAP': 2004.0, 'LFS': 0}}},  # He-4
+    })
+    assert not contains_residual_za_and_lfs(stub, 51, 4009.0, 0)
+
+
+def test_contains_mf10_isomer_but_no_ground_entry():
+    """MF10 declares (target, LFS=1) only: ground-state query must
+    return False (file does not declare ground-state production),
+    isomer query returns True."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf10={
+        51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 1}}},
+    })
+    assert not contains_residual_za_and_lfs(stub, 51, 4009.0, 0)
+    assert contains_residual_za_and_lfs(stub, 51, 4009.0, 1)
+
+
+def test_contains_mf8_wins_over_mf9():
+    """When both MF8 and MF9 are present for an MT, MF8 is
+    authoritative (pre-existing semantics preserved by the fix).
+    MF9 is never consulted when MF8 declares the MT."""
+    stub = _synthetic_neutron_mf9_mf10_dict(
+        mf8={
+            51: {'subsection': {1: {'ZAP': 2004.0, 'LFS': 0}}},  # He-4
+        },
+        mf9={
+            51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 1}}},  # target isomer
+        },
+    )
+    # MF8 says no target production, so the query returns False
+    # even though MF9 declares it.
+    assert not contains_residual_za_and_lfs(stub, 51, 4009.0, 1)
+
+
+def test_contains_mf9_and_mf10_both_consulted_before_false():
+    """When both MF9 and MF10 are present for an MT (and MF8 is
+    absent), the function must check both before returning False.
+    MF9 missing the queried (IZAP, LFS) should not short-circuit if
+    MF10 has the match."""
+    stub = _synthetic_neutron_mf9_mf10_dict(
+        mf9={
+            51: {'subsection': {1: {'IZAP': 2004.0, 'LFS': 0}}},  # He-4 only
+        },
+        mf10={
+            51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 1}}},  # target isomer
+        },
+    )
+    assert contains_residual_za_and_lfs(stub, 51, 4009.0, 1)
+
+
+# ---- is_target_conserving_mt with MF9 / MF10 isomer disqualification
+
+
+def test_target_conserving_mf9_isomer_declaration_disqualifies():
+    """When MF9 declares an isomer branch for an MT producing the
+    target (and MF8 is absent), the MT is NOT purely target-
+    conserving. Pre-fix the MF8-only check missed this and the MT
+    was wrongly treated as target-conserving."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf9={
+        51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 1}}},
+    })
+    assert not is_target_conserving_mt(stub, 51)
+
+
+def test_target_conserving_mf10_isomer_declaration_disqualifies():
+    """Same case via MF10."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf10={
+        51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 1}}},
+    })
+    assert not is_target_conserving_mt(stub, 51)
+
+
+def test_target_conserving_mf9_ground_only_still_conserving():
+    """When MF9 declares the target only at LFS=0 (ground state),
+    the MT is still target-conserving. The disqualification fires
+    only on LFS >= 1 entries."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf9={
+        51: {'subsection': {1: {'IZAP': 4009.0, 'LFS': 0}}},
+    })
+    assert is_target_conserving_mt(stub, 51)
+
+
+def test_target_conserving_mf9_other_zap_isomer_does_not_disqualify():
+    """When MF9 declares an isomer branch of a DIFFERENT nuclide
+    (not the target), it must not affect the target-conserving
+    classification. The disqualification is scoped to
+    ``IZAP == target_za``."""
+    stub = _synthetic_neutron_mf9_mf10_dict(mf9={
+        51: {'subsection': {1: {'IZAP': 2004.0, 'LFS': 1}}},  # He-4 isomer
+    })
+    assert is_target_conserving_mt(stub, 51)
 
 
 # ---- RunOptions contract -------------------------------------------

@@ -288,12 +288,20 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
     """Whether MT produces residual nucleus (residual_za, lfs).
 
     Prefers MF8/MT as the authoritative listing of (ZAP, LFS) pairs
-    produced by this MT. When MF8/MT is absent, falls back to MF6/MT
-    if it carries ZAP-tagged subsections (the catch-all MT=5 case in
+    produced by this MT. When MF8/MT is absent, consults MF9/MT and
+    MF10/MT (ZAP+LFS catalogs for multiplicity and production XS
+    respectively; issue #343): if either carries entries for ``mt``,
+    they are jointly authoritative and the function returns False
+    when no matching ``(IZAP, LFS)`` is found. When MF8, MF9 and
+    MF10 are all absent for ``mt``, falls back to MF6/MT if it
+    carries ZAP-tagged subsections (the catch-all MT=5 case in
     photonuclear and proton-induced files), and finally to the
-    reaction-string-based contains_residual_za. `lfs=None` means
+    reaction-string-based contains_residual_za. ``lfs=None`` means
     "any isomer state"; the MF6 and reaction-string fallbacks cannot
-    resolve isomers, so they only apply when `lfs` is None or 0.
+    resolve isomers, so they only apply when ``lfs`` is None or 0.
+
+    Note on field names: MF8 uses ``ZAP`` for the ZAP tag, MF9 and
+    MF10 use ``IZAP``.
     """
     if 8 in endf_dict and mt in endf_dict[8]:
         for sub in endf_dict[8][mt]['subsection'].values():
@@ -301,6 +309,18 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
                 continue
             if lfs is None or sub['LFS'] == lfs:
                 return True
+        return False
+    mf9_10_present = any(
+        mf in endf_dict and mt in endf_dict[mf] for mf in (9, 10)
+    )
+    if mf9_10_present:
+        for mf in (9, 10):
+            if mf in endf_dict and mt in endf_dict[mf]:
+                for sub in endf_dict[mf][mt]['subsection'].values():
+                    if sub['IZAP'] != residual_za:
+                        continue
+                    if lfs is None or sub['LFS'] == lfs:
+                        return True
         return False
     if lfs not in (None, 0):
         return False
@@ -339,9 +359,11 @@ def is_target_conserving_mt(endf_dict, mt):
        admitted separately by ``contains_residual_za_and_lfs`` for
        the matching residual query).
 
-    MF8 overrides either path: when MF8 declares ``mt`` producing
-    the target at any non-ground LFS, the MT is NOT purely target-
-    conserving (it produces an isomer) and this returns False.
+    MF8, MF9, or MF10 overrides either path: when any of those MFs
+    declares ``mt`` producing the target at a non-ground LFS, the
+    MT is NOT purely target-conserving (it produces an isomer
+    branch) and this returns False. MF8 uses ``ZAP`` as the ZAP
+    field name; MF9 and MF10 use ``IZAP`` (issue #343).
 
     The projectile and target ZA are read from the file via
     ``prop.get_projectile`` and ``prop.get_ZA``, matching the
@@ -362,10 +384,11 @@ def is_target_conserving_mt(endf_dict, mt):
     )
     if not (same_ejectile or mt5_mf6_target):
         return False
-    if 8 in endf_dict and mt in endf_dict[8]:
-        for sub in endf_dict[8][mt].get('subsection', {}).values():
-            if sub['ZAP'] == target_za and sub['LFS'] != 0:
-                return False
+    for mf, zap_key in ((8, 'ZAP'), (9, 'IZAP'), (10, 'IZAP')):
+        if mf in endf_dict and mt in endf_dict[mf]:
+            for sub in endf_dict[mf][mt].get('subsection', {}).values():
+                if sub[zap_key] == target_za and sub['LFS'] != 0:
+                    return False
     return True
 
 
