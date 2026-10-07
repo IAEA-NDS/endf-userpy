@@ -227,7 +227,7 @@ if BUILD_FORTRAN:
 
 setup(
     name='endf-userpy',
-    version='0.1.0a5',
+    version='0.1.0a6',
     author='Georg Schnabel, Daniel Lopez Aldama',
     license='MIT',
     url='https://github.com/IAEA-NDS/endf-userpy',
