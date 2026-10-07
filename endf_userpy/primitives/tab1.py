@@ -105,29 +105,23 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0, side='right') -> Any:
     # selected -- that is the hot spot on wide dense Ein meshes.
     # The numba kernel below branches per point and only evaluates
     # the law that applies.
-    _wants = getattr(xp, 'wants_accelerator', None)
-    _avail = getattr(xp, 'accelerator_available', None)
-    if (
-        _wants is not None and _avail is not None
-        and _wants('numba') and _avail('numba')
-    ):
+    if xp.wants_accelerator('numba') and xp.accelerator_available('numba'):
         from . import tab1_numba
-        if tab1_numba.HAS_NUMBA:
-            x_arr = np.asarray(x, dtype=np.float64)
-            orig_shape = x_arr.shape
-            flat = x_arr.ravel()
-            y_flat = tab1_numba._interp_full_numba(
-                flat,
-                np.asarray(tab1.x, dtype=np.float64),
-                np.asarray(tab1.y, dtype=np.float64),
-                np.asarray(tab1.nbt, dtype=np.int32),
-                np.asarray(tab1.intp, dtype=np.int32),
-                float(outside_value),
-                side == 'left',
-            )
-            if orig_shape == ():
-                return y_flat.reshape(())[()]
-            return y_flat.reshape(orig_shape)
+        x_arr = np.asarray(x, dtype=np.float64)
+        orig_shape = x_arr.shape
+        flat = x_arr.ravel()
+        y_flat = tab1_numba._interp_full_numba(
+            flat,
+            np.asarray(tab1.x, dtype=np.float64),
+            np.asarray(tab1.y, dtype=np.float64),
+            np.asarray(tab1.nbt, dtype=np.int32),
+            np.asarray(tab1.intp, dtype=np.int32),
+            float(outside_value),
+            side == 'left',
+        )
+        if orig_shape == ():
+            return y_flat.reshape(())[()]
+        return y_flat.reshape(orig_shape)
 
     tab_x = xp.asarray(tab1.x, dtype=xp.float64)
     tab_y = xp.asarray(tab1.y, dtype=xp.float64)
