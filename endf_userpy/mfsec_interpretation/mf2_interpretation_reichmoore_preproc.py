@@ -39,6 +39,7 @@ import numpy as np
 
 from ..primitives import array_ns
 from ..primitives.helpers import dict2array
+from ..primitives.static_dict import StaticEndfDict
 from .mf2_interpretation_reichmoore import RMData
 from .mf2_interpretation_mlbw_preproc import (
     _KN,
@@ -48,6 +49,9 @@ from .mf2_interpretation_mlbw_preproc import (
     _radius_tab1_from_ap,
     _radius_tab1_from_ape,
 )
+
+
+_CACHE_TAG = 'mf2_rm_preproc'
 
 
 def rm_data_from_endf_dict(
@@ -96,9 +100,35 @@ def rm_data_from_endf_dict(
     ------
     ValueError
         If the requested range is not (LRU=1, LRF=3).
+
+    Caching
+    -------
+
+    When ``endf_dict`` is a :class:`StaticEndfDict`, memoised on
+    the wrapper's ``_preproc_cache`` (issue #350) across every
+    backend (numpy / numba / auto / jax). The raw-dict path skips.
+    See :func:`mf2_interpretation_mlbw_preproc.mlbw_data_from_endf_dict`
+    for the full caching contract (jax file-leaf tracers require
+    a fresh wrap for a fresh tracer identity, which the
+    :class:`StaticEndfDict` contract already enforces).
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    use_cache = isinstance(endf_dict, StaticEndfDict)
+    if use_cache:
+        key = (_CACHE_TAG, int(isotope_idx), int(range_idx))
+        cached = endf_dict._preproc_cache.get(key)
+        if cached is not None:
+            return cached
+        data = _rm_data_build(endf_dict, isotope_idx, range_idx, xp)
+        endf_dict._preproc_cache[key] = data
+        return data
+    return _rm_data_build(endf_dict, isotope_idx, range_idx, xp)
+
+
+def _rm_data_build(endf_dict, isotope_idx, range_idx, xp) -> RMData:
+    """Uncached build. The public :func:`rm_data_from_endf_dict`
+    wraps this with the :class:`StaticEndfDict` cache lookup."""
     awi, spin_inc = _incident_particle_from_endf(endf_dict)
 
     d151 = endf_dict[2][151]

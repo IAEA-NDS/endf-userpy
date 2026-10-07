@@ -25,6 +25,7 @@ import numpy as np
 
 from ..primitives import array_ns
 from ..primitives.helpers import dict2array
+from ..primitives.static_dict import StaticEndfDict
 from .mf2_interpretation_rml import RMLData
 from .mf2_interpretation_mlbw_preproc import (
     _KN,
@@ -59,6 +60,9 @@ def _identify_incident_pair(pp_mt: np.ndarray, pp_ma: np.ndarray) -> int:
         'particle A) elastic pair; every LRU=1 range must have '
         'exactly one.'
     )
+
+
+_CACHE_TAG = 'mf2_rml_preproc'
 
 
 def rml_data_from_endf_dict(
@@ -99,9 +103,33 @@ def rml_data_from_endf_dict(
     NotImplementedError
         For unsupported ``KRM`` / ``KRL`` / ``IFG`` / ``NRO`` /
         ``KBK`` / ``KPS`` values (see the arc's initial scope).
+
+    Caching
+    -------
+
+    When ``endf_dict`` is a :class:`StaticEndfDict`, memoised on
+    the wrapper's ``_preproc_cache`` (issue #350) across every
+    backend (numpy / numba / auto / jax). The raw-dict path skips.
+    See :func:`mf2_interpretation_mlbw_preproc.mlbw_data_from_endf_dict`
+    for the full caching contract.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    use_cache = isinstance(endf_dict, StaticEndfDict)
+    if use_cache:
+        key = (_CACHE_TAG, int(isotope_idx), int(range_idx))
+        cached = endf_dict._preproc_cache.get(key)
+        if cached is not None:
+            return cached
+        data = _rml_data_build(endf_dict, isotope_idx, range_idx, xp)
+        endf_dict._preproc_cache[key] = data
+        return data
+    return _rml_data_build(endf_dict, isotope_idx, range_idx, xp)
+
+
+def _rml_data_build(endf_dict, isotope_idx, range_idx, xp) -> RMLData:
+    """Uncached build. The public :func:`rml_data_from_endf_dict`
+    wraps this with the :class:`StaticEndfDict` cache lookup."""
     awi, spin_inc = _incident_particle_from_endf(endf_dict)
 
     d151 = endf_dict[2][151]

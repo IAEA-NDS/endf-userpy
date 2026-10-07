@@ -48,6 +48,7 @@ import numpy as np
 
 from ..primitives import array_ns
 from ..primitives.helpers import dict2array
+from ..primitives.static_dict import StaticEndfDict
 from ..primitives.physical_constants import (
     AMU_TO_EV, PARTICLE_MASSES_AMU,
 )
@@ -205,6 +206,9 @@ def _channel_radius(ap, awri, naps: int):
     return 0.123 * mwri ** (1.0 / 3.0) + 0.08
 
 
+_CACHE_TAG = 'mf2_mlbw_preproc'
+
+
 def mlbw_data_from_endf_dict(
     endf_dict, isotope_idx: int = 1, range_idx: int = 1, xp=None,
 ) -> MLBWData:
@@ -252,9 +256,40 @@ def mlbw_data_from_endf_dict(
         multiple resonances that would need the competitive-width
         derivation (handled in-line; only raised on a shape corner
         case that hasn't shown up in real files).
+
+    Caching
+    -------
+
+    When ``endf_dict`` is a :class:`StaticEndfDict`, the result
+    is memoised on the wrapper's ``_preproc_cache`` keyed by
+    ``(_CACHE_TAG, isotope_idx, range_idx)``. Issue #350: on
+    files whose composition iterates over many MTs that share
+    this MF2 range, the preproc is otherwise rebuilt on every MT
+    call. The raw-dict path skips (no cache-lifetime anchor).
+    All backends (numpy / numba / auto / jax) share the same
+    cache; the :class:`StaticEndfDict` contract that the dict's
+    contents will not change until re-wrapped already covers
+    jax file-leaf tracers (a new tracer identity requires a
+    fresh wrap, which carries a fresh cache).
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    use_cache = isinstance(endf_dict, StaticEndfDict)
+    if use_cache:
+        key = (_CACHE_TAG, int(isotope_idx), int(range_idx))
+        cached = endf_dict._preproc_cache.get(key)
+        if cached is not None:
+            return cached
+        data = _mlbw_data_build(endf_dict, isotope_idx, range_idx, xp)
+        endf_dict._preproc_cache[key] = data
+        return data
+    return _mlbw_data_build(endf_dict, isotope_idx, range_idx, xp)
+
+
+def _mlbw_data_build(endf_dict, isotope_idx, range_idx, xp) -> MLBWData:
+    """Uncached build. The public
+    :func:`mlbw_data_from_endf_dict` wraps this with the
+    :class:`StaticEndfDict` ``_preproc_cache`` lookup."""
     awi, spin_inc = _incident_particle_from_endf(endf_dict)
 
     d151 = endf_dict[2][151]

@@ -32,6 +32,7 @@ import numpy as np
 
 from ..primitives import array_ns
 from ..primitives.helpers import dict2array
+from ..primitives.static_dict import StaticEndfDict
 from .mf2_interpretation_mlbw_preproc import (
     _KN,
     _channel_radius,
@@ -61,6 +62,9 @@ def _get_j_group(d_l: dict) -> dict:
             "nor 'j_group' (older) key; parser output shape unrecognised"
         )
     return grp
+
+
+_CACHE_TAG = 'mf2_urr_preproc'
 
 
 def urr_data_from_endf_dict(
@@ -109,9 +113,33 @@ def urr_data_from_endf_dict(
     end-to-end (issue #159). Scalars that steer channel bookkeeping
     (``AJ``, ``AMU*``, ``INT``, ``NAPS``, ``AWRI``, ``SPI``, ``AP``)
     stay concrete numpy on purpose.
+
+    Caching
+    -------
+
+    When ``endf_dict`` is a :class:`StaticEndfDict`, memoised on
+    the wrapper's ``_preproc_cache`` (issue #350) across every
+    backend (numpy / numba / auto / jax). The raw-dict path skips.
+    See :func:`mf2_interpretation_mlbw_preproc.mlbw_data_from_endf_dict`
+    for the full caching contract.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    use_cache = isinstance(endf_dict, StaticEndfDict)
+    if use_cache:
+        key = (_CACHE_TAG, int(isotope_idx), int(range_idx))
+        cached = endf_dict._preproc_cache.get(key)
+        if cached is not None:
+            return cached
+        data = _urr_data_build(endf_dict, isotope_idx, range_idx, xp)
+        endf_dict._preproc_cache[key] = data
+        return data
+    return _urr_data_build(endf_dict, isotope_idx, range_idx, xp)
+
+
+def _urr_data_build(endf_dict, isotope_idx, range_idx, xp) -> URRData:
+    """Uncached build. The public :func:`urr_data_from_endf_dict`
+    wraps this with the :class:`StaticEndfDict` cache lookup."""
     awi, _spin_inc = _incident_particle_from_endf(endf_dict)
 
     d151 = endf_dict[2][151]
