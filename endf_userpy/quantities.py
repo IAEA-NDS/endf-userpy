@@ -382,10 +382,17 @@ def _get_reaction_xs_impl(
     xs = xp.zeros_like(energies_in_xp, dtype=xp.float64)
     proj = prop.get_projectile(endf_dict)
     admitted_count = 0
+    # Record top-down fallback if any user MT is not in MF3 (issue #135).
+    if (options.aggregation == 'top_down'
+            and _query_state is not None):
+        mf3_present = endf_dict.get(3, {})
+        for user_mt in user_mts:
+            if user_mt not in mf3_present:
+                _query_state.aggregation_fallback.append(user_mt)
     for mt in sorted(iter_mts):
         module_logger.debug(f'consider MT={mt} for reaction xs')
         should_select = selectors.satisfies_select_heuristic(
-            endf_dict, mt, user_mts
+            endf_dict, mt, user_mts, aggregation=options.aggregation,
         )
         mt_available = mt in avail_mts
         if should_select and mt_available:
@@ -515,7 +522,9 @@ def _get_residual_production_xs_impl(
             # only when their children are present in MF3 (would
             # double-count), which is the only correctness concern
             # here.
-            selectors.satisfies_residual_select(endf_dict, mt) and
+            selectors.satisfies_residual_select(
+                endf_dict, mt, aggregation=options.aggregation,
+            ) and
             not (
                 apply_target_conserving_filter and
                 selectors.is_target_conserving_mt(endf_dict, mt)
@@ -564,6 +573,14 @@ def _get_particle_production_xs_impl(
     # over the wider list are still filtered correctly by contains_zap.
     mts = mf3interp.get_reaction_mts_widened(endf_dict)
     _check_particle_production_mode1(endf_dict, user_mts, zap, mts, _query_state)
+    # Record top-down fallback if the user's MT is not in MF3
+    # (issue #135). Scalar XS entry, so fallback is user-visible.
+    if (options.aggregation == 'top_down'
+            and _query_state is not None):
+        mf3_present = endf_dict.get(3, {})
+        for user_mt in user_mts:
+            if user_mt not in mf3_present:
+                _query_state.aggregation_fallback.append(user_mt)
     query_state_hits = _query_state
     return quant_mt_zap.compute_cumulative_quantity(
         lambda endf_dict, mt, zap, einc: quant_mt_zap.compute_prodxs(
@@ -573,6 +590,7 @@ def _get_particle_production_xs_impl(
         lambda endf_dict, mt, zap, energies_in: (
             selectors.satisfies_particle_production_select(
                 endf_dict, mt, user_mts, zap,
+                aggregation=options.aggregation,
             )
             and selectors.contains_zap(endf_dict, mt, zap)
         ),

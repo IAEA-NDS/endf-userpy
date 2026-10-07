@@ -128,6 +128,30 @@ class RunOptions:
         matches Monte Carlo on the χ² integrand to ~1e-7. Only
         effective when ``include_resonance=True`` and the file has
         an LSSF=0 URR range. See #299.
+    aggregation : {'top_down', 'bottom_up'}, default ``'bottom_up'``
+        Admission-direction policy for sum-MT queries on scalar
+        cross-section APIs (``get_reaction_xs``,
+        ``get_particle_production_xs``, ``get_residual_production_xs``).
+        ``'bottom_up'`` (default) uses the most fine-grained MF3
+        MTs available and sums them; this matches the pre-#135
+        behaviour and is internally consistent with how differential
+        queries must work (sum MTs do not carry per-ejectile
+        distributions). ``'top_down'`` uses the most aggregated
+        MF3 MT that can address the query; on files that tabulate
+        both the parent sum-MT and its children, the parent is
+        returned directly and interpolation-grid-mismatch error
+        between separately-tabulated children is avoided. See
+        issue #135.
+
+        Differential APIs (``get_particle_production_dxs_dE``,
+        ``_dxs_dmu``, ``_ddxs``) always use bottom-up regardless
+        of this setting because the ENDF-6 data model forces it;
+        the request is silently ignored for those APIs.
+
+        Scalar XS APIs with ``aggregation='top_down'`` emit one
+        summary UserWarning per top-level call if the user's
+        requested MT is not tabulated in MF3 and the admission
+        frontier had to descend to a lower level.
     """
 
     above_range: str = 'warn_nan'
@@ -139,6 +163,7 @@ class RunOptions:
     broadening_mesh_bounds: tuple[float, float] | None = None
     broadening_window_kernel_widths: float | None = None
     urr_quadrature: str = 'gauss_legendre_32'
+    aggregation: str = 'bottom_up'
 
     def __post_init__(self):
         # Validate policy strings at construction so users see the
@@ -156,6 +181,11 @@ class RunOptions:
             raise ValueError(
                 f"resonance_range must be one of "
                 f"{_RESONANCE_RANGE_POLICIES}; got {self.resonance_range!r}"
+            )
+        if self.aggregation not in ('top_down', 'bottom_up'):
+            raise ValueError(
+                f"aggregation must be one of ('top_down', 'bottom_up'); "
+                f"got {self.aggregation!r}"
             )
         # Resolve all string aliases ('auto' / 'numpy' / 'numba' /
         # 'jax') to adapter objects at construction time, so that
@@ -196,6 +226,13 @@ class _QueryState:
     """
     above_range: dict = field(default_factory=dict)
     resonance_range: dict = field(default_factory=dict)
+    aggregation_fallback: list = field(default_factory=list)
+    """When ``options.aggregation == 'top_down'`` for a scalar XS
+    query but the user-requested MT is not tabulated in MF3, the
+    admission frontier descends below the user's root. Each entry
+    is a user MT that triggered a fallback; drained into a single
+    summary UserWarning per top-level call by
+    :func:`_emit_summary_warnings`. Issue #135."""
     missing_user_mts: list = field(default_factory=list)
     """MTs the user requested (via reaction string) that are
     neither tabulated in the file nor synthesisable from admitted
@@ -275,6 +312,17 @@ def _emit_summary_warnings(query_state, options):
             f'fission, often absent). Use '
             f"endf_userpy.quantities_mt_zap.get_reaction_mt_numbers "
             f"to inspect what the file carries.",
+            UserWarning, stacklevel=3,
+        )
+    if query_state.aggregation_fallback:
+        mts = sorted(set(query_state.aggregation_fallback))
+        mt_list = ', '.join(f'MT={m}' for m in mts)
+        warnings.warn(
+            f"aggregation='top_down': {mt_list} not tabulated in "
+            f"MF3; the admission frontier descended to the top-most "
+            f"MF3-present descendants. The returned cross section "
+            f"is the sum of those descendants (equivalent to the "
+            f"'bottom_up' answer when the parent is absent).",
             UserWarning, stacklevel=3,
         )
     if query_state.unmapped_composition_mts:

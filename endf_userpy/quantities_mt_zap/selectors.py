@@ -330,6 +330,35 @@ def contains_residual_za_and_lfs(endf_dict, mt, residual_za, lfs):
     return contains_residual_za(endf_dict, mt, residual_za)
 
 
+def is_mf_sum_tree_root(endf_dict, mt, mf=3):
+    """True if ``mt`` is tabulated in ``mf`` AND no strict ancestor
+    of ``mt`` in the ``SUM_RULES`` tree is tabulated in ``mf``.
+
+    This is the top-down admission primitive (issue #135): the
+    "root-most" MF-present MT along the sum-tree path through
+    ``mt``. On a file with MT1, MT2 and MT3 all in MF3, only MT1
+    is a sum-tree root; MT2 and MT3 have MT1 as ancestor and are
+    excluded.
+
+    The dual of :func:`is_mf_sum_tree_leaf` ("leaf-most" MF-present
+    MT), which is the bottom-up admission primitive.
+    """
+    mf_mts = endf_dict.get(mf, {})
+    return mt in mf_mts and not reac.any_ancestor_in_mts(mt, mf_mts)
+
+
+def is_mf_sum_tree_leaf(endf_dict, mt, mf=3):
+    """True if ``mt`` is tabulated in ``mf`` AND no strict descendant
+    of ``mt`` in the ``SUM_RULES`` tree is tabulated in ``mf``.
+
+    This is the bottom-up admission primitive: the "leaf-most"
+    MF-present MT along the sum-tree subtree rooted at ``mt``. The
+    dual of :func:`is_mf_sum_tree_root`.
+    """
+    mf_mts = endf_dict.get(mf, {})
+    return mt in mf_mts and not reac.exist_associated_child_mts(mt, mf_mts)
+
+
 def is_target_conserving_mt(endf_dict, mt):
     """True if ``mt`` is a target-conserving channel on this file.
 
@@ -392,7 +421,7 @@ def is_target_conserving_mt(endf_dict, mt):
     return True
 
 
-def satisfies_residual_select(endf_dict, mt):
+def satisfies_residual_select(endf_dict, mt, *, aggregation='bottom_up'):
     """Admission rule for `get_residual_production_xs`-style queries.
 
     The general-purpose `satisfies_select_heuristic` is the wrong
@@ -418,7 +447,14 @@ def satisfies_residual_select(endf_dict, mt):
     This is a narrower and more targeted rule than
     `satisfies_select_heuristic`, correct for the residual-
     production case only.
+
+    When ``aggregation == 'top_down'`` (issue #135), admit mt iff
+    it is the root-most MF3-present MT along the sum-tree path:
+    no strict ancestor of mt is in MF3. This is the dual of the
+    bottom-up "no strict descendant in MF3" rule above.
     """
+    if aggregation == 'top_down':
+        return is_mf_sum_tree_root(endf_dict, mt, mf=3)
     if not reac.is_sum_mt(mt):
         return True
     return not reac.exist_associated_child_mts(
@@ -426,7 +462,9 @@ def satisfies_residual_select(endf_dict, mt):
     )
 
 
-def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
+def satisfies_select_heuristic(
+    endf_dict, mt, user_mts=None, *, aggregation='bottom_up',
+):
     if user_mts is not None:
         if not (hasattr(user_mts, '__iter__') or
                 hasattr(user_mts, '__contains__')):
@@ -455,6 +493,33 @@ def satisfies_select_heuristic(endf_dict, mt, user_mts=None):
                 f'hence skipping inclusion of MT={mt}.'
             )
             return False
+
+    # Top-down admission (issue #135): admit mt iff it is the root-
+    # most MF3-present MT along the sum-tree path within the user's
+    # scope. Walk strict ancestors; stop when leaving the user-scope
+    # ceiling or when the top of the sum tree is reached. This
+    # bypasses the distribution-availability branch below because
+    # scalar XS queries do not care about MF4/5/6 presence on
+    # children.
+    if aggregation == 'top_down':
+        mf3_mts = endf_dict.get(3, {})
+        cur = mt
+        while reac.is_in_sum_mt(cur):
+            parent = reac.get_sum_mt_from_part_mt(cur)
+            parent_in_scope = (
+                user_mts is None
+                or parent in user_mts
+                or reac.any_ancestor_in_mts(parent, user_mts)
+            )
+            if not parent_in_scope:
+                # Reached the user-scope ceiling; stop looking up.
+                break
+            if parent in mf3_mts:
+                # Strict ancestor in MF3 within scope covers mt
+                # top-down; drop mt.
+                return False
+            cur = parent
+        return mt in mf3_mts
 
     # NOTE: an earlier iteration of this heuristic (issue #130 /
     # PR #132) had a "user-listed sum-MT with MF13 -> admit"
@@ -570,7 +635,9 @@ def _mf13_authoritative_ancestor(endf_dict, mt, covered_mts):
     return None
 
 
-def satisfies_gamma_production_select(endf_dict, mt, user_mts=None):
+def satisfies_gamma_production_select(
+    endf_dict, mt, user_mts=None, *, aggregation='bottom_up',
+):
     """Gamma-aware admission for particle-production dispatchers
     when the ejectile is gamma (issue #133).
 
@@ -596,7 +663,9 @@ def satisfies_gamma_production_select(endf_dict, mt, user_mts=None):
     available; falls straight through to the general heuristic.
     """
     if user_mts is None:
-        return satisfies_select_heuristic(endf_dict, mt, user_mts)
+        return satisfies_select_heuristic(
+            endf_dict, mt, user_mts, aggregation=aggregation,
+        )
     user_mts = set(user_mts)
     covered = _mts_covered_by_user_query(user_mts)
 
@@ -624,10 +693,14 @@ def satisfies_gamma_production_select(endf_dict, mt, user_mts=None):
         return True
 
     # Otherwise, defer to the general heuristic.
-    return satisfies_select_heuristic(endf_dict, mt, user_mts)
+    return satisfies_select_heuristic(
+        endf_dict, mt, user_mts, aggregation=aggregation,
+    )
 
 
-def satisfies_particle_production_select(endf_dict, mt, user_mts, zap):
+def satisfies_particle_production_select(
+    endf_dict, mt, user_mts, zap, *, aggregation='bottom_up',
+):
     """Admission dispatcher for the four particle-production
     top-level APIs (``get_particle_production_{xs,dxs_dE,dxs_dmu,ddxs}``).
 
@@ -637,10 +710,20 @@ def satisfies_particle_production_select(endf_dict, mt, user_mts, zap):
     children when both would double-count). For every other
     ejectile, falls back to the general
     :func:`satisfies_select_heuristic`.
+
+    ``aggregation`` is threaded through unchanged. Callers of this
+    function from differential-API entry points should pass
+    ``aggregation='bottom_up'`` (the data model forces bottom-up
+    for differential queries; sum MTs do not carry per-ejectile
+    distributions). See issue #135.
     """
     if zap == physconst.PARTICLE_ZAP['g']:
-        return satisfies_gamma_production_select(endf_dict, mt, user_mts)
-    return satisfies_select_heuristic(endf_dict, mt, user_mts)
+        return satisfies_gamma_production_select(
+            endf_dict, mt, user_mts, aggregation=aggregation,
+        )
+    return satisfies_select_heuristic(
+        endf_dict, mt, user_mts, aggregation=aggregation,
+    )
 
 
 def any_mt_admitted_for_particle_production(endf_dict, user_mts, zap, mts):
