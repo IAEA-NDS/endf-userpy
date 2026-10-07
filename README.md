@@ -165,6 +165,71 @@ Residual nuclei: `"Z-Sym-A"` (e.g. `"27-Co-60"`) or `"Sym-A"`
 (e.g. `"Co-60"`), with optional isomer suffix `g`, `m`, `m1`, `m2`,
 ... (`"Co-60m"` = first metastable).
 
+## Runtime policies (`RunOptions`)
+
+Every top-level `get_*` function takes a keyword-only `options:
+RunOptions | None = None` argument. The default `RunOptions()`
+is physics-first: resonance reconstruction on, MT5 catch-all
+redistributed to its specific residuals, activation-convention
+residual sum. Override a single field with
+`RunOptions(above_range='raise', backend='jax')`;
+`dataclasses.replace()` handles composition.
+
+```python
+from endf_userpy.run_options import RunOptions
+
+opts = RunOptions(above_range='nan', backend='numba')
+xs = get_reaction_xs(endf_dict, '(n,total)', eincs, options=opts)
+```
+
+Fields (defined in `endf_userpy/run_options.py`):
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `above_range` | `'warn_nan'` | How to handle incident energies above the file's upper Ein bound. One of `'warn_nan'`, `'nan'`, `'warn_zero'`, `'zero'`, `'raise'`. |
+| `resonance_range` | `'warn'` | How to handle Ein inside the resolved-resonance region when `include_resonance=False` (raw MF3 there is a subtractive background and can be negative). One of `'warn'`, `'warn_nan'`, `'nan'`, `'raise'`. Ignored when `include_resonance=True`. |
+| `include_resonance` | `True` | Compose the MF2 resolved-resonance reconstruction (MLBW / Reich-Moore / R-Matrix Limited KRM=3 / URR Case C) on top of the MF3 background per the ENDF-6 additive convention. Files without MF2 silently no-op. Set `False` to return raw MF3. |
+| `mt5_contrib` | `True` | Whether to redistribute the MT5 catch-all contribution into specific-MT residual queries (via MF6 ZAP tags). Set `False` to drop MT5 entirely from such queries. |
+| `include_target` | `False` | Whether `get_residual_production_xs` includes target-conserving channels (MT2 elastic, MT4 / MT51..MT91 inelastic) when the queried residual is the target in its ground state. Default follows the activation-library convention (IRDFF / EAF / NJOY-ACTIVA): channels that de-excite back to the ground state don't count toward "production of the target". Set `True` for the inclusive sum. Isomer queries are unaffected. |
+| `backend` | `'auto'` | Numerical backend. `'auto'` picks numpy with opportunistic numba acceleration on MF2 resonance kernels (~30x speedup on actinides). `'numpy'` pure numpy. `'numba'` requires numba (raises at construction if missing). `'jax'` enables end-to-end autodiff and `@jax.jit` (requires jax). Advanced users may pass an `array_ns` adapter object directly. |
+| `broadening_mesh_bounds` | `None` | `(emin, emax)` for the internal mesh of the broadening DDX / dxs_dE path. Required under `@jax.jit` with a tracer `energies_out`; otherwise auto. Include the `n_kernel_widths * kernel_width` margin on both sides. |
+| `broadening_window_kernel_widths` | `None` | Target span of each windowed sub-convolution inside `adaptive_convolve`, in units of `kernel_width`. Controls memory-vs-compile-time trade-off for broadened DDX / dxs_dE under jit. Default resolves to `200` (concrete grid) or `inf` (tracer). Set `50` for maximum eager-memory savings; `inf` to disable windowing. No effect unless `broadening=` is passed to the entry point. |
+| `urr_quadrature` | `'gauss_legendre_32'` | LRU=2 URR fluctuation-integral quadrature. `'gauss_legendre_32'` matches Monte Carlo on the χ² integrand to ~1e-7; `'ross_10'` is the NJOY-unresr-parity choice. Only effective when `include_resonance=True` and the file has an LSSF=0 URR range. |
+| `aggregation` | `'bottom_up'` | Admission-direction policy for scalar XS queries. `'bottom_up'` combines the most fine-grained MF3 MTs available (pre-#135 default). `'top_down'` uses the most aggregated MF3-tabulated MT that can address the query, avoiding interpolation-grid-mismatch error between separately-tabulated children. Differential APIs always use bottom-up (sum MTs don't carry per-ejectile distributions). |
+
+Validation runs at `RunOptions(...)` construction, so a typo like
+`above_range='warn_naan'` raises immediately rather than deep inside
+a leaf reader.
+
+### Per-call `broadening=` (not on `RunOptions`)
+
+`get_particle_production_dxs_dE` and `get_particle_production_ddxs`
+accept a keyword-only `broadening=None` argument separate from
+`options=`. It is a **measurement-resolution kernel** applied to
+the full outgoing-energy spectrum: when non-zero, both the
+continuum part (convolved along `E_out` via `adaptive_convolve`)
+and the **Dirac-delta discrete-line content** (MF12/MF13 discrete
+gammas, MF6 LAW=1 ND>0 discrete lines, MF6 LAW=2/3/4/5 two-body
+kinematic deltas) are folded with the same kernel and summed.
+Without broadening the deltas cannot be represented on a
+continuous `energies_out` grid; the default drops them with a
+warning. Accepted forms:
+
+| Value | Behavior |
+| --- | --- |
+| `None` (default) | Continuum returned as-is; discrete-line content dropped; one summary UserWarning per top-level call names the affected MTs. |
+| `0` | Same as `None` but the warning is silenced. Use when the user has already acknowledged the drop and wants an unbroadened spectrum. |
+| `sigma_eV` (positive float) | Convolve the continuum with a Gaussian kernel of standard deviation `sigma_eV` AND fold each discrete delta with the same Gaussian; add the two contributions. |
+| `(kernel, width)` | Same as the positive-float case but with a user-provided kernel. `kernel` is a callable `k(E_rel) -> density` on the detuning axis, `width` is the kernel's effective support (used to size the convolution mesh). |
+
+`broadening=` is a per-call physics knob, not a run-time policy —
+different queries on the same file want different kernels, so it
+lives on the signature rather than on `RunOptions`. The related
+jit-safety knobs (`broadening_mesh_bounds`,
+`broadening_window_kernel_widths`) stay on `RunOptions` because they
+describe the compile-time shape of the convolution mesh, not the
+physics of the kernel.
+
 ## Examples
 
 Nine runnable examples in `examples/`:
