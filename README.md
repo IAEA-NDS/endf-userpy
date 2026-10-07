@@ -201,6 +201,30 @@ Validation runs at `RunOptions(...)` construction, so a typo like
 `above_range='warn_naan'` raises immediately rather than deep inside
 a leaf reader.
 
+### Per-call `broadening=` (not on `RunOptions`)
+
+`get_particle_production_dxs_dE` and `get_particle_production_ddxs`
+accept a keyword-only `broadening=None` argument separate from
+`options=`. It controls what happens to **Dirac-delta discrete-line
+content** (MF12/MF13 discrete gammas, MF6 LAW=1 ND>0 discrete lines,
+MF6 LAW=2/3/4/5 two-body kinematic deltas) that cannot be represented
+on a continuous `energies_out` grid. Accepted forms:
+
+| Value | Behavior |
+| --- | --- |
+| `None` (default) | Drop discrete-line content; emit one summary UserWarning per top-level call naming the affected MTs. |
+| `0` | Drop discrete-line content; silence the warning. Use when the user has already acknowledged the drop. |
+| `sigma_eV` (positive float) | Fold each delta with a Gaussian kernel of standard deviation `sigma_eV` and add the result to the continuous DDX / dxs_dE output. |
+| `(kernel, width)` | Custom-kernel folding. `kernel` is a callable `k(E_rel) -> density` on the detuning axis, `width` is the kernel's effective support (used to size the convolution mesh). |
+
+`broadening=` is a per-call physics knob, not a run-time policy —
+different queries on the same file want different kernels, so it
+lives on the signature rather than on `RunOptions`. The related
+jit-safety knobs (`broadening_mesh_bounds`,
+`broadening_window_kernel_widths`) stay on `RunOptions` because they
+describe the compile-time shape of the convolution mesh, not the
+physics of the kernel.
+
 ## Examples
 
 Nine runnable examples in `examples/`:
