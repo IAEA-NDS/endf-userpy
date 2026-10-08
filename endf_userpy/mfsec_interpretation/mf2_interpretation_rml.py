@@ -338,50 +338,23 @@ def _pair_uses_penetration(data: RMLData, ppi: int) -> bool:
     return True
 
 
-def _reconstruct_group(
-    data: RMLData, g: int, e_safe, e_pos, pi_k2, xp,
-):
-    """Reconstruct one J-group's contribution to (elastic, capture,
-    fission).
+def _group_gammas(data: RMLData, g: int, xp):
+    """Masked reduced-width amplitudes of one J-group's particle
+    channels and its eliminated capture width.
 
-    Uses the KRM=3 Reich-Moore approximation: gamma channels are
-    eliminated by folding their reduced-width amplitudes into a
-    scalar ``Γ_γ_r`` per resonance that lives in the imaginary
-    part of the R-matrix denominator. The R-matrix operates only
-    over the particle channels.
-
-    Returns three ``(ne,)`` arrays: ``sct``, ``cap``, ``fis``,
-    each with the group's statistical weight and the ``π/k²``
-    prefactor already folded in.
+    Returns ``(gamma_pc, gamma_gg)``: a list of ``npart``
+    full-length ``(nres,)`` amplitudes ``γ_{r,c}`` (one per particle
+    channel, in :func:`_classify_group_channels` order) and the
+    ``(nres,)`` Reich-Moore capture width ``Γ_γ_r``, both zeroed for
+    resonances outside group ``g``.
     """
-    kinds, particle, gamma, elastic_slot = _classify_group_channels(
-        data, g,
-    )
-    npart = len(particle)
-    ne = int(e_safe.shape[0])
-
-    g_J = data.group_g[g]
+    _, particle, gamma, _ = _classify_group_channels(data, g)
     ki = data.ki
-
     res_er = data.res_er
     res_group_arr = xp.asarray(data.res_group, dtype=xp.int32)
     group_mask = (res_group_arr == g).astype(xp.float64)         # (nres,)
     nres = int(res_er.shape[0])
-    if nres == 0:
-        z = xp.zeros_like(e_safe)
-        return z, z, z
-
-    # --- Per-channel P_c(E) and P_c(|E_r|), and phi_c(E) for
-    # phase-carrying channels. ---
-    # For the initial scope every channel uses the elastic-pair
-    # wavenumber ``ki`` (see `_channel_kind` docstring). Rho is
-    # computed per channel with its own APT (penetration) or APE
-    # (phase).
-    e_col = e_safe.reshape(-1, 1)                                 # (ne, 1)
-    er_row = res_er.reshape(1, -1)                                # (1, nres)
-    er_abs = xp.abs(res_er)                                        # (nres,)
-    sqrt_e = xp.sqrt(e_safe)                                       # (ne,)
-    sqrt_er = xp.sqrt(er_abs)                                      # (nres,)
+    sqrt_er = xp.sqrt(xp.abs(res_er))                              # (nres,)
 
     # --- Per-resonance elimination sum: Γ_γ_r = 2 * Σ_{c ∈ gamma}
     # γ_{r,c}^2 (P=1 convention for gamma channels). Equivalent to
@@ -396,44 +369,16 @@ def _reconstruct_group(
     # spuriously via the shared full-length arrays.
     gamma_gg = gamma_gg * group_mask
 
-    # --- Particle channels: reduced-width amplitudes γ_{r,c}, phases. ---
-    # For each particle channel c: compute L, APT, APE, PNT-flag.
-    # gamma_pc[c] shape (nres,) is the reduced-width amplitude
-    # γ_{r, particle_channel_c} for that channel.
+    # --- Particle channels: reduced-width amplitudes γ_{r,c}. ---
     gamma_pc = []          # list of (nres,) per-particle-channel
-    p_e_list = []          # list of (ne,) per-particle-channel penetration
-    phase_list = []        # list of (ne,) per-particle-channel phi
     for c in particle:
         ppi = int(round(float(data.ch_ppi[g, c])))
-        L_c = int(round(float(data.ch_l[g, c])))
-        L_arr = xp.asarray(L_c)
-        # xp scalars so tracer channel-radii flow through the rho /
-        # penetration / phase arithmetic below.
-        apt_c = data.ch_apt[g, c]
-        ape_c = data.ch_ape[g, c]
-
-        # Rho at E and at |E_r|.
-        rho_e = ki * sqrt_e * apt_c                                # (ne,)
-        rho_r = ki * sqrt_er * apt_c                               # (nres,)
+        L_arr = xp.asarray(int(round(float(data.ch_l[g, c]))))
+        rho_r = ki * sqrt_er * data.ch_apt[g, c]                   # (nres,)
         if _pair_uses_penetration(data, ppi):
-            p_e, _ = factors.pnt_shf(rho_e, L_arr, xp)
             p_r, _ = factors.pnt_shf(rho_r, L_arr, xp)
         else:
-            p_e = xp.ones_like(e_safe)
-            p_r = xp.ones_like(er_abs)
-        p_e_list.append(p_e)
-
-        # Hard-sphere phase only for elastic (particle A of pair is
-        # incident with non-zero charge/mass; fission gives zero
-        # scattering amplitude contribution).
-        if _channel_kind(data, ppi) == 'elastic':
-            rho_e_hat = ki * sqrt_e * ape_c
-            phi_c = factors.phase(rho_e_hat, L_arr, xp)
-        else:
-            phi_c = xp.zeros_like(e_safe)
-        phase_list.append(phi_c)
-
-        # Reduced-width amplitude γ_{r,c}.
+            p_r = xp.ones_like(sqrt_er)
         denom = xp.where(p_r > _EPS, 2.0 * p_r, 1.0)
         signed = _signed_sqrt(gam_full[:, c], xp)
         gam_c = xp.where(
@@ -442,11 +387,21 @@ def _reconstruct_group(
             signed / xp.sqrt(xp.asarray(2.0)),
         )
         # Mask out-of-group resonances.
-        gam_c = gam_c * group_mask
-        gamma_pc.append(gam_c)
+        gamma_pc.append(gam_c * group_mask)
+    return gamma_pc, gamma_gg
 
-    # --- Build the R-matrix R_{cc'}(E) over particle channels only. ---
+
+def _r_matrix_dense(e_safe, res_er, gamma_gg, gamma_pc, xp):
+    """Dense ``(ne, npart, npart)`` complex R-matrix over one
+    group's particle channels; materialises the ``(ne, nres)``
+    inverse denominator. The JAX backend uses
+    :func:`mf2_interpretation_reichmoore_jax.accumulate_r_matrix`
+    instead."""
+    ne = int(e_safe.shape[0])
+    npart = len(gamma_pc)
     # Denominator: (E_r - E - i Γ_γ_r / 2), broadcast (ne, nres).
+    e_col = e_safe.reshape(-1, 1)                                 # (ne, 1)
+    er_row = res_er.reshape(1, -1)                                # (1, nres)
     gg_row = gamma_gg.reshape(1, -1)                               # (1, nres)
     denom_er = (er_row - e_col) - 1j * 0.5 * gg_row                # (ne, nres)
     inv_denom = 1.0 / denom_er
@@ -459,6 +414,84 @@ def _reconstruct_group(
             R = _put_2d(R, a, b, R_ab, xp)
             if b != a:
                 R = _put_2d(R, b, a, R_ab, xp)
+    return R
+
+
+def _reconstruct_group(
+    data: RMLData, g: int, e_safe, e_pos, pi_k2, xp, r_matrix=None,
+):
+    """Reconstruct one J-group's contribution to (elastic, capture,
+    fission).
+
+    Uses the KRM=3 Reich-Moore approximation: gamma channels are
+    eliminated by folding their reduced-width amplitudes into a
+    scalar ``Γ_γ_r`` per resonance that lives in the imaginary
+    part of the R-matrix denominator. The R-matrix operates only
+    over the particle channels.
+
+    ``r_matrix``, if given, is the group's precomputed ``(ne, npart,
+    npart)`` R-matrix (JAX backend); otherwise it is built by
+    :func:`_r_matrix_dense` from :func:`_group_gammas`.
+
+    Returns three ``(ne,)`` arrays: ``sct``, ``cap``, ``fis``,
+    each with the group's statistical weight and the ``π/k²``
+    prefactor already folded in.
+    """
+    kinds, particle, _, elastic_slot = _classify_group_channels(
+        data, g,
+    )
+    npart = len(particle)
+    ne = int(e_safe.shape[0])
+
+    g_J = data.group_g[g]
+    ki = data.ki
+
+    if int(data.res_er.shape[0]) == 0:
+        z = xp.zeros_like(e_safe)
+        return z, z, z
+
+    # --- Per-channel P_c(E), and phi_c(E) for phase-carrying
+    # channels. ---
+    # For the initial scope every channel uses the elastic-pair
+    # wavenumber ``ki`` (see `_channel_kind` docstring). Rho is
+    # computed per channel with its own APT (penetration) or APE
+    # (phase).
+    sqrt_e = xp.sqrt(e_safe)                                       # (ne,)
+    p_e_list = []          # list of (ne,) per-particle-channel penetration
+    phase_list = []        # list of (ne,) per-particle-channel phi
+    for c in particle:
+        ppi = int(round(float(data.ch_ppi[g, c])))
+        L_c = int(round(float(data.ch_l[g, c])))
+        L_arr = xp.asarray(L_c)
+        # xp scalars so tracer channel-radii flow through the rho /
+        # penetration / phase arithmetic below.
+        apt_c = data.ch_apt[g, c]
+        ape_c = data.ch_ape[g, c]
+
+        rho_e = ki * sqrt_e * apt_c                                # (ne,)
+        if _pair_uses_penetration(data, ppi):
+            p_e, _ = factors.pnt_shf(rho_e, L_arr, xp)
+        else:
+            p_e = xp.ones_like(e_safe)
+        p_e_list.append(p_e)
+
+        # Hard-sphere phase only for elastic (particle A of pair is
+        # incident with non-zero charge/mass; fission gives zero
+        # scattering amplitude contribution).
+        if _channel_kind(data, ppi) == 'elastic':
+            rho_e_hat = ki * sqrt_e * ape_c
+            phi_c = factors.phase(rho_e_hat, L_arr, xp)
+        else:
+            phi_c = xp.zeros_like(e_safe)
+        phase_list.append(phi_c)
+
+    # --- R-matrix R_{cc'}(E) over particle channels only. ---
+    if r_matrix is None:
+        gamma_pc, gamma_gg = _group_gammas(data, g, xp)
+        r_matrix = _r_matrix_dense(
+            e_safe, data.res_er, gamma_gg, gamma_pc, xp,
+        )
+    R = r_matrix
 
     # --- W = I - i R P, X = W^{-1} R. ---
     P_diag = xp.zeros((ne, npart), dtype=xp.float64)
@@ -514,6 +547,34 @@ def _reconstruct_group(
     return sct, cap, fis
 
 
+def _r_matrix_all_groups_jax(data: RMLData, e_safe, xp):
+    """Every group's particle-channel R-matrix, ``(ngroups, npart_max,
+    npart_max, ne)``, from one blocked resonance scan
+    (:func:`mf2_interpretation_reichmoore_jax.accumulate_r_matrix`,
+    the KRM=3 R-matrix being the Reich-Moore one). Each resonance
+    carries its own group's amplitudes and capture width: the
+    per-group masked values are summed across groups."""
+    from . import mf2_interpretation_mlbw as _mlbw
+    from . import mf2_interpretation_reichmoore_jax as _rm_jax
+    ngroups = data.n_groups()
+    npart = [len(_classify_group_channels(data, g)[1]) for g in range(ngroups)]
+    npart_max = max(npart)
+    nres = int(data.res_er.shape[0])
+    gam = xp.zeros((npart_max, nres), dtype=xp.float64)
+    gg = xp.zeros(nres, dtype=xp.float64)
+    for g in range(ngroups):
+        gamma_pc, gamma_gg = _group_gammas(data, g, xp)
+        gamma_pc = gamma_pc + [xp.zeros(nres)] * (npart_max - len(gamma_pc))
+        gam = gam + xp.stack(gamma_pc)
+        gg = gg + gamma_gg
+    return _rm_jax.accumulate_r_matrix(
+        e_safe, xp.asarray(data.res_er, dtype=xp.float64), gg,
+        xp.asarray(data.res_group, dtype=xp.int32), gam, ngroups,
+        _rm_jax.block_size(int(e_safe.shape[0]),
+                           _mlbw.NUMPY_MAX_INTERMEDIATE_BYTES),
+    )
+
+
 def reconstruct(data: RMLData, energies_in, xp):
     """KRM=3 R-Matrix Limited reconstruction (ENDF-6 LRF=7).
 
@@ -531,6 +592,14 @@ def reconstruct(data: RMLData, energies_in, xp):
         As returned by :func:`endf_userpy.primitives.array_ns.get_backend`.
         Numpy and JAX supported in this PR; numba routes through
         a future sibling module.
+
+    Notes
+    -----
+    On the JAX backend every group's R-matrix comes from one blocked
+    ``lax.scan`` over the resonance axis
+    (:func:`mf2_interpretation_reichmoore_jax.accumulate_r_matrix`,
+    shared with LRF=3) instead of a dense ``(NE, nres)`` inverse
+    denominator per group; memory is ``O(block * NE)``.
     """
     if data.krm != 3:
         raise NotImplementedError(
@@ -557,6 +626,9 @@ def reconstruct(data: RMLData, energies_in, xp):
     pot_tot = xp.zeros_like(e_safe)
 
     ngroups = data.n_groups()
+    r_all = None
+    if getattr(xp, 'name', None) == 'jax' and int(data.res_er.shape[0]) > 0:
+        r_all = _r_matrix_all_groups_jax(data, e_safe, xp)
     for g in range(ngroups):
         # Potential scattering contribution: sum g_J sin^2(phi_e_L)
         # over groups, using the elastic channel's APE. Multi-
@@ -576,8 +648,12 @@ def reconstruct(data: RMLData, energies_in, xp):
         pot_tot = pot_tot + data.group_g[g] * xp.sin(phi_e) ** 2
 
         # Resonant contribution.
+        r_matrix_g = None
+        if r_all is not None:
+            npart_g = len(_classify_group_channels(data, g)[1])
+            r_matrix_g = xp.moveaxis(r_all[g, :npart_g, :npart_g], -1, 0)
         sct_g, cap_g, fis_g = _reconstruct_group(
-            data, g, e_safe, e_pos, pi_k2, xp,
+            data, g, e_safe, e_pos, pi_k2, xp, r_matrix=r_matrix_g,
         )
         sct_tot = sct_tot + sct_g
         cap_tot = cap_tot + cap_g

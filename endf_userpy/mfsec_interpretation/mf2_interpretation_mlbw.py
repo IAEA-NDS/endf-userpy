@@ -146,6 +146,107 @@ def _rho_competitive(e, qx, ki, r_a_tab, xp):
     return ki * _safe_sqrt(ee, xp) * tab1.interp(r_a_tab, ee, xp)
 
 
+def _channel_sums_dense(e_safe, rho_e, rho_xe, er, gn0, gg, gf, gx0, shf_r,
+                        lr, lx, ich, nch, xp, nl_max):
+    """Per-channel sums of the MLBW ``A``, ``B``, capture, fission and
+    competitive terms, each ``(ne, nch)``, from a dense ``(ne, nres)``
+    evaluation of every per-resonance term."""
+    # Penetration / shift at the query energy, per resonance's L:
+    # rho_e is a per-energy scalar; L varies per resonance. Broadcast
+    # rho_e to (ne, 1), lr to (1, nres); output (ne, nres).
+    pnt_e, shf_e = factors.pnt_shf(
+        rho_e.reshape(-1, 1), lr.reshape(1, -1), xp, nl_max,
+    )   # (ne, nres)
+    pntx_e, _ = factors.pnt_shf(
+        rho_xe.reshape(-1, 1), lx.reshape(1, -1), xp, nl_max,
+    )   # (ne, nres)
+
+    # Widths at the query energy.
+    gn_e = pnt_e * gn0.reshape(1, -1)                       # (ne, nres)
+    gx_e = pntx_e * gx0.reshape(1, -1)                      # (ne, nres)
+    gg_e = gg.reshape(1, -1)                                 # (ne, nres)
+    gf_e = gf.reshape(1, -1)                                 # (ne, nres)
+    gt = gn_e + gg_e + gf_e + gx_e
+
+    # Shifted resonance energy.
+    erp = er.reshape(1, -1) + 0.5 * (
+        shf_r.reshape(1, -1) - shf_e
+    ) * gn0.reshape(1, -1)
+
+    de = 2.0 * (e_safe.reshape(-1, 1) - erp)
+    denom = gt ** 2 + de ** 2
+    # Same double-where guard as for gn0/gx0 above: keeps `where`'s
+    # backward pass finite when denom happens to hit zero (dummy
+    # resonances with all widths and de=0).
+    denom_safe = xp.where(denom > _EPS, denom, 1.0)
+    ratio = xp.where(denom > _EPS, 2.0 * gn_e / denom_safe, 0.0)
+
+    A_r = ratio * gt
+    B_r = ratio * de
+    cap_r = ratio * gg_e
+    fis_r = ratio * gf_e
+    rxx_r = ratio * gx_e
+
+    # --- Sum per-resonance contributions into per-channel arrays. ---
+    #
+    # Build the one-hot channel-membership matrix once. `G[r, c] = 1`
+    # iff resonance r sits in channel c. Per-channel aggregation is
+    # then one matmul per partial cross section:
+    #     (ne, nres) @ (nres, nch)  ->  (ne, nch)
+    # For an MLBW range with a handful of channels and a few hundred
+    # resonances the one-hot is tiny (nch * nres); the matmul reduces
+    # to one BLAS call on numpy and traces cleanly on JAX.
+
+    G = (xp.arange(nch).reshape(1, -1) == ich.reshape(-1, 1)).astype(
+        A_r.dtype,
+    )   # (nres, nch)
+
+    A_ch = A_r @ G
+    B_ch = B_r @ G
+    cap_ch = cap_r @ G
+    fis_ch = fis_r @ G
+    rxx_ch = rxx_r @ G
+    return A_ch, B_ch, cap_ch, fis_ch, rxx_ch
+
+
+def _channel_sums_jax(data, e_safe, rho_e, rho_xe, er, gn0, gg, gf, gx0,
+                      shf_r, lr, lx, ich, nch, xp, nl_max,
+                      max_intermediate_bytes=None):
+    """JAX counterpart of :func:`_channel_sums_dense`: the E-dependent
+    penetration / shift factors are evaluated once per distinct L and
+    the resonance sums accumulated block by block by
+    :func:`mf2_interpretation_mlbw_jax.accumulate_channel_sums`.
+    ``L`` and ``lx`` are concrete (channel bookkeeping), so the
+    distinct values are known at trace time."""
+    from . import mf2_interpretation_mlbw_jax as _jax
+    from . import mf2_interpretation_reichmoore_jax as _rm_jax
+    l_np = np.asarray(data.res_l, dtype=np.int32)
+    if l_np.shape[0] == 0:
+        z = xp.zeros((e_safe.shape[0], int(nch)), dtype=xp.float64)
+        return z, z, z, z, z
+    lx_np = np.asarray(_lx_values(l_np, data.spi, np))
+    l_u = np.unique(l_np)
+    lx_u = np.unique(lx_np)
+    pnt_e_l, shf_e_l = factors.pnt_shf(
+        rho_e.reshape(1, -1), xp.asarray(l_u).reshape(-1, 1), xp, nl_max,
+    )   # (nL, ne)
+    pntx_e_l, _ = factors.pnt_shf(
+        rho_xe.reshape(1, -1), xp.asarray(lx_u).reshape(-1, 1), xp, nl_max,
+    )   # (nLx, ne)
+    max_bytes = (max_intermediate_bytes
+                 if max_intermediate_bytes is not None
+                 else NUMPY_MAX_INTERMEDIATE_BYTES)
+    acc = _jax.accumulate_channel_sums(
+        e_safe, er, gn0, gg, gf, gx0, shf_r,
+        xp.asarray(np.searchsorted(l_u, l_np)),
+        xp.asarray(np.searchsorted(lx_u, lx_np)),
+        ich, pnt_e_l, shf_e_l, pntx_e_l,
+        nch=int(nch),
+        block=_rm_jax.block_size(int(e_safe.shape[0]), max_bytes),
+    )   # (5, nch, ne)
+    return tuple(xp.transpose(acc[q]) for q in range(5))
+
+
 def reconstruct(
     data: MLBWData, energies_in, xp, nl_max: int = 8,
     _max_intermediate_bytes: int = None,
@@ -183,9 +284,12 @@ def reconstruct(
     single-shot reconstruction on a machine with enough RAM.
     Neither the JAX nor the numba path triggers this: numba
     processes per-energy in parallel with no ``(NE, nres)``
-    materialisation, and JAX users should reach for
-    :func:`endf_userpy.primitives.fit_helpers.chunked_chi2` for
-    memory-bounded gradient workflows.
+    materialisation, and on JAX the per-channel resonance sums are
+    accumulated by a blocked ``lax.scan`` over the resonance axis
+    (:func:`mf2_interpretation_mlbw_jax.accumulate_channel_sums`)
+    whose memory is ``O(block * NE)``; there
+    ``_max_intermediate_bytes`` caps one ``(block, NE)`` float64
+    block.
 
     Private args
     ------------
@@ -267,63 +371,18 @@ def reconstruct(
     pi_k2 = data.abn * inv_k2                                # (ne,)
     twopi_k2 = 2.0 * pi_k2                                   # (ne,)
 
-    # Penetration / shift at the query energy, per resonance's L:
-    # rho_e is a per-energy scalar; L varies per resonance. Broadcast
-    # rho_e to (ne, 1), lr to (1, nres); output (ne, nres).
     rho_e = _rho(e_safe, data.ki, data.r_a, xp)              # (ne,)
-    pnt_e, shf_e = factors.pnt_shf(
-        rho_e.reshape(-1, 1), lr.reshape(1, -1), xp, nl_max,
-    )   # (ne, nres)
     rho_xe = _rho_competitive(e_safe, data.qx, data.ki, data.r_a, xp)   # (ne,)
-    pntx_e, _ = factors.pnt_shf(
-        rho_xe.reshape(-1, 1), lx.reshape(1, -1), xp, nl_max,
-    )   # (ne, nres)
-
-    # Widths at the query energy.
-    gn_e = pnt_e * gn0.reshape(1, -1)                       # (ne, nres)
-    gx_e = pntx_e * gx0.reshape(1, -1)                      # (ne, nres)
-    gg_e = gg.reshape(1, -1)                                 # (ne, nres)
-    gf_e = gf.reshape(1, -1)                                 # (ne, nres)
-    gt = gn_e + gg_e + gf_e + gx_e
-
-    # Shifted resonance energy.
-    erp = er.reshape(1, -1) + 0.5 * (
-        shf_r.reshape(1, -1) - shf_e
-    ) * gn0.reshape(1, -1)
-
-    de = 2.0 * (e_safe.reshape(-1, 1) - erp)
-    denom = gt ** 2 + de ** 2
-    # Same double-where guard as for gn0/gx0 above: keeps `where`'s
-    # backward pass finite when denom happens to hit zero (dummy
-    # resonances with all widths and de=0).
-    denom_safe = xp.where(denom > _EPS, denom, 1.0)
-    ratio = xp.where(denom > _EPS, 2.0 * gn_e / denom_safe, 0.0)
-
-    A_r = ratio * gt
-    B_r = ratio * de
-    cap_r = ratio * gg_e
-    fis_r = ratio * gf_e
-    rxx_r = ratio * gx_e
-
-    # --- Sum per-resonance contributions into per-channel arrays. ---
-    #
-    # Build the one-hot channel-membership matrix once. `G[r, c] = 1`
-    # iff resonance r sits in channel c. Per-channel aggregation is
-    # then one matmul per partial cross section:
-    #     (ne, nres) @ (nres, nch)  ->  (ne, nch)
-    # For an MLBW range with a handful of channels and a few hundred
-    # resonances the one-hot is tiny (nch * nres); the matmul reduces
-    # to one BLAS call on numpy and traces cleanly on JAX.
-
-    G = (xp.arange(nch).reshape(1, -1) == ich.reshape(-1, 1)).astype(
-        A_r.dtype,
-    )   # (nres, nch)
-
-    A_ch = A_r @ G
-    B_ch = B_r @ G
-    cap_ch = cap_r @ G
-    fis_ch = fis_r @ G
-    rxx_ch = rxx_r @ G
+    if getattr(xp, 'name', None) == 'jax':
+        A_ch, B_ch, cap_ch, fis_ch, rxx_ch = _channel_sums_jax(
+            data, e_safe, rho_e, rho_xe, er, gn0, gg, gf, gx0, shf_r,
+            lr, lx, ich, nch, xp, nl_max, _max_intermediate_bytes,
+        )
+    else:
+        A_ch, B_ch, cap_ch, fis_ch, rxx_ch = _channel_sums_dense(
+            e_safe, rho_e, rho_xe, er, gn0, gg, gf, gx0, shf_r,
+            lr, lx, ich, nch, xp, nl_max,
+        )
 
     # --- Hard-sphere potential-scattering phase per channel. ---
     rho_s = _rho(e_safe, data.ki, data.r_ap, xp)            # (ne,)
