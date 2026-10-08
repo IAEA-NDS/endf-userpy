@@ -697,6 +697,21 @@ def reconstruct(data: URRData, energies_in, xp,
             alpha_n_phys, alpha_gg, alpha_gf, alpha_gx,
             nu_n, nu_g, nu_f, nu_x, xp,
         )
+    elif getattr(xp, 'name', None) == 'jax':
+        # Energy-chunked, per-channel-specialised evaluation of the
+        # same integrand; never materialises (NE, nJ, Nq). See
+        # :mod:`mf2_interpretation_urr_jax`.
+        from . import mf2_interpretation_urr_jax as _jax
+        modes = (_jax.channel_mode(data.group_amun),) + tuple(
+            _jax.channel_mode(getattr(data, 'group_' + ch),
+                              getattr(data, 'table_' + tab))
+            for ch, tab in (('amug', 'gg'), ('amuf', 'gf'), ('amux', 'gx'))
+        )
+        R_ncap, R_nfis, R_ncomp, R_nn = _jax.fluctuation_moments(
+            alpha_n_phys, alpha_gg, alpha_gf, alpha_gx,
+            nu_n, nu_g, nu_f, nu_x,
+            xp.asarray(_T_NODES), xp.asarray(_T_WEIGHTS), modes=modes,
+        )
     else:
         t_nodes = xp.asarray(_T_NODES)                         # (Nq,)
         w_t = xp.asarray(_T_WEIGHTS)                           # (Nq,)
