@@ -69,6 +69,12 @@ to zero for non-members), so per-(c,c') work grows by a factor of
 ``ngroups`` (2-3 for typical actinide RM files). Memory for the
 ``(ne, nres)`` inv_denom intermediate is the same either way.
 
+On the JAX backend the R-matrix is instead accumulated by
+:mod:`mf2_interpretation_reichmoore_jax`: a checkpointed blocked
+``lax.scan`` over the resonance axis that evaluates each resonance
+once (scattered into its own group) and keeps memory at
+``O(block * ne)``. Still fixed-shape, so jit and grad are unchanged.
+
 Sensitivity workflows built on top of this (``jax.grad`` /
 ``jax.jacrev`` for parameter fits, ``chunked_chi2`` for
 memory-bounded gradients under fitting loops) therefore work
@@ -176,6 +182,7 @@ def _reconstruct_group(
     group_mask,
     ki, r_a, r_ap, xp,
     r_a_val=None, r_ap_val=None,
+    r_matrix=None,
 ):
     """Reconstruct one J·π group's contribution to sct/cap/fis.
 
@@ -193,6 +200,12 @@ def _reconstruct_group(
     ``group_l``, ``group_g``, ``group_nfis`` are group scalars
     (Python-level ints/floats at trace time).
 
+    ``r_matrix``, if given, is this group's precomputed ``(ne, nch,
+    nch)`` R-matrix; the ``res_*`` widths and ``group_mask`` are then
+    unused (the JAX backend passes it from
+    :func:`mf2_interpretation_reichmoore_jax.accumulate_r_matrix`).
+    Otherwise it is built by :func:`_r_matrix_dense`.
+
     Returns three ``(ne,)`` arrays: ``sct``, ``cap``, ``fis``, each
     already multiplied by the group statistical weight and the
     ``π/k²`` prefactor.
@@ -203,85 +216,25 @@ def _reconstruct_group(
     nch = 1 + nfis
     L_scalar = xp.asarray(L)   # 0-d array; factors.pnt_shf broadcasts against it
 
-    # --- Elastic-channel factors at E and at |E_r|.
-    # Only the penetration factors are used: ENDF-6 R-M defines the
+    # --- Elastic-channel penetration at E.
+    # Only the penetration factor is used: ENDF-6 R-M defines the
     # channel function as L_c = i P_c(E) (no shift), so the level-shift
     # correction that MLBW applies does NOT appear in R-M. See the
-    # "no level shift" note further down.
+    # "no level shift" note in ``_r_matrix_dense``.
     if r_a_val is not None:
         rho_e = ki * xp.sqrt(e_safe) * r_a_val                  # (ne,)
-        rho_r = ki * xp.sqrt(xp.abs(res_er)) * r_a_val          # (nres,)
     else:
         rho_e = _rho(e_safe, ki, r_a, xp)                       # (ne,)
-        rho_r = _rho(xp.abs(res_er), ki, r_a, xp)               # (nres,)
     p_e, _ = factors.pnt_shf(rho_e, L_scalar, xp)               # (ne,)
-    p_r, _ = factors.pnt_shf(rho_r, L_scalar, xp)               # (nres,)
-
-    # Elastic reduced-width amplitude gamma_n0. Sign of GN matters.
-    # gamma_{r,0} = sign(gn) * sqrt(|gn| / (2 * P_L(|E_r|))).
-    #
-    # Multiply by `group_mask` at the end: for resonances not in this
-    # group we compute P_L with this group's L and (potentially wrong)
-    # r_a, so the intermediate gamma is meaningless, but the mask
-    # zeros it out before it can pollute the R-matrix sum. The extra
-    # `xp.where` on the mask side lets us avoid dividing by whatever
-    # tiny P_L we computed for out-of-group rows.
-    denom = xp.where(p_r > _EPS, 2.0 * p_r, 1.0)
-    gamma0 = xp.where(
-        p_r > _EPS,
-        _signed_sqrt(res_gn, xp) / xp.sqrt(denom),
-        0.0,
-    )   # (nres,)
-    gamma0 = gamma0 * group_mask
-
-    # --- Fission reduced-width amplitudes (P=1 for fission channels). ---
-    # Build as list to keep the code readable at nch=1..3. Fission
-    # widths are per-channel and each is also masked to this group.
-    gammas = [gamma0]
-    if nfis >= 1:
-        gammas.append(
-            (_signed_sqrt(res_gf1, xp) / xp.sqrt(2.0)) * group_mask
-        )
-    if nfis >= 2:
-        gammas.append(
-            (_signed_sqrt(res_gf2, xp) / xp.sqrt(2.0)) * group_mask
-        )
-    # gammas: list of (nres,) arrays, length nch
-
-    # --- No level-shift correction on the R-matrix denominator.
-    #
-    # ENDF-6 Section D.1.2 defines the R-M channel function as
-    # ``L̃_c(E) = i P_c(E)`` (pure imaginary; no S_c term). NJOY
-    # reconr's csrmat (reconr.f90) follows this literally: its
-    # denominator is ``E_r - E - i Γ_γ / 2`` with no S(E) - S(|E_r|)
-    # correction. Earlier drafts of this module borrowed the SAMMY
-    # shift-eliminated formula ``E_r^eff = E_r - γ²(S(E)-S(|E_r|))``
-    # from MLBW; that IS correct for MLBW per ENDF-6 D.1.1, but the
-    # ENDF-6 R-M spec omits it and NJOY confirms. Applying the
-    # correction anyway diverged from NJOY by up to 80% at
-    # interference minima for files with strong far-away resonances
-    # (Pb-208 with Γ_n=MeV at E_r=-4 MeV was the surfacing case).
 
     # --- R-matrix (ne, nch, nch) complex. ---
-    #   R_{cc'}(E) = Σ_r gamma_{r,c} gamma_{r,c'} /
-    #                     (E_r - E - i Γ_γ / 2)
-    # Build the (ne, nres) denominator once and pool contributions per
-    # (c, c') pair. Complex arithmetic throughout.
-    e_col = e_safe.reshape(-1, 1)                              # (ne, 1)
-    er_row = res_er.reshape(1, -1)                             # (1, nres)
-    gg_row = res_gg.reshape(1, -1)
-    denom_er = (er_row - e_col) - 1j * 0.5 * gg_row            # (ne, nres) complex
-    inv_denom = 1.0 / denom_er                                 # (ne, nres)
-
-    R = xp.zeros((ne, nch, nch), dtype=xp.complex128)
-    for c in range(nch):
-        for cp in range(c, nch):
-            # (nres,) * (nres,) * (ne, nres) -> reduce over nres.
-            w = (gammas[c] * gammas[cp]).reshape(1, -1)         # (1, nres)
-            R_ccp = xp.sum(w * inv_denom, axis=1)              # (ne,)
-            R = _put_2d(R, c, cp, R_ccp, xp)
-            if cp != c:
-                R = _put_2d(R, cp, c, R_ccp, xp)
+    if r_matrix is None:
+        gammas = _group_gammas(
+            res_er, res_gn, res_gf1, res_gf2, group_mask,
+            L_scalar, nfis, ki, r_a, xp, r_a_val=r_a_val,
+        )
+        r_matrix = _r_matrix_dense(e_safe, res_er, res_gg, gammas, xp)
+    R = r_matrix
 
     # --- Penetration diag P = diag(P_c(E)). Fission: P=1. ---
     P_diag = xp.ones((ne, nch), dtype=xp.float64)
@@ -357,6 +310,103 @@ def _reconstruct_group(
     return sct, cap, fis
 
 
+def _group_gammas(
+    res_er, res_gn, res_gf1, res_gf2, group_mask,
+    L_scalar, nfis, ki, r_a, xp, r_a_val=None,
+):
+    """Reduced-width amplitudes of one J·π group's channels.
+
+    Returns a list of ``nch = 1 + nfis`` full-length ``(nres,)``
+    arrays (elastic first, then fission channels), zeroed for
+    resonances outside the group via ``group_mask``.
+    """
+    if r_a_val is not None:
+        rho_r = ki * xp.sqrt(xp.abs(res_er)) * r_a_val          # (nres,)
+    else:
+        rho_r = _rho(xp.abs(res_er), ki, r_a, xp)               # (nres,)
+    p_r, _ = factors.pnt_shf(rho_r, L_scalar, xp)               # (nres,)
+
+    # Elastic reduced-width amplitude gamma_n0. Sign of GN matters.
+    # gamma_{r,0} = sign(gn) * sqrt(|gn| / (2 * P_L(|E_r|))).
+    #
+    # Multiply by `group_mask` at the end: for resonances not in this
+    # group we compute P_L with this group's L and (potentially wrong)
+    # r_a, so the intermediate gamma is meaningless, but the mask
+    # zeros it out before it can pollute the R-matrix sum. The extra
+    # `xp.where` on the mask side lets us avoid dividing by whatever
+    # tiny P_L we computed for out-of-group rows.
+    denom = xp.where(p_r > _EPS, 2.0 * p_r, 1.0)
+    gamma0 = xp.where(
+        p_r > _EPS,
+        _signed_sqrt(res_gn, xp) / xp.sqrt(denom),
+        0.0,
+    )   # (nres,)
+    gamma0 = gamma0 * group_mask
+
+    # --- Fission reduced-width amplitudes (P=1 for fission channels). ---
+    # Build as list to keep the code readable at nch=1..3. Fission
+    # widths are per-channel and each is also masked to this group.
+    gammas = [gamma0]
+    if nfis >= 1:
+        gammas.append(
+            (_signed_sqrt(res_gf1, xp) / xp.sqrt(2.0)) * group_mask
+        )
+    if nfis >= 2:
+        gammas.append(
+            (_signed_sqrt(res_gf2, xp) / xp.sqrt(2.0)) * group_mask
+        )
+    # gammas: list of (nres,) arrays, length nch
+    return gammas
+
+
+def _r_matrix_dense(e_safe, res_er, res_gg, gammas, xp):
+    """Dense ``(ne, nch, nch)`` complex R-matrix of one J·π group from
+    its masked ``(nres,)`` reduced-width amplitudes ``gammas``.
+
+    Materialises the ``(ne, nres)`` inverse denominator; the JAX
+    backend replaces this with the blocked accumulator in
+    :func:`mf2_interpretation_reichmoore_jax.accumulate_r_matrix`.
+    """
+    ne = e_safe.shape[0]
+    nch = len(gammas)
+
+    # --- No level-shift correction on the R-matrix denominator.
+    #
+    # ENDF-6 Section D.1.2 defines the R-M channel function as
+    # ``L̃_c(E) = i P_c(E)`` (pure imaginary; no S_c term). NJOY
+    # reconr's csrmat (reconr.f90) follows this literally: its
+    # denominator is ``E_r - E - i Γ_γ / 2`` with no S(E) - S(|E_r|)
+    # correction. Earlier drafts of this module borrowed the SAMMY
+    # shift-eliminated formula ``E_r^eff = E_r - γ²(S(E)-S(|E_r|))``
+    # from MLBW; that IS correct for MLBW per ENDF-6 D.1.1, but the
+    # ENDF-6 R-M spec omits it and NJOY confirms. Applying the
+    # correction anyway diverged from NJOY by up to 80% at
+    # interference minima for files with strong far-away resonances
+    # (Pb-208 with Γ_n=MeV at E_r=-4 MeV was the surfacing case).
+
+    # --- R-matrix (ne, nch, nch) complex. ---
+    #   R_{cc'}(E) = Σ_r gamma_{r,c} gamma_{r,c'} /
+    #                     (E_r - E - i Γ_γ / 2)
+    # Build the (ne, nres) denominator once and pool contributions per
+    # (c, c') pair. Complex arithmetic throughout.
+    e_col = e_safe.reshape(-1, 1)                              # (ne, 1)
+    er_row = res_er.reshape(1, -1)                             # (1, nres)
+    gg_row = res_gg.reshape(1, -1)
+    denom_er = (er_row - e_col) - 1j * 0.5 * gg_row            # (ne, nres) complex
+    inv_denom = 1.0 / denom_er                                 # (ne, nres)
+
+    R = xp.zeros((ne, nch, nch), dtype=xp.complex128)
+    for c in range(nch):
+        for cp in range(c, nch):
+            # (nres,) * (nres,) * (ne, nres) -> reduce over nres.
+            w = (gammas[c] * gammas[cp]).reshape(1, -1)         # (1, nres)
+            R_ccp = xp.sum(w * inv_denom, axis=1)              # (ne,)
+            R = _put_2d(R, c, cp, R_ccp, xp)
+            if cp != c:
+                R = _put_2d(R, cp, c, R_ccp, xp)
+    return R
+
+
 def _put_2d(mat, i, j, val, xp):
     """`mat[:, i, j] = val` in a backend-friendly way."""
     if getattr(xp, 'name', None) == 'jax':
@@ -413,6 +463,13 @@ def reconstruct(
     with enough RAM. Neither the JAX nor the numba path triggers
     this. Private args ``_max_intermediate_bytes`` and
     ``_skip_chunk`` are for testing the chunking behaviour.
+
+    On the JAX backend the R-matrix is accumulated by a blocked
+    ``lax.scan`` over the resonance axis
+    (:func:`mf2_interpretation_reichmoore_jax.accumulate_r_matrix`)
+    instead of the dense ``(NE, nres)`` intermediate, so memory is
+    ``O(block * NE)``; ``_max_intermediate_bytes`` caps one
+    ``(block, NE)`` float64 block.
     """
     xp.raise_if_needed_but_missing('numba')
     if xp.wants_accelerator('numba') and xp.accelerator_available('numba'):
@@ -495,7 +552,8 @@ def reconstruct(
     # cost is `ngroups`x more per-(c,c') work in the R-matrix sum,
     # since every resonance contributes to every group's sum (zeroed
     # out via the mask for non-members); for the typical actinide RM
-    # file with 2-3 J·π groups this is a small constant factor.
+    # file with 2-3 J·π groups this is a small constant factor. (The
+    # JAX path below avoids it: one blocked scan for all groups.)
     group_idx = xp.arange(ngroups, dtype=xp.int32)
     res_mask = (
         res_group.reshape(-1, 1) == group_idx.reshape(1, -1)
@@ -509,9 +567,42 @@ def reconstruct(
     # ``_reconstruct_group``.
     have_per_group_r_a = getattr(data, 'group_r_a', None) is not None
     have_per_group_r_ap = getattr(data, 'group_r_ap', None) is not None
+
+    # JAX: accumulate every group's R-matrix in one blocked scan over
+    # the resonance axis (no (ne, nres) intermediate, each resonance
+    # evaluated once rather than once per group). Each resonance
+    # carries its own group's amplitudes: the per-group masked
+    # gammas are summed across groups.
+    r_all = None
+    if getattr(xp, 'name', None) == 'jax':
+        from . import mf2_interpretation_mlbw as _mlbw
+        from . import mf2_interpretation_reichmoore_jax as _jax
+        nch_max = 1 + int(np.max(np.asarray(data.group_nfis)))
+        gam = xp.zeros((nch_max, res_er.shape[0]), dtype=xp.float64)
+        for g in range(ngroups):
+            gam_g = _group_gammas(
+                res_er, res_gn, res_gf1, res_gf2, res_mask[:, g],
+                xp.asarray(int(data.group_l[g])),
+                int(data.group_nfis[g]), data.ki, data.r_a, xp,
+                r_a_val=data.group_r_a[g] if have_per_group_r_a else None,
+            )
+            gam_g += [xp.zeros_like(gam_g[0])] * (nch_max - len(gam_g))
+            gam = gam + xp.stack(gam_g)
+        max_bytes = (_max_intermediate_bytes
+                     if _max_intermediate_bytes is not None
+                     else _mlbw.NUMPY_MAX_INTERMEDIATE_BYTES)
+        r_all = _jax.accumulate_r_matrix(
+            e_safe, res_er, res_gg, res_group, gam, ngroups,
+            _jax.block_size(int(e_safe.shape[0]), max_bytes),
+        )                                      # (ngroups, nch, nch, ne)
+
     for g in range(ngroups):
         r_a_val_g = data.group_r_a[g] if have_per_group_r_a else None
         r_ap_val_g = data.group_r_ap[g] if have_per_group_r_ap else None
+        r_matrix_g = None
+        if r_all is not None:
+            nch_g = 1 + int(data.group_nfis[g])
+            r_matrix_g = xp.moveaxis(r_all[g, :nch_g, :nch_g], -1, 0)
         sct_g, cap_g, fis_g = _reconstruct_group(
             e_safe, e_pos, k_e2, pi_k2,
             data.group_l[g], data.group_g[g], data.group_nfis[g],
@@ -519,6 +610,7 @@ def reconstruct(
             res_mask[:, g],
             data.ki, data.r_a, data.r_ap, xp,
             r_a_val=r_a_val_g, r_ap_val=r_ap_val_g,
+            r_matrix=r_matrix_g,
         )
         sct_tot = sct_tot + sct_g
         cap_tot = cap_tot + cap_g
