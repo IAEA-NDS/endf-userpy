@@ -463,3 +463,40 @@ def test_jax_grad_from_dict_stored_GN_matches_finite_diff_nb93():
     lm = float(loss(jnp.array(original - eps)))
     fd = (lp - lm) / (2.0 * eps)
     np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-20)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='jax not installed')
+@pytest.mark.skipif(not _nb93_available(), reason='Nb-93 ENDF file not available')
+def test_jax_preproc_concatenates_resonance_fields_in_bulk_nb93():
+    """With a JAX tracer at one ``ER`` leaf, the preproc's traced
+    program has a size independent of the resonance count: each
+    L-group's sorted ER / GN / GG / GF / GX arrays are concatenated
+    once, not appended one resonance at a time (the per-resonance
+    form traced hundreds of gathers and cost ~0.3 s per Np-237 build
+    on jax)."""
+    import copy
+    import jax
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp().parsefile(resolve_nb93(), include=[1, 2])
+    xp_jx = array_ns.get_backend('jax')
+    nres = int(pre.mlbw_data_from_endf_dict(d).res_er.shape[0])
+
+    def build(theta):
+        d_t = copy.deepcopy(d)
+        l_t = (
+            d_t[2][151]['isotope'][1]['range'][1].get('l_group')
+            or d_t[2][151]['isotope'][1]['range'][1]['spingroup']
+        )
+        row = list(l_t[1]['ER'].keys())[3]
+        l_t[1]['ER'][row] = theta
+        data = pre.mlbw_data_from_endf_dict(d_t, xp=xp_jx)
+        return data.res_er, data.res_gn, data.res_gx
+
+    eqns = jax.make_jaxpr(build)(1.0).jaxpr.eqns
+    prims = [e.primitive.name for e in eqns]
+    assert nres > 150
+    # Per-resonance scalar indexing traces as one squeeze each (1005
+    # here before the bulk concatenate); the tracer-carrying list ->
+    # array conversion in dict2array legitimately stays O(nres_in_group).
+    assert prims.count('squeeze') == 0, prims.count('squeeze')
+    assert len(eqns) < 3 * nres, len(eqns)
