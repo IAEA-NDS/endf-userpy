@@ -216,17 +216,21 @@ def _channel_sums_jax(data, e_safe, rho_e, rho_xe, er, gn0, gg, gf, gx0,
     penetration / shift factors are evaluated once per distinct L and
     the resonance sums accumulated block by block by
     :func:`mf2_interpretation_mlbw_jax.accumulate_channel_sums`.
-    ``L`` and ``lx`` are concrete (channel bookkeeping), so the
-    distinct values are known at trace time."""
+    ``L`` is concrete (channel bookkeeping), so its distinct values
+    are known at trace time. The competitive ``lx`` is ``|L - 2|`` or
+    ``L`` depending on ``spi == 0``, and ``spi`` may be a tracer (dict
+    leaf traced for autodiff, or the dataclass built inside a
+    ``jax.jit``), so both candidates are tabulated and each
+    resonance's row is selected with ``xp.where``."""
     from . import mf2_interpretation_mlbw_jax as _jax
     from . import mf2_interpretation_reichmoore_jax as _rm_jax
     l_np = np.asarray(data.res_l, dtype=np.int32)
     if l_np.shape[0] == 0:
         z = xp.zeros((e_safe.shape[0], int(nch)), dtype=xp.float64)
         return z, z, z, z, z
-    lx_np = np.asarray(_lx_values(l_np, data.spi, np))
     l_u = np.unique(l_np)
-    lx_u = np.unique(lx_np)
+    lx_alt = np.abs(l_np - 2)                   # lx for a spin-0 target
+    lx_u = np.unique(np.concatenate([l_u, np.abs(l_u - 2)]))
     pnt_e_l, shf_e_l = factors.pnt_shf(
         rho_e.reshape(1, -1), xp.asarray(l_u).reshape(-1, 1), xp, nl_max,
     )   # (nL, ne)
@@ -239,7 +243,9 @@ def _channel_sums_jax(data, e_safe, rho_e, rho_xe, er, gn0, gg, gf, gx0,
     acc = _jax.accumulate_channel_sums(
         e_safe, er, gn0, gg, gf, gx0, shf_r,
         xp.asarray(np.searchsorted(l_u, l_np)),
-        xp.asarray(np.searchsorted(lx_u, lx_np)),
+        xp.where(xp.asarray(data.spi) == 0,
+                 xp.asarray(np.searchsorted(lx_u, lx_alt)),
+                 xp.asarray(np.searchsorted(lx_u, l_np))),
         ich, pnt_e_l, shf_e_l, pntx_e_l,
         nch=int(nch),
         block=_rm_jax.block_size(int(e_safe.shape[0]), max_bytes),
