@@ -425,43 +425,57 @@ def _endf_interp1d_traced_x(
     y1 = xp.take(fp, idx, axis=-1)
     y2 = xp.take(fp, idx + 1, axis=-1)
 
+    # Per-point INT law: read from the bracket's UPPER endpoint
+    # (matches endf_interp1d's "boundary belongs to upper region"
+    # convention). idx is the LOWER bracket, so lookup at idx + 1.
+    # The laws a query can select are the INT codes of mesh points
+    # 1..n_mesh-1 (concrete numpy): only those branches are evaluated.
+    # MF6 yields are mostly lin-lin only, which skips the two logs and
+    # two exps per point of the full five-law dispatch. Identical
+    # results: an absent law's mask never holds.
+    laws = sorted({int(v) for v in int_per_mesh_point_np[1:]})
+    if not laws or not set(laws) <= {1, 2, 3, 4, 5}:
+        laws = [1, 2, 3, 4, 5]     # unknown code: full dispatch, INT=5 fall-through
+
     # Safe denominators and log arguments so the branches we don't
     # select don't propagate NaN.
     dx = x2 - x1
     dx_safe = xp.where(dx == 0.0, 1.0, dx)
-    x1_pos = xp.where(x1 > 0.0, x1, _small)
-    x2_pos = xp.where(x2 > 0.0, x2, _small)
-    y1_pos = xp.where(y1 > 0.0, y1, _small)
-    y2_pos = xp.where(y2 > 0.0, y2, _small)
-    x_pos = xp.where(x > 0.0, x, _small)
+    need_log_x = 3 in laws or 5 in laws
+    need_log_y = 4 in laws or 5 in laws
+    if need_log_x:
+        x1_pos = xp.where(x1 > 0.0, x1, _small)
+        x2_pos = xp.where(x2 > 0.0, x2, _small)
+        x_pos = xp.where(x > 0.0, x, _small)
+        log_x_ratio = xp.log(x_pos / x1_pos)
+        log_x2_ratio = xp.log(x2_pos / x1_pos)
+        log_x2_ratio_safe = xp.where(log_x2_ratio == 0.0, 1.0, log_x2_ratio)
+    if need_log_y:
+        y1_pos = xp.where(y1 > 0.0, y1, _small)
+        y2_pos = xp.where(y2 > 0.0, y2, _small)
+        log_y_ratio = xp.log(y2_pos / y1_pos)
 
-    r1 = y1                                          # INT=1 histogram
-    r2 = y1 + (x - x1) * (y2 - y1) / dx_safe         # INT=2 lin-lin
-    # INT=3 lin-log (log in x)
-    log_x_ratio = xp.log(x_pos / x1_pos)
-    log_x2_ratio = xp.log(x2_pos / x1_pos)
-    log_x2_ratio_safe = xp.where(log_x2_ratio == 0.0, 1.0, log_x2_ratio)
-    r3 = y1 + log_x_ratio * (y2 - y1) / log_x2_ratio_safe
-    # INT=4 log-lin (log in y)
-    log_y_ratio = xp.log(y2_pos / y1_pos)
-    r4 = y1_pos * xp.exp((x - x1) * log_y_ratio / dx_safe)
-    # INT=5 log-log
-    r5 = y1_pos * xp.exp(log_x_ratio * log_y_ratio / log_x2_ratio_safe)
+    branches = {}
+    if 1 in laws:
+        branches[1] = y1                                 # INT=1 histogram
+    if 2 in laws:
+        branches[2] = y1 + (x - x1) * (y2 - y1) / dx_safe   # INT=2 lin-lin
+    if 3 in laws:                                        # INT=3 lin-log
+        branches[3] = y1 + log_x_ratio * (y2 - y1) / log_x2_ratio_safe
+    if 4 in laws:                                        # INT=4 log-lin
+        branches[4] = y1_pos * xp.exp((x - x1) * log_y_ratio / dx_safe)
+    if 5 in laws:                                        # INT=5 log-log
+        branches[5] = y1_pos * xp.exp(
+            log_x_ratio * log_y_ratio / log_x2_ratio_safe)
 
-    # Per-point INT law: read from the bracket's UPPER endpoint
-    # (matches endf_interp1d's "boundary belongs to upper region"
-    # convention). idx is the LOWER bracket, so lookup at idx + 1.
-    interp_type = xp.take(int_per_mesh_point_xp, idx + 1)
-    result = xp.where(
-        interp_type == 1, r1,
-        xp.where(
-            interp_type == 2, r2,
-            xp.where(
-                interp_type == 3, r3,
-                xp.where(interp_type == 4, r4, r5),
-            ),
-        ),
-    )
+    # Nested select in law order; the last present law is the
+    # fall-through (as INT=5 was in the full dispatch).
+    present = [code for code in (1, 2, 3, 4, 5) if code in branches]
+    result = branches[present[-1]]
+    if len(present) > 1:
+        interp_type = xp.take(int_per_mesh_point_xp, idx + 1)
+        for code in reversed(present[:-1]):
+            result = xp.where(interp_type == code, branches[code], result)
 
     # Out-of-mesh handling. Under trace we cannot raise on missing
     # outside_value with off-mesh x; the caller must pass one if
