@@ -55,3 +55,19 @@ def interp_from_lookup(law, x, x1, x2, y1, y2, outside_value, laws, side):
         law, x, x1, x2, y1, y2, array_ns.get_backend('jax'),
         outside_value=outside_value, laws=laws,
     )
+
+
+@partial(jax.jit, static_argnames=('laws', 'mask_outside'))
+def traced_x_from_lookup(x, x1, x2, y1, y2, interp_type, is_inside,
+                         outside_value, laws, mask_outside):
+    """Jitted arithmetic of
+    :func:`interpolation._endf_interp1d_traced_x` from a host bracket
+    lookup. ``y1`` / ``y2`` may be batched ``(..., N)``; every other
+    input has the query shape ``(N,)``. ``mask_outside=False`` keeps
+    the ``outside_value=None`` semantics (no off-mesh masking)."""
+    from .interpolation import _traced_x_arith
+    return _traced_x_arith(
+        x, x1, x2, y1, y2, interp_type, is_inside,
+        outside_value if mask_outside else None, laws,
+        array_ns.get_backend('jax'),
+    )
