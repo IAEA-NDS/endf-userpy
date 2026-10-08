@@ -600,3 +600,97 @@ def test_nd143_urr_mf3_seam_takes_mf3_value(nd143_dict):
                          f'{mf3_at_seam:.5f}. Below-seam value {below:.5f} '
                          f'includes the URR contribution.'),
             )
+
+
+# ============================================================
+# JAX backend: concrete energies are sliced to each range (as on
+# numpy, #307); traced energies keep the fixed-shape full-mesh path.
+# ============================================================
+
+
+def _jax_or_skip():
+    if 'jax' not in array_ns.available_backends():
+        pytest.skip('jax not installed')
+    return array_ns.get_backend('jax')
+
+
+ND143_E = np.geomspace(1e-3, 2e7, 3000)
+ND143_RRR = (1e-5, 5503.0)
+ND143_URR = (5503.0, 225000.0)
+
+
+def test_jax_composition_evaluates_only_in_range_energies(nd143_dict, monkeypatch):
+    """With concrete energies, each formalism's ``reconstruct`` sees
+    exactly the query energies inside its half-open range, and the
+    composed result equals the numpy path. Before, jax evaluated
+    every range on the full mesh and masked afterwards (on U-235 at
+    1M log-uniform points: ~225 RRR points, 33 s of R-matrix work)."""
+    from endf_userpy.mfsec_interpretation import (
+        mf2_interpretation_mlbw, mf2_interpretation_urr,
+    )
+    xp = _jax_or_skip()
+    seen = {}
+    for name, mod in (('mlbw', mf2_interpretation_mlbw),
+                      ('urr', mf2_interpretation_urr)):
+        orig = mod.reconstruct
+
+        def rec(data, e, *a, _orig=orig, _name=name, **k):
+            seen[_name] = int(np.shape(e)[0])
+            return _orig(data, e, *a, **k)
+        monkeypatch.setattr(mod, 'reconstruct', rec)
+
+    got = res_comp.reconstruct_resonance_xs(
+        nd143_dict, 1, ND143_E, xp=xp)
+    n_rrr = int(np.sum((ND143_E >= ND143_RRR[0]) & (ND143_E < ND143_RRR[1])))
+    n_urr = int(np.sum((ND143_E >= ND143_URR[0]) & (ND143_E < ND143_URR[1])))
+    assert seen == {'mlbw': n_rrr, 'urr': n_urr}, (seen, n_rrr, n_urr)
+    assert n_rrr + n_urr < ND143_E.size          # some points above the URR
+
+    monkeypatch.undo()
+    ref = res_comp.reconstruct_resonance_xs(
+        nd143_dict, 1, ND143_E, xp=array_ns.get_backend('numpy'))
+    np.testing.assert_allclose(np.asarray(got), ref, rtol=1e-12, atol=1e-12)
+    assert np.max(np.abs(ref)) > 1.0
+
+
+def test_jax_composition_jit_over_energies_matches_eager(nd143_dict):
+    """Traced energies (``jax.jit`` over ``e``) take the fixed-shape
+    full-mesh path and agree with the sliced eager result."""
+    import jax
+    import jax.numpy as jnp
+    xp = _jax_or_skip()
+    eager = res_comp.reconstruct_resonance_xs(
+        nd143_dict, 1, ND143_E, xp=xp)
+    jitted = jax.jit(lambda e: res_comp.reconstruct_resonance_xs(
+        nd143_dict, 1, e, xp=xp))(jnp.asarray(ND143_E))
+    np.testing.assert_allclose(np.asarray(jitted), np.asarray(eager),
+                               rtol=1e-12, atol=1e-12)
+
+
+def test_jax_composition_sliced_path_grad_wrt_dict_er(nd143_dict):
+    """``jax.grad`` wrt a resonance energy stored in the dict flows
+    through the eager sliced path (gather + ``.at[idx].add``) and
+    matches central finite difference."""
+    import copy
+    import jax
+    import jax.numpy as jnp
+    xp = _jax_or_skip()
+    rng0 = nd143_dict[2][151]['isotope'][1]['range'][1]
+    l_group = rng0.get('l_group') or rng0['spingroup']
+    row = list(l_group[1]['ER'].keys())[2]
+    er0 = float(l_group[1]['ER'][row])
+    e = np.linspace(max(er0 - 2.0, 1e-3), er0 + 2.0, 41)
+
+    def loss(theta):
+        d_t = copy.deepcopy(nd143_dict)
+        r = d_t[2][151]['isotope'][1]['range'][1]
+        (r.get('l_group') or r['spingroup'])[1]['ER'][row] = theta
+        return jnp.sum(res_comp.reconstruct_resonance_xs(
+            d_t, 1, e, xp=xp))
+
+    ad = float(jax.grad(loss)(jnp.asarray(er0)))
+    h = 1e-4
+    fd = (float(loss(jnp.asarray(er0 + h)))
+          - float(loss(jnp.asarray(er0 - h)))) / (2 * h)
+    assert abs(fd) > 0.0
+    assert abs(ad - fd) <= 1e-4 * abs(fd), (ad, fd)

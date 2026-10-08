@@ -215,24 +215,44 @@ def _accumulate_range_contrib(total, e, in_range, keys, xp, reco_fn):
     (log-spaced XS queries that straddle an actinide RRR waste 25
     to 94 pct of the work on points above the RRR upper bound).
 
-    JAX fallback: slicing by boolean mask materialises an index
-    array whose size is data-dependent, which breaks ``jax.jit``
-    tracing. Keep the pre-#307 "evaluate full ``e``, mask after"
-    shape there.
+    JAX: when the energies are concrete (the eager case; the
+    in-range mask converts to numpy), the same slice runs on the
+    jax arrays and the slice result is scatter-added back with
+    ``.at[idx].add`` -- differentiable wrt every file-side leaf the
+    formalism reads. When the energies are traced (``jax.jit`` over
+    ``e``, ``jax.grad`` wrt ``e``) slicing by a traced mask would
+    give a data-dependent shape, so the fixed-shape pre-#307
+    "evaluate full ``e``, mask after" path runs instead.
 
     Returns the new running total, or ``None`` when the formalism
     could not reconstruct the range (``reco_fn`` returned ``None``);
     callers propagate that into their own error-tracking.
     """
     if xp.name == 'jax':
-        recon = reco_fn(e)
+        try:
+            in_range_np = np.asarray(in_range)
+        except Exception:      # traced energies: fixed-shape path
+            in_range_np = None
+        if in_range_np is None:
+            recon = reco_fn(e)
+            if recon is None:
+                return None
+            contrib = xp.zeros_like(e)
+            for k in keys:
+                if k in recon:
+                    contrib = contrib + recon[k]
+            return total + xp.where(in_range, contrib, xp.zeros_like(e))
+        idx_in = np.where(in_range_np)[0]
+        if idx_in.size == 0:
+            return total
+        recon = reco_fn(e[idx_in])
         if recon is None:
             return None
-        contrib = xp.zeros_like(e)
+        contrib_in = xp.zeros((idx_in.size,), dtype=e.dtype)
         for k in keys:
             if k in recon:
-                contrib = contrib + recon[k]
-        return total + xp.where(in_range, contrib, xp.zeros_like(e))
+                contrib_in = contrib_in + recon[k]
+        return total.at[idx_in].add(contrib_in)
 
     in_range_np = np.asarray(in_range)
     idx_in = np.where(in_range_np)[0]
