@@ -205,6 +205,14 @@ def _reconstruct_urr_range(endf_dict, iso_i, rng_i, rng, energies, xp,
     return recon, _URR_MT_TO_KEYS
 
 
+# JAX eager mode compiles every op once per new array shape. Slicing
+# to an in-range subset introduces new shapes, which costs ~0.8 s of
+# first-call compilation for a Reich-Moore range; only slice when that
+# skips at least this many out-of-range energies (measured on U-235:
+# 1K-point meshes are faster unsliced on the first call, 10K+ sliced).
+_JAX_SLICE_MIN_SKIPPED = 2048
+
+
 def _accumulate_range_contrib(total, e, in_range, keys, xp, reco_fn):
     """Add one resonance range's contribution onto ``total``.
 
@@ -216,7 +224,8 @@ def _accumulate_range_contrib(total, e, in_range, keys, xp, reco_fn):
     to 94 pct of the work on points above the RRR upper bound).
 
     JAX: when the energies are concrete (the eager case; the
-    in-range mask converts to numpy), the same slice runs on the
+    in-range mask converts to numpy) and slicing skips at least
+    :data:`_JAX_SLICE_MIN_SKIPPED` points, the same slice runs on the
     jax arrays and the slice result is scatter-added back with
     ``.at[idx].add`` -- differentiable wrt every file-side leaf the
     formalism reads. When the energies are traced (``jax.jit`` over
@@ -232,6 +241,12 @@ def _accumulate_range_contrib(total, e, in_range, keys, xp, reco_fn):
         try:
             in_range_np = np.asarray(in_range)
         except Exception:      # traced energies: fixed-shape path
+            in_range_np = None
+        if (in_range_np is not None
+                and in_range_np.size - np.count_nonzero(in_range_np)
+                < _JAX_SLICE_MIN_SKIPPED):
+            # Too little to skip: the slice's new array shape would
+            # cost more in first-call op compilation than it saves.
             in_range_np = None
         if in_range_np is None:
             recon = reco_fn(e)

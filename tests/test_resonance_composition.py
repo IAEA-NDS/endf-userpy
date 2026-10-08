@@ -629,6 +629,7 @@ def test_jax_composition_evaluates_only_in_range_energies(nd143_dict, monkeypatc
         mf2_interpretation_mlbw, mf2_interpretation_urr,
     )
     xp = _jax_or_skip()
+    monkeypatch.setattr(res_comp, '_JAX_SLICE_MIN_SKIPPED', 0)
     seen = {}
     for name, mod in (('mlbw', mf2_interpretation_mlbw),
                       ('urr', mf2_interpretation_urr)):
@@ -694,3 +695,22 @@ def test_jax_composition_sliced_path_grad_wrt_dict_er(nd143_dict):
           - float(loss(jnp.asarray(er0 - h)))) / (2 * h)
     assert abs(fd) > 0.0
     assert abs(ad - fd) <= 1e-4 * abs(fd), (ad, fd)
+
+
+def test_jax_composition_small_skip_keeps_full_mesh(nd143_dict, monkeypatch):
+    """Below ``_JAX_SLICE_MIN_SKIPPED`` skipped points the range is
+    evaluated on the full mesh (no new array shape, so no extra eager
+    op compilation on the first call); above it, on the slice."""
+    from endf_userpy.mfsec_interpretation import mf2_interpretation_mlbw
+    xp = _jax_or_skip()
+    seen = []
+    orig = mf2_interpretation_mlbw.reconstruct
+    monkeypatch.setattr(mf2_interpretation_mlbw, 'reconstruct',
+                        lambda data, e, *a, **k: seen.append(int(np.shape(e)[0]))
+                        or orig(data, e, *a, **k))
+    n_skip = int(np.sum(~((ND143_E >= ND143_RRR[0]) & (ND143_E < ND143_RRR[1]))))
+    monkeypatch.setattr(res_comp, '_JAX_SLICE_MIN_SKIPPED', n_skip + 1)
+    res_comp.reconstruct_resonance_xs(nd143_dict, 1, ND143_E, xp=xp)
+    monkeypatch.setattr(res_comp, '_JAX_SLICE_MIN_SKIPPED', n_skip)
+    res_comp.reconstruct_resonance_xs(nd143_dict, 1, ND143_E, xp=xp)
+    assert seen == [ND143_E.size, ND143_E.size - n_skip], seen
