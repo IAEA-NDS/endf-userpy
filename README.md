@@ -230,6 +230,29 @@ jit-safety knobs (`broadening_mesh_bounds`,
 describe the compile-time shape of the convolution mesh, not the
 physics of the kernel.
 
+### Faster first calls on the JAX backend
+
+With `backend='jax'`, the first call at a given query-mesh size spends
+most of its time compiling (several seconds on an actinide file; later
+calls with the same mesh size reuse the compiled code in-process). JAX
+can keep those compilations on disk across Python sessions. This is a
+process-wide JAX setting, so `endf_userpy` leaves it to you; enable it
+once, before the first jax call:
+
+```python
+import jax
+jax.config.update('jax_compilation_cache_dir', '/path/to/jax-cache')
+jax.config.update('jax_persistent_cache_min_compile_time_secs', 0.0)
+```
+
+On ENDF/B-VIII.1 U-235 (`get_particle_production_xs` at 10K points,
+CPU) this cut the first call of a new session from ~4.5-10 s to
+~1.7-3 s; the cache takes well under a megabyte. The second line is
+essential: JAX's default only persists compilations that took longer
+than 1 s, and every compilation this package triggers is shorter, so
+with the default nothing is cached. See the JAX documentation on the
+persistent compilation cache for details and cache invalidation.
+
 ## Examples
 
 Nine runnable examples in `examples/`:
