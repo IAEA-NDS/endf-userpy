@@ -36,6 +36,7 @@ from .mf2_interpretation_factors_numba import (
 )
 from .mf2_interpretation_reichmoore_numba import (
     _pnt_shf_scalar,
+    accumulate_r_matrix,
 )
 
 try:
@@ -71,8 +72,9 @@ def _reconstruct_kernel(
     group_res_start,          # (ngroups,) int64
     group_res_end,            # (ngroups,) int64
     res_er,                   # (nres,) float64
-    res_gg_eff,               # (nres,) float64 -- summed eliminated widths per resonance
-    res_gamma,                # (nres, 3) float64 -- signed reduced-width amps per particle slot
+    res_hg,                   # (nres,) float64 -- half the summed eliminated widths
+    a00, a01, a11,            # (nres,) float64 -- reduced-width products
+    a02, a12, a22,            #   gamma_c * gamma_d over particle slots 0..2
 ):
     ne = e.shape[0]
     ngroups = group_npart.shape[0]
@@ -81,6 +83,7 @@ def _reconstruct_kernel(
     cap = np.zeros(ne)
     fis = np.zeros(ne)
     pot = np.zeros(ne)
+    nzero = np.zeros(ne)
 
     for i in prange(ne):
         E = e[i]
@@ -96,6 +99,7 @@ def _reconstruct_kernel(
         pot_sum = 0.0
 
         sqrt_E = math.sqrt(E) if E > 0.0 else 0.0
+        nzero_i = 0.0
 
         for g in range(ngroups):
             npart = group_npart[g]
@@ -143,29 +147,14 @@ def _reconstruct_kernel(
             pot_sum += gJ * sin_phi0 * sin_phi0
 
             # --- R-matrix accumulators (upper triangle, complex). ---
-            R00 = 0.0 + 0.0j
-            R01 = 0.0 + 0.0j
-            R02 = 0.0 + 0.0j
-            R11 = 0.0 + 0.0j
-            R12 = 0.0 + 0.0j
-            R22 = 0.0 + 0.0j
-
             r0 = group_res_start[g]
             r1 = group_res_end[g]
-            for r in range(r0, r1):
-                gam0 = res_gamma[r, 0]
-                denom = complex(res_er[r] - E, -0.5 * res_gg_eff[r])
-                inv_d = 1.0 / denom
-                R00 = R00 + (gam0 * gam0) * inv_d
-                if npart >= 2:
-                    gam1 = res_gamma[r, 1]
-                    R01 = R01 + (gam0 * gam1) * inv_d
-                    R11 = R11 + (gam1 * gam1) * inv_d
-                if npart >= 3:
-                    gam2 = res_gamma[r, 2]
-                    R02 = R02 + (gam0 * gam2) * inv_d
-                    R12 = R12 + (gam1 * gam2) * inv_d
-                    R22 = R22 + (gam2 * gam2) * inv_d
+            R00, R01, R11, R02, R12, R22, nz = accumulate_r_matrix(
+                E, res_er[r0:r1], res_hg[r0:r1],
+                a00[r0:r1], a01[r0:r1], a11[r0:r1],
+                a02[r0:r1], a12[r0:r1], a22[r0:r1], npart,
+            )
+            nzero_i += nz
 
             # --- Solve (I - i R P) X = R for row 0 of X. ---
             omega0 = complex(math.cos(-phi0), math.sin(-phi0))
@@ -242,8 +231,9 @@ def _reconstruct_kernel(
         cap[i] = cap_sum
         fis[i] = fis_sum
         pot[i] = 4.0 * pi_k2 * pot_sum
+        nzero[i] = nzero_i
 
-    return sct, cap, fis, pot
+    return sct, cap, fis, pot, nzero
 
 
 def _classify_slots(data, g):
@@ -386,13 +376,25 @@ def reconstruct(data, energies_in):
                         math.sqrt(abs(gam_raw) / 2.0), gam_raw,
                     )
 
-    sct, cap, fis, pot = _reconstruct_kernel(
+    g0 = res_gamma[:, 0]
+    g1 = res_gamma[:, 1]
+    g2 = res_gamma[:, 2]
+    sct, cap, fis, pot, nzero = _reconstruct_kernel(
         e, float(data.abn), ki,
         group_npart, group_gJ,
         slot_L, slot_ape, slot_apt,
         slot_has_pnt, slot_has_phase, slot_is_fis,
         group_res_start, group_res_end,
-        er_s, res_gg_eff, res_gamma,
+        er_s, 0.5 * res_gg_eff,
+        g0 * g0, g0 * g1, g1 * g1, g0 * g2, g1 * g2, g2 * g2,
     )
+    # A zero R-matrix denominator (E == E_r with a zero eliminated
+    # width) makes R infinite; return NaN there, as the numpy / jax
+    # backends do, instead of fastmath's arbitrary value.
+    bad = nzero > 0.0
+    if bad.any():
+        sct[bad] = np.nan
+        cap[bad] = np.nan
+        fis[bad] = np.nan
     tot = sct + cap + fis
     return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot, 'tot': tot}

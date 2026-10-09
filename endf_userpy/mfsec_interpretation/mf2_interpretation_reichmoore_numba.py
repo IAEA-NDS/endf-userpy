@@ -72,6 +72,93 @@ except ImportError:
 _EPS = 1e-38
 
 
+@njit(cache=True, inline='always')
+def accumulate_r_matrix(E, er, hg, a00, a01, a11, a02, a12, a22, nch):
+    """Upper triangle of one J-group's symmetric R-matrix at energy ``E``.
+
+    ``R_cd = sum_r a_cd[r] / (er[r] - E - i hg[r])`` with the width
+    products ``a_cd = gamma_c * gamma_d`` and the half radiation width
+    ``hg = Gamma_gamma / 2`` precomputed per resonance; the arrays are
+    the group's contiguous slices. ``nch`` (1..3) is the number of
+    channels; entries of absent channels are returned as 0.
+
+    The sums are carried as real / imaginary scalars with
+    ``1 / (dr - i h) = (dr + i h) / (dr**2 + h**2)`` and loops over
+    ``range(slice length)``, which lets LLVM vectorise them; complex
+    accumulators or ``range(start, end)`` over the full arrays do not
+    vectorise (~4-6x slower). The reciprocal is written as a power
+    so the per-division zero check of numba's default error model
+    does not block vectorisation; a zero denominator (``E == E_r``
+    with a zero radiation width) is counted instead and returned as
+    ``nzero`` so the caller can flag those energies (NaN) outside the
+    parallel loop.
+    """
+    r00r = 0.0
+    r00i = 0.0
+    r01r = 0.0
+    r01i = 0.0
+    r11r = 0.0
+    r11i = 0.0
+    r02r = 0.0
+    r02i = 0.0
+    r12r = 0.0
+    r12i = 0.0
+    r22r = 0.0
+    r22i = 0.0
+    nzero = 0.0
+    n = er.shape[0]
+    if nch == 1:
+        for r in range(n):
+            dr = er[r] - E
+            h = hg[r]
+            d = dr * dr + h * h
+            nzero += 1.0 if d == 0.0 else 0.0
+            q = d ** -1.0
+            cr = dr * q
+            ci = h * q
+            r00r += a00[r] * cr
+            r00i += a00[r] * ci
+    elif nch == 2:
+        for r in range(n):
+            dr = er[r] - E
+            h = hg[r]
+            d = dr * dr + h * h
+            nzero += 1.0 if d == 0.0 else 0.0
+            q = d ** -1.0
+            cr = dr * q
+            ci = h * q
+            r00r += a00[r] * cr
+            r00i += a00[r] * ci
+            r01r += a01[r] * cr
+            r01i += a01[r] * ci
+            r11r += a11[r] * cr
+            r11i += a11[r] * ci
+    else:
+        for r in range(n):
+            dr = er[r] - E
+            h = hg[r]
+            d = dr * dr + h * h
+            nzero += 1.0 if d == 0.0 else 0.0
+            q = d ** -1.0
+            cr = dr * q
+            ci = h * q
+            r00r += a00[r] * cr
+            r00i += a00[r] * ci
+            r01r += a01[r] * cr
+            r01i += a01[r] * ci
+            r11r += a11[r] * cr
+            r11i += a11[r] * ci
+            r02r += a02[r] * cr
+            r02i += a02[r] * ci
+            r12r += a12[r] * cr
+            r12i += a12[r] * ci
+            r22r += a22[r] * cr
+            r22i += a22[r] * ci
+    return (complex(r00r, r00i), complex(r01r, r01i), complex(r11r, r11i),
+            complex(r02r, r02i), complex(r12r, r12i), complex(r22r, r22i),
+            nzero)
+
+
 @njit(cache=True, parallel=True, fastmath=True)
 def _reconstruct_kernel(
     e,                     # (ne,) float64
@@ -84,10 +171,9 @@ def _reconstruct_kernel(
     group_res_start,       # (ngroups,) int  -- contiguous slice into res_*
     group_res_end,         # (ngroups,) int
     res_er,                # (nres,) float
-    res_gg,                # (nres,) float
-    gamma_n,               # (nres,) float  -- signed reduced-width amps, precomputed
-    gamma_f1,              # (nres,) float
-    gamma_f2,              # (nres,) float
+    res_hg,                # (nres,) float  -- Gamma_gamma / 2
+    a00, a01, a11,         # (nres,) float  -- reduced-width products
+    a02, a12, a22,         #   gamma_c * gamma_d (n = 0, f1 = 1, f2 = 2)
 ):
     ne = e.shape[0]
     ngroups = group_l.shape[0]
@@ -96,6 +182,7 @@ def _reconstruct_kernel(
     cap = np.zeros(ne)
     fis = np.zeros(ne)
     pot = np.zeros(ne)
+    nzero = np.zeros(ne)
 
     # --- Parallel per-energy loop. Each thread computes all groups
     # at one energy. Per-group R-matrix and U-matrix stay in
@@ -116,6 +203,7 @@ def _reconstruct_kernel(
         pot_sum = 0.0
 
         sqrt_E = math.sqrt(E_safe)
+        nzero_i = 0.0
 
         for g in range(ngroups):
             L = group_l[g]
@@ -149,34 +237,18 @@ def _reconstruct_kernel(
             # R is (nch × nch) complex, symmetric. We only carry the
             # 6 upper-triangle entries R_00, R_01, R_02, R_11, R_12, R_22
             # as scalar accumulators; unused entries for nch<3 stay 0.
-            R00 = 0.0 + 0.0j
-            R01 = 0.0 + 0.0j
-            R02 = 0.0 + 0.0j
-            R11 = 0.0 + 0.0j
-            R12 = 0.0 + 0.0j
-            R22 = 0.0 + 0.0j
-
-            r_start = group_res_start[g]
-            r_end = group_res_end[g]
-            for r in range(r_start, r_end):
-                # No shift correction: ENDF-6 R-M denominator is
-                # ``E_r - E - i Γ_γ / 2`` (matches NJOY reconr csrmat
-                # line 3350: `diff = er - e`). Reduced-width amplitudes
-                # are already computed from Γ_n(|E_r|) in the wrapper.
-                gn_r = gamma_n[r]
-                denom = complex(res_er[r] - E_safe, -0.5 * res_gg[r])
-                inv_d = 1.0 / denom
-
-                R00 = R00 + (gn_r * gn_r) * inv_d
-                if nfis >= 1:
-                    gf1_r = gamma_f1[r]
-                    R01 = R01 + (gn_r * gf1_r) * inv_d
-                    R11 = R11 + (gf1_r * gf1_r) * inv_d
-                if nfis >= 2:
-                    gf2_r = gamma_f2[r]
-                    R02 = R02 + (gn_r * gf2_r) * inv_d
-                    R12 = R12 + (gamma_f1[r] * gf2_r) * inv_d
-                    R22 = R22 + (gf2_r * gf2_r) * inv_d
+            # No shift correction: ENDF-6 R-M denominator is
+            # ``E_r - E - i Γ_γ / 2`` (matches NJOY reconr csrmat
+            # line 3350: `diff = er - e`). Reduced-width amplitudes
+            # are already computed from Γ_n(|E_r|) in the wrapper.
+            r0 = group_res_start[g]
+            r1 = group_res_end[g]
+            R00, R01, R11, R02, R12, R22, nz = accumulate_r_matrix(
+                E_safe, res_er[r0:r1], res_hg[r0:r1],
+                a00[r0:r1], a01[r0:r1], a11[r0:r1],
+                a02[r0:r1], a12[r0:r1], a22[r0:r1], nfis + 1,
+            )
+            nzero_i += nz
 
             # --- Solve (I - i R P) X = R for row 0 of X. ---
             # P = diag(p_e, 1, 1) with fission channels having P=1.
@@ -255,8 +327,9 @@ def _reconstruct_kernel(
         cap[i] = cap_sum
         fis[i] = fis_sum
         pot[i] = 4.0 * pi_k2 * pot_sum
+        nzero[i] = nzero_i
 
-    return sct, cap, fis, pot
+    return sct, cap, fis, pot, nzero
 
 
 def reconstruct(data, energies_in):
@@ -371,13 +444,23 @@ def reconstruct(data, energies_in):
                 math.sqrt(abs(gf2_s[r]) / 2.0), gf2_s[r],
             )
 
-    sct, cap, fis, pot = _reconstruct_kernel(
+    sct, cap, fis, pot, nzero = _reconstruct_kernel(
         e, group_r_a_arr, group_r_ap_arr,
         float(data.abn), float(data.ki),
         group_l, group_g, group_nfis,
         group_res_start, group_res_end,
-        er_s, gg_s, gamma_n, gamma_f1, gamma_f2,
+        er_s, 0.5 * gg_s,
+        gamma_n * gamma_n, gamma_n * gamma_f1, gamma_f1 * gamma_f1,
+        gamma_n * gamma_f2, gamma_f1 * gamma_f2, gamma_f2 * gamma_f2,
     )
+    # A zero R-matrix denominator (E == E_r with a zero eliminated
+    # width) makes R infinite; return NaN there, as the numpy / jax
+    # backends do, instead of fastmath's arbitrary value.
+    bad = nzero > 0.0
+    if bad.any():
+        sct[bad] = np.nan
+        cap[bad] = np.nan
+        fis[bad] = np.nan
     tot = sct + cap + fis
     return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot, 'tot': tot}
 
