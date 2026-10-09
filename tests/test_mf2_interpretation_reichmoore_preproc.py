@@ -727,3 +727,42 @@ def test_jax_grad_from_dict_stored_GN_matches_finite_diff_pu239_rm():
     lm = float(loss(jnp.array(original - eps)))
     fd = (lp - lm) / (2.0 * eps)
     np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-20)
+
+
+@pytest.mark.skipif(not _pu239_available(), reason='Pu-239 corpus not present')
+def test_jax_preproc_gathers_resonance_fields_in_bulk_pu239_rm():
+    """With a JAX tracer at one ``ER`` leaf, the preproc's traced
+    program has a size independent of the resonance count: ER / GN /
+    GG are concatenated and gathered once per field, not indexed one
+    resonance at a time (393 resonances here; the per-resonance form
+    traced several thousand equations and cost ~0.7 s per U-235
+    build on jax)."""
+    try:
+        import jax
+    except ImportError:
+        pytest.skip('jax not installed')
+    import copy
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(PU239_CORPUS)
+    xp_jx = array_ns.get_backend('jax')
+    nres = int(pre.rm_data_from_endf_dict(d).res_er.shape[0])
+
+    def build(theta):
+        d_t = copy.deepcopy(d)
+        l_t = (
+            d_t[2][151]['isotope'][1]['range'][1].get('l_group')
+            or d_t[2][151]['isotope'][1]['range'][1]['spingroup']
+        )
+        row = list(l_t[1]['ER'].keys())[3]
+        l_t[1]['ER'][row] = theta
+        data = pre.rm_data_from_endf_dict(d_t, xp=xp_jx)
+        return data.res_er, data.res_gn, data.res_gg
+
+    eqns = jax.make_jaxpr(build)(1.0).jaxpr.eqns
+    prims = [e.primitive.name for e in eqns]
+    assert nres > 300
+    # Per-resonance scalar indexing traces as one squeeze each (1179
+    # here before the bulk gather); the tracer-carrying list -> array
+    # conversion in dict2array legitimately stays O(nres_in_group).
+    assert prims.count('squeeze') == 0, prims.count('squeeze')
+    assert len(eqns) < 3 * nres, len(eqns)

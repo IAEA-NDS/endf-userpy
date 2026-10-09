@@ -162,7 +162,13 @@ def rm_data_from_endf_dict(
     # (unambiguous J=0 case), +1 for AJ > 0, -1 for AJ < 0. AJ = 0
     # never coexists with another sign at the same (L, |J|) in
     # real files.
-    per_JPi: dict[tuple[int, int, int], list[tuple[float, float, float, float, float]]] = {}
+    # Each entry is (flat resonance index, GFA, GFB); ER / GN / GG
+    # are gathered by index once at the end (one gather per field
+    # instead of one scalar index per resonance, which dominated the
+    # JAX preproc cost: ~2.4 s for U-235's 3194 resonances).
+    per_JPi: dict[tuple[int, int, int], list[tuple[int, float, float]]] = {}
+    er_parts, gn_parts, gg_parts = [], [], []
+    n_flat = 0
 
     awri_ref: float | None = None    # first L-group's AWRI, used for ki
     apl_by_L: dict[int, float] = {}   # L -> APL if provided per L, 0 else
@@ -185,6 +191,9 @@ def rm_data_from_endf_dict(
         er_arr = dict2array(d_l['ER'], dtype=float, xp=xp)
         gn_arr = dict2array(d_l['GN'], dtype=float, xp=xp)
         gg_arr = dict2array(d_l['GG'], dtype=float, xp=xp)
+        er_parts.append(er_arr)
+        gn_parts.append(gn_arr)
+        gg_parts.append(gg_arr)
         # GFA / GFB stay concrete: they feed the has_gfa / has_gfb
         # Python-side test that fixes group_nfis (a static int per
         # group), and they are not typical fitting targets.
@@ -202,12 +211,11 @@ def rm_data_from_endf_dict(
                 spin_mark = 0
             key = (L, j2, spin_mark)
             per_JPi.setdefault(key, []).append((
-                er_arr[i],
-                gn_arr[i],
-                gg_arr[i],
+                n_flat + i,
                 float(gfa_arr[i]),
                 float(gfb_arr[i]),
             ))
+        n_flat += len(aj_arr)
 
     # Phantom groups for missing channel spins: for each L in the
     # file, walk every physically-allowed |J| coupling and count
@@ -255,9 +263,7 @@ def rm_data_from_endf_dict(
     group_nfis = np.zeros(ngroups, dtype=np.int32)
 
     res_group_list: list[int] = []
-    res_er_list: list[float] = []
-    res_gn_list: list[float] = []
-    res_gg_list: list[float] = []
+    res_idx_list: list[int] = []
     res_gf1_list: list[float] = []
     res_gf2_list: list[float] = []
 
@@ -272,8 +278,8 @@ def rm_data_from_endf_dict(
         # this group; 1 if any GFA is non-zero; 2 if any GFB is
         # non-zero (the second fission channel is only present when
         # the file lists a non-zero GFB somewhere in the group).
-        has_gfa = any(abs(r[3]) > 0 for r in per_JPi[key])
-        has_gfb = any(abs(r[4]) > 0 for r in per_JPi[key])
+        has_gfa = any(abs(r[1]) > 0 for r in per_JPi[key])
+        has_gfb = any(abs(r[2]) > 0 for r in per_JPi[key])
         if has_gfb:
             group_nfis[g] = 2
         elif has_gfa:
@@ -281,11 +287,9 @@ def rm_data_from_endf_dict(
         else:
             group_nfis[g] = 0
 
-        for er, gn, gg, gfa, gfb in per_JPi[key]:
+        for idx, gfa, gfb in per_JPi[key]:
             res_group_list.append(g)
-            res_er_list.append(er)
-            res_gn_list.append(gn)
-            res_gg_list.append(gg)
+            res_idx_list.append(idx)
             res_gf1_list.append(gfa)
             res_gf2_list.append(gfb)
 
@@ -352,8 +356,17 @@ def rm_data_from_endf_dict(
     r_a = _radius_tab1_from_ap(a, emax, xp=xp)
 
     # Integer-typed group / channel bookkeeping stays on numpy.
-    # Per-resonance ER / GN / GG lists may contain JAX tracer
-    # scalars; route through xp so they survive into the dataclass.
+    # ER / GN / GG may carry JAX tracers; one gather per field keeps
+    # them (and their gradients) flowing into the dataclass.
+    res_idx = np.asarray(res_idx_list, dtype=np.int64)
+
+    def _gather(parts):
+        if not parts or res_idx.size == 0:
+            return xp.zeros((0,), dtype=xp.float64)
+        flat = xp.concatenate(
+            [xp.asarray(p, dtype=xp.float64).reshape(-1) for p in parts])
+        return flat[xp.asarray(res_idx)]
+
     # GFA / GFB kept on numpy (see the per-resonance loop above).
     return RMData(
         abn=abn,
@@ -365,9 +378,9 @@ def rm_data_from_endf_dict(
         group_g=group_g,
         group_nfis=group_nfis,
         res_group=np.asarray(res_group_list, dtype=np.int32),
-        res_er=xp.asarray(res_er_list, dtype=xp.float64),
-        res_gn=xp.asarray(res_gn_list, dtype=xp.float64),
-        res_gg=xp.asarray(res_gg_list, dtype=xp.float64),
+        res_er=_gather(er_parts),
+        res_gn=_gather(gn_parts),
+        res_gg=_gather(gg_parts),
         res_gf1=np.asarray(res_gf1_list, dtype=np.float64),
         res_gf2=np.asarray(res_gf2_list, dtype=np.float64),
         group_r_a=group_r_a_arr,

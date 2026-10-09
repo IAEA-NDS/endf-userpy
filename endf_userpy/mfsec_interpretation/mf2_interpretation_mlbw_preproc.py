@@ -295,11 +295,10 @@ def mlbw_data_from_endf_dict(
     ch_g_list: list[float] = []
     res_channel_list: list[int] = []
     res_l_list: list[int] = []
-    res_er_list: list[float] = []
-    res_gn_list: list[float] = []
-    res_gg_list: list[float] = []
-    res_gf_list: list[float] = []
-    res_gx_list: list[float] = []
+    # Per-L blocks of the float per-resonance fields, concatenated once
+    # at the end. Appending scalars one resonance at a time cost one
+    # JAX gather each (~0.3 s for Np-237's 761 resonances on jax).
+    res_parts: dict[str, list] = {k: [] for k in ('er', 'gn', 'gg', 'gf', 'gx')}
 
     # For QX: the JAX reference averages across L when consistent, else
     # takes the mean of the near-median subset. In practice one QX per
@@ -379,11 +378,6 @@ def mlbw_data_from_endf_dict(
             local_ch = j2_to_local_ch[int(abs(j2_ordered[r]))]
             res_channel_list.append(ch_base + local_ch)
             res_l_list.append(L)
-            res_er_list.append(er_arr[r])
-            res_gn_list.append(gn_arr[r])
-            res_gg_list.append(gg_arr[r])
-            res_gf_list.append(gf_arr[r])
-            res_gx_list.append(gx_arr[r])
 
         # Missing-J-multiplicity check: for a given L, the sum of g_J
         # over ALL (s_c, J) couplings (with multiplicity) equals
@@ -417,11 +411,11 @@ def mlbw_data_from_endf_dict(
         dummy_ch = len(ch_l_list) - 1
         res_channel_list.append(dummy_ch)
         res_l_list.append(L)
-        res_er_list.append(1.0e-12)
-        res_gn_list.append(0.0)
-        res_gg_list.append(0.0)
-        res_gf_list.append(0.0)
-        res_gx_list.append(0.0)
+        dummy = {'er': 1.0e-12, 'gn': 0.0, 'gg': 0.0, 'gf': 0.0, 'gx': 0.0}
+        for k, arr in (('er', er_arr), ('gn', gn_arr), ('gg', gg_arr),
+                       ('gf', gf_arr), ('gx', gx_arr)):
+            res_parts[k].append(xp.asarray(arr, dtype=xp.float64).reshape(-1))
+            res_parts[k].append(xp.asarray([dummy[k]], dtype=xp.float64))
 
     # Consolidate QX to a single scalar (all matching in practice; take
     # the first one).
@@ -441,6 +435,11 @@ def mlbw_data_from_endf_dict(
     a = _channel_radius(ap, awri_ref, naps)
     r_a = _radius_tab1_from_ap(a, emax, xp=xp)
 
+    def _cat(k):
+        if not res_parts[k]:
+            return xp.zeros((0,), dtype=xp.float64)
+        return xp.concatenate(res_parts[k])
+
     # Integer-typed channel bookkeeping stays on numpy (it steers
     # scatter/gather, not differentiable). Float-typed per-resonance
     # arrays route through xp so any tracer scalars appended above
@@ -456,9 +455,9 @@ def mlbw_data_from_endf_dict(
         ch_g=xp.asarray(ch_g_list, dtype=xp.float64),
         res_channel=np.asarray(res_channel_list, dtype=np.int32),
         res_l=np.asarray(res_l_list, dtype=np.int32),
-        res_er=xp.asarray(res_er_list, dtype=xp.float64),
-        res_gn=xp.asarray(res_gn_list, dtype=xp.float64),
-        res_gg=xp.asarray(res_gg_list, dtype=xp.float64),
-        res_gf=xp.asarray(res_gf_list, dtype=xp.float64),
-        res_gx=xp.asarray(res_gx_list, dtype=xp.float64),
+        res_er=_cat('er'),
+        res_gn=_cat('gn'),
+        res_gg=_cat('gg'),
+        res_gf=_cat('gf'),
+        res_gx=_cat('gx'),
     )
