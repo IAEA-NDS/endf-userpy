@@ -714,3 +714,66 @@ def test_jax_composition_small_skip_keeps_full_mesh(nd143_dict, monkeypatch):
     monkeypatch.setattr(res_comp, '_JAX_SLICE_MIN_SKIPPED', n_skip)
     res_comp.reconstruct_resonance_xs(nd143_dict, 1, ND143_E, xp=xp)
     assert seen == [ND143_E.size, ND143_E.size - n_skip], seen
+
+
+# ============================================================
+# Per-call range reconstruction cache (_QueryState.range_recon_cache)
+# ============================================================
+
+
+def _count_range_reconstructions(monkeypatch):
+    counts = {'lru1': 0, 'urr': 0}
+    for kind, name in (('lru1', '_reconstruct_lru1_range'),
+                       ('urr', '_reconstruct_urr_range')):
+        orig = getattr(res_comp, name)
+
+        def wrapped(*a, _orig=orig, _kind=kind, **k):
+            counts[_kind] += 1
+            return _orig(*a, **k)
+        monkeypatch.setattr(res_comp, name, wrapped)
+    return counts
+
+
+@pytest.mark.parametrize('backend', ['numpy', 'jax'])
+def test_each_range_reconstructed_once_per_call(nd143_dict, monkeypatch, backend):
+    """A top-level (n,total) query composes several MTs that read
+    different partials of the same MF2 ranges; each range is now
+    reconstructed once per call (was once per MT: 3x here), with the
+    same result."""
+    if backend not in array_ns.available_backends():
+        pytest.skip(f'{backend} not installed')
+    e = np.geomspace(1e-3, 2e7, 400)
+    opts = RunOptions(backend=backend)
+    ref = np.asarray(user_api.get_reaction_xs(nd143_dict, '(n,total)', e,
+                                              options=opts))
+    counts = _count_range_reconstructions(monkeypatch)
+    got = np.asarray(user_api.get_reaction_xs(nd143_dict, '(n,total)', e,
+                                              options=opts))
+    assert counts == {'lru1': 1, 'urr': 1}, counts
+    np.testing.assert_array_equal(got, ref)
+
+
+def test_range_cache_does_not_outlive_the_call(nd143_dict, monkeypatch):
+    """The cache lives on the per-call query state: a second top-level
+    call, even with the very same mesh object, reconstructs again; a
+    different mesh never hits an entry of another mesh."""
+    e = np.geomspace(1e-3, 2e7, 300)
+    counts = _count_range_reconstructions(monkeypatch)
+    a = np.asarray(user_api.get_reaction_xs(nd143_dict, '(n,total)', e))
+    b = np.asarray(user_api.get_reaction_xs(nd143_dict, '(n,total)', e))
+    assert counts == {'lru1': 2, 'urr': 2}, counts
+    np.testing.assert_array_equal(a, b)
+    e2 = e * 1.01
+    c = np.asarray(user_api.get_reaction_xs(nd143_dict, '(n,total)', e2))
+    assert counts == {'lru1': 3, 'urr': 3}, counts
+    assert not np.array_equal(c, a)
+
+
+def test_cached_urr_failure_still_reports_reason(nd143_dict, monkeypatch):
+    """A URR range the kernel refuses is cached with its reason; the
+    summary warning still names it (once per call)."""
+    monkeypatch.setattr(res_comp, '_reconstruct_urr_range',
+                        lambda *a, **k: (None, 'synthetic refusal'))
+    e = np.geomspace(6e3, 2e5, 50)
+    with pytest.warns(UserWarning, match='synthetic refusal'):
+        user_api.get_reaction_xs(nd143_dict, '(n,total)', e)

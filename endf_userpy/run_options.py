@@ -217,10 +217,10 @@ class _QueryState:
     keeps the leaf usable when called from outside a top-level
     query (unit tests, ad-hoc scripts).
 
-    Fields today only hold summary-warning accumulators (above-range
-    NaN fill, resonance-range raw-MF3 fallback, #311 silent-zero /
-    silent-raw-MF3 visibility). Future per-call state belongs here
-    too: see #306 for the planned ``reconstruction_cache`` field.
+    Fields hold summary-warning accumulators (above-range NaN fill,
+    resonance-range raw-MF3 fallback, #311 silent-zero /
+    silent-raw-MF3 visibility) and the per-call MF2 range
+    reconstruction cache (``range_recon_cache``).
 
     Private implementation detail; not part of the public API.
     """
@@ -249,6 +249,18 @@ class _QueryState:
     point. Threaded here so the composition layer can scope mode 2
     reporting to user-requested MTs only, not the widened
     iteration set in differential queries."""
+    range_recon_cache: dict = field(default_factory=dict)
+    """Per-call cache of MF2 range reconstructions (one dict of
+    partial cross sections per resonance range). A top-level query
+    composes several MTs (``(n,total)``: MT=1 / 2 / 18 / 102 ...)
+    that each read a different key of the SAME range reconstruction;
+    without the cache every range was reconstructed once per MT (2-3x
+    per call). Filled and read by
+    :func:`~endf_userpy.quantities_mt_zap.resonance_composition.reconstruct_resonance_xs`;
+    entries hold a reference to the query-energy array they were
+    computed for and are reused only for that same object. Lifetime:
+    one top-level call (under ``jax.jit`` of the whole pipeline: one
+    trace)."""
 
 
 def _emit_summary_warnings(query_state, options):
