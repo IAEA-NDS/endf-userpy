@@ -555,17 +555,6 @@ def test_reconstruct_close_to_njoy_unresr_u235():
 # ============================================================
 
 
-def _has_ross_tables():
-    return urr._ROSS_QP is not None
-
-
-ROSS_UNAVAILABLE_REASON = (
-    'Ross-10 tables not built (mpmath not installed; '
-    'quadrature=\'ross_10\' is optional)'
-)
-
-
-@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
 def test_ross_tables_shape_and_normalisation():
     """The Ross-10 tables are shape (4, 10) with a mean-normalised
     chi-squared pdf on each row (`Sum(A_j) = 1`) and the mean of
@@ -597,7 +586,6 @@ def test_ross_tables_shape_and_normalisation():
         )
 
 
-@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
 def test_ross_tables_reproduce_njoy_hardcoded():
     """Pinning test: our independently derived (mpmath Golub-Welsch
     on Hwang's construction) Ross-10 tables reproduce the hard-coded
@@ -663,7 +651,6 @@ def test_ross_tables_reproduce_njoy_hardcoded():
         )
 
 
-@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
 def test_ross_10_reconstruct_matches_default_on_deterministic_channels():
     """When every channel has DOF nu = 0 (deterministic widths, no
     fluctuation), Ross-10 and the default Gauss-Legendre-32
@@ -693,7 +680,6 @@ def test_ross_10_reconstruct_matches_default_on_deterministic_channels():
         )
 
 
-@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
 def test_ross_10_reproduces_njoy_unresr_on_u235():
     """The whole point of Ross-10: on the same TENDL-2021 U-235
     URR range, Ross-10 reproduces NJOY unresr's MT152 values to
@@ -768,7 +754,6 @@ def test_ross_10_reproduces_njoy_unresr_on_u235():
     )
 
 
-@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
 def test_reconstruct_rejects_unknown_quadrature():
     """Typos or unsupported quadrature names must fail fast with a
     clear ValueError, not silently pick the default."""
@@ -780,7 +765,6 @@ def test_reconstruct_rejects_unknown_quadrature():
         urr.reconstruct(data, np.array([5e3]), xp, quadrature='ross_20')
 
 
-@pytest.mark.skipif(not _has_ross_tables(), reason=ROSS_UNAVAILABLE_REASON)
 def test_ross_10_rejects_dof_above_four():
     """Hwang / NJOY only tabulate the Ross-10 quadrature for
     nu = 1..4. A group carrying nu = 5 (not seen in real ENDF-6
@@ -966,3 +950,45 @@ def test_jax_grad_from_dict_stored_GG_matches_finite_diff_pu239_urr():
     lm = float(loss(jnp.array(original - eps)))
     fd = (lp - lm) / (2.0 * eps)
     np.testing.assert_allclose(grad, fd, rtol=1e-3, atol=1e-20)
+
+
+def test_ross_table_literals_match_derivation():
+    """The embedded ``_ROSS_QP`` / ``_ROSS_QW`` literals (which let
+    ``quadrature='ross_10'`` run without mpmath) are the output of the
+    documented derivation ``_generate_ross_tables``."""
+    pytest.importorskip('mpmath')
+    qp, qw = urr._generate_ross_tables()
+    np.testing.assert_allclose(urr._ROSS_QP, qp, rtol=1e-13, atol=0.0)
+    np.testing.assert_allclose(urr._ROSS_QW, qw, rtol=1e-13, atol=1e-300)
+
+
+def test_ross_10_runs_without_mpmath():
+    """Ross-10 reconstruction needs no mpmath at runtime: the tables are
+    module constants. Checked in a fresh interpreter with mpmath
+    blocked before endf_userpy is imported. (Previously the tables
+    were derived at import; without mpmath they were None and the
+    composition layer dropped the URR range with a warning, leaving
+    the MF3-only cross section, i.e. 0 for LSSF=0.)"""
+    import subprocess
+    import sys
+    from _corpus import resolve_nb93
+    path = resolve_nb93()
+    if path is None:
+        pytest.skip('Nb-93 corpus not available')
+    code = (
+        "import sys; sys.modules['mpmath'] = None\n"
+        "import numpy as np\n"
+        "from endf_parserpy import EndfParserCpp\n"
+        "from endf_userpy.primitives import array_ns\n"
+        "from endf_userpy.mfsec_interpretation import mf2_interpretation_urr as urr\n"
+        "from endf_userpy.mfsec_interpretation import mf2_interpretation_urr_preproc as pre\n"
+        f"d = EndfParserCpp(ignore_missing_tpid=True).parsefile({str(path)!r})\n"
+        "data = pre.urr_data_from_endf_dict(d)\n"
+        "r = urr.reconstruct(data, np.array([2e4, 1e5]), "
+        "array_ns.get_backend('numpy'), quadrature='ross_10')\n"
+        "assert np.all(r['cap'] > 0), r['cap']\n"
+        "print('ok')\n"
+    )
+    proc = subprocess.run([sys.executable, '-c', code],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0 and 'ok' in proc.stdout, proc.stderr

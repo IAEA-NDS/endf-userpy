@@ -39,14 +39,6 @@ def _jax_available():
     return 'jax' in array_ns.available_backends()
 
 
-def _mpmath_available():
-    try:
-        import mpmath  # noqa: F401
-        return True
-    except Exception:
-        return False
-
-
 pytestmark = pytest.mark.skipif(
     not _jax_available(), reason='jax not installed',
 )
@@ -90,7 +82,6 @@ def test_urr_numpy_jax_parity_gauss_legendre(nb93_dict):
         )
 
 
-@pytest.mark.skipif(not _mpmath_available(), reason='mpmath not installed')
 def test_urr_numpy_jax_parity_ross_10(nb93_dict):
     xp_np = array_ns.get_backend('numpy')
     xp_jx = array_ns.get_backend('jax')
@@ -207,7 +198,6 @@ def test_urr_jit_composability_GN0(nb93_dict):
         )
 
 
-@pytest.mark.skipif(not _mpmath_available(), reason='mpmath not installed')
 def test_urr_grad_wrt_GG_matches_fd_ross_10(nb93_dict):
     """``jax.grad`` wrt GG also reaches through the alternative
     Ross-10 quadrature path. Regression for the in-place r[:, g] =

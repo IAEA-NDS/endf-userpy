@@ -240,9 +240,13 @@ def _half_range_hermite_10(n=_ROSS_NQP):
 
 def _generate_ross_tables():
     """Build the (_ROSS_NU_MAX, _ROSS_NQP) qp / qw tables per
-    Hwang's Eqs. A.33-A.36. Called once at module import;
-    mpmath / scipy are only imported here so users without them
-    can still use the default Gauss-Legendre-32 quadrature."""
+    Hwang's Eqs. A.33-A.36. Not called at import: the module embeds
+    the result as :data:`_ROSS_QP` / :data:`_ROSS_QW` literals, so
+    ``quadrature='ross_10'`` needs neither mpmath nor scipy at
+    runtime. Kept as the documented derivation of those literals;
+    ``tests/test_mf2_urr_autodiff.py`` regenerates and compares them
+    (skipped without mpmath). Returns ``(None, None)`` when mpmath /
+    scipy are unavailable."""
     try:
         from scipy.special import gamma as _gamma
     except ImportError:   # pragma: no cover
@@ -272,7 +276,23 @@ def _generate_ross_tables():
     return qp, qw
 
 
-_ROSS_QP, _ROSS_QW = _generate_ross_tables()
+# Output of :func:`_generate_ross_tables` (mpmath, 60 digits, then
+# double precision), embedded so the Ross-10 quadrature has no
+# runtime dependency on mpmath. Rows: DOF nu = 1..4; columns: the 10
+# nodes / weights in ascending node order. Exact float64 repr.
+_ROSS_QP = np.array([
+    [0.003001346533865618, 0.07859288563978013, 0.4328241488669062, 1.3345266802655325, 3.0481845614643333, 5.826319847561191, 9.945265600384689, 15.782127721675602, 23.99682427708147, 36.21620820615044],
+    [0.013219203192174487, 0.07234962399726191, 0.19089472738069654, 0.39528842369062533, 0.7408344256107343, 1.3498292809160601, 2.529798344872997, 5.238489369094649, 13.821771900816584, 75.64752470042829],
+    [0.0010004488446218728, 0.02619762854659338, 0.14427471628896874, 0.4448422267551775, 1.0160615204881112, 1.9421066158537303, 3.3150885334615627, 5.260709240558534, 7.998941425693823, 12.072069402050147],
+    [0.013219203192174487, 0.07234962399726191, 0.19089472738069654, 0.39528842369062533, 0.7408344256107343, 1.3498292809160601, 2.529798344872997, 5.238489369094649, 13.821771900816584, 75.64752470042829],
+], dtype=np.float64)
+
+_ROSS_QW = np.array([
+    [0.11120413371404571, 0.23546798299032207, 0.2844098742260128, 0.22419127012751952, 0.10967667531710093, 0.030493788508830215, 0.0042930873721310076, 0.0002582704682870748, 4.903196544428469e-06, 1.407920604021137e-08],
+    [0.03377341789469634, 0.07993217112497254, 0.12835936718713015, 0.17652616414858688, 0.2134704279914145, 0.21154964708647242, 0.1336518615409387, 0.022630659034650762, 1.6313638277171626e-05, 2.745382982905593e-31],
+    [0.0003337621412741798, 0.018506108258988078, 0.12309946174121784, 0.29918923146779186, 0.33431474845432335, 0.17766656521633087, 0.04269589416150041, 0.004076057517243583, 0.00011766114587264306, 5.098954573295858e-07],
+    [0.0017623787850492877, 0.021517748975367137, 0.08097984945431604, 0.1879799762106425, 0.3015633536037547, 0.2961609080838997, 0.10775649237087556, 0.0025171913639362793, 8.963038764264667e-10, 1.1645418585488186e-61],
+], dtype=np.float64)
 
 
 @dataclass
@@ -613,13 +633,6 @@ def reconstruct(data: URRData, energies_in, xp,
         raise ValueError(
             f"quadrature must be 'gauss_legendre_32' or 'ross_10'; "
             f'got {quadrature!r}'
-        )
-    if quadrature == 'ross_10' and _ROSS_QP is None:
-        raise ImportError(
-            "quadrature='ross_10' requires mpmath (for the half-range "
-            'Gauss-Hermite moment recurrence used to derive the odd-ν '
-            'tables). Install mpmath, or use the default '
-            "quadrature='gauss_legendre_32'."
         )
 
     # ---- INT-code guard. LRF=2 URR files in real evaluations use
