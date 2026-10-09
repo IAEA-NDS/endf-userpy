@@ -123,6 +123,29 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0, side='right') -> Any:
             return y_flat.reshape(())[()]
         return y_flat.reshape(orig_shape)
 
+    # JAX with a concrete query mesh and concrete table abscissae:
+    # panel lookup on numpy, value arithmetic in one jitted kernel
+    # (see :mod:`tab1_jax`). Ordinates may be traced (gathered on jax).
+    if getattr(xp, 'name', None) == 'jax':
+        host = _host_arrays(x, tab1)
+        if host is not None:
+            from . import tab1_jax
+            x_np, tab_x_np, tab_y_np = host
+            i, law = tab1_jax.host_lookup(
+                tab_x_np, np.asarray(tab1.nbt), np.asarray(tab1.intp),
+                x_np, side,
+            )
+            if tab_y_np is not None:
+                y1, y2 = tab_y_np[i - 1], tab_y_np[i]
+            else:
+                tab_y = xp.asarray(tab1.y, dtype=xp.float64)
+                y1, y2 = tab_y[i - 1], tab_y[i]
+            return tab1_jax.interp_from_lookup(
+                law, x, tab_x_np[i - 1], tab_x_np[i], y1, y2,
+                xp.asarray(outside_value, dtype=xp.float64),
+                laws=_static_laws(tab1.intp), side=side,
+            )
+
     tab_x = xp.asarray(tab1.x, dtype=xp.float64)
     tab_y = xp.asarray(tab1.y, dtype=xp.float64)
     tab_nbt = xp.asarray(tab1.nbt, dtype=xp.int32)
@@ -206,6 +229,25 @@ def from_endf_dict(
 _ALL_LAWS = (1, 2, 3, 4, 5)
 
 
+def _host_arrays(x, tab1):
+    """``(x, tab1.x, tab1.y)`` as float64 numpy arrays when the query
+    and the table abscissae are concrete (``tab1.y`` slot ``None`` if
+    the ordinates are traced); ``None`` if either of the former is a
+    tracer. Non-1-D queries keep the generic path."""
+    if getattr(x, 'ndim', None) != 1:
+        return None
+    try:
+        x_np = np.asarray(x, dtype=np.float64)
+        tab_x = np.asarray(tab1.x, dtype=np.float64)
+    except Exception:          # tracer
+        return None
+    try:
+        tab_y = np.asarray(tab1.y, dtype=np.float64)
+    except Exception:
+        tab_y = None
+    return x_np, tab_x, tab_y
+
+
 def _static_laws(intp):
     """The ENDF interpolation laws a TAB1 can select, as a sorted tuple,
     when its INT codes are concrete; all five otherwise (traced codes
@@ -271,7 +313,8 @@ def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0,
         y1_safe = xp.where(y1 <= 0.0, EPS, y1)
         y2_safe = xp.where(y2 <= 0.0, EPS, y2)
     conds = [law == 0, law == 1, law == 6]
-    vals = [xp.full_like(x, float(outside_value)), y1, y2]
+    outside = xp.full_like(x, outside_value)     # may be a traced scalar
+    vals = [outside, y1, y2]
     # Law code 6 is a private-to-this-module marker used by
     # `interp(side='right')` to pick the right-limit (y2) at a
     # doubled-x discontinuity instead of the default constant-y1
@@ -310,4 +353,4 @@ def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0,
         vals.append(y1_safe * xp.exp(
             log_x_over_x1 * log_y2_over_y1 / log_x2_over_x1_safe,
         ))
-    return xp.select(conds, vals, default=float(outside_value))
+    return xp.select(conds, vals, default=outside)
