@@ -53,6 +53,7 @@ to reach for.
 | `endfb81_n_U-233.endf`  | ENDF-B-VIII.1 | `n_092-U-233_9222.zip`  | Biggest LRF=3 RRR in the surveyed corpus (6122 resonances). Performance stress and correctness cross-check for the numba/JAX kernels under ~2x the resonance load of U-235/U-238. |
 | `cendl32_n_Pu-239.endf` | CENDL-3.2     | `n_094-Pu-239_9437.zip` | MT=1 pathology unique to CENDL in the sweep: MT=1 max/median rel err both saturate to 1.0 while MT=2/18/102 stay clean. Flag file for a follow-up sum-rule / MF3-declaration investigation; kept in the corpus so any future fix can be pinned against it. |
 | `endfb81_n_Nd-143.endf` | ENDF-B-VIII.1 | `n_060-Nd-143_6028.zip` | LRF=2 MLBW range with an LSSF=0 URR at higher energy (10% max on MT=1 in the sweep). Exercises the MLBW ↔ URR handoff in `resonance_composition`, which none of the other LSSF=0 URR files in the corpus does (the others all pair URR with LRF=3 R-M). |
+| `endfb81_n_U-235.endf`  | ENDF-B-VIII.1 | `n_092-U-235_9228.zip`  | Large LRF=3 Reich-Moore actinide RRR (3194 resonances, 2 J·π groups, both with two fission channels) + LSSF=1 URR. Standard reproducer of the JAX performance work and the U-235 structural / thermal-XS pins of the R-M preproc tests. ~40 MB. |
 
 ## Provenance
 

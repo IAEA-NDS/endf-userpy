@@ -47,6 +47,15 @@ def resolve_u235() -> str | None:
     )
 
 
+def resolve_u235_endfb81() -> str | None:
+    """Resolve the ENDF/B-VIII.1 U-235 file (Reich-Moore actinide RRR,
+    3194 resonances in 2 J-pi groups with two fission channels each)."""
+    return _first_existing(
+        os.environ.get('U235_ENDFB81_ENDF'),
+        os.path.join(_CORPUS_DIR, 'endfb81_n_U-235.endf'),
+    )
+
+
 def resolve_nd143() -> str | None:
     """Resolve the Nd-143 ENDF file (ENDF/B-VIII.1, used for the
     RRR (MLBW) + LSSF=0 URR + MF3-above-URR seam tests in

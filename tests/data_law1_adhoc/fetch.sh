@@ -91,6 +91,11 @@ files=(
   # populated). Exercises the URR reconstruction path without the
   # RRR crowding an actinide file forces.
   "endfb81_n_Rh-103.endf  ENDF-B-VIII.1  n_045-Rh-103_4525  898d98b8945ac1c9debc9a39ceae93c47f1564f27c191e1501b86c42ba4e715b"
+  # ENDF/B-VIII.1 U-235: the standard Reich-Moore reproducer of the
+  # JAX perf work (3194 resonances in 2 J-pi groups, both with two
+  # fission channels) and the structural / thermal pins in
+  # test_mf2_interpretation_reichmoore_preproc.py.
+  "endfb81_n_U-235.endf  ENDF-B-VIII.1  n_092-U-235_9228  24a179f8bde973c9cedbaf95473cc5018cecc486fe7fb1ae18dad3a71384e564"
   # Au-197 (JEFF-4.0): LSSF=0 URR Case C on a non-fissile standard
   # reference nucleus. Complements the fissile-actinide URR
   # coverage the U-235/U-238 files provide.
