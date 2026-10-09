@@ -260,8 +260,6 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _query_state=None):
             # still needs a concrete count for the accumulator; on
             # tracers we skip that (no summary warning fires under
             # jit anyway).
-            einc_xp = xp.asarray(energies_in)
-            above_mask_xp = einc_xp > e_max
             # Concrete-path warning + raise policy live inside
             # ``_handle_above_range``. Only skip that call when
             # ``energies_in`` is a jax tracer (can't materialise).
@@ -284,7 +282,16 @@ def compute_xs(endf_dict, mt, energies_in, *, options=None, _query_state=None):
                     fill = float('nan')
                 else:
                     fill = 0.0
-            if options.above_range in ('warn_nan', 'nan'):
+            if einc_arr is not None and xp.name != 'jax':
+                # numpy / numba: reuse the host mask, and skip the
+                # full-mesh ``where`` when no energy is above the mesh.
+                above_mask_xp = (above_mask_np if above_mask_np.any()
+                                 else None)
+            else:
+                above_mask_xp = xp.asarray(energies_in) > e_max
+            if above_mask_xp is None:
+                pass
+            elif options.above_range in ('warn_nan', 'nan'):
                 result = xp.where(above_mask_xp, fill, result)
             elif options.above_range in ('warn_zero', 'zero'):
                 result = xp.where(above_mask_xp, 0.0, result)

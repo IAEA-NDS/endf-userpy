@@ -404,7 +404,10 @@ def _get_reaction_xs_impl(
                 endf_dict, mt, energies_in,
                 options=options, _query_state=_query_state,
             )
-            xs = xs + cur_xs
+            if xp.name == 'jax':
+                xs = xs + cur_xs
+            else:
+                xs += cur_xs     # xs is this function's own buffer
             admitted_count += 1
 
         # MT5 fallback component: adds a redistributed MT5
