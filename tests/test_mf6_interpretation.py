@@ -152,6 +152,7 @@ def test_dist2d_law1_python_interface(endf_file):
     if 6 not in endf_dict:
         return
     mt_ss = find_subsections_by_law(endf_dict, 1)
+    mismatches = []
     for mt, subsec_num in mt_ss:
         ref_res = parse_fortran_test_output(cont, mt, subsec_num)
         # calculate using python interface
@@ -178,8 +179,16 @@ def test_dist2d_law1_python_interface(endf_file):
             idx3 = idx3[0]
             cur_res = cont_arr[idx1, idx2, idx3]
             if not np.isclose(cur_res, f6con, rtol=1e-5, atol=1e-15):
-                print(f'mt: {mt} subsec: {subsec_num} ei: {ei}, ep: {ep}, u: {u}, f6con: {f6con} vs {cur_res}')
-                # return
+                mismatches.append(
+                    f'mt={mt} subsec={subsec_num} ei={ei} ep={ep} u={u}: '
+                    f'fortran {f6con} vs python {cur_res}'
+                )
+    # Used to only print mismatches, so the comparison could never fail.
+    assert not mismatches, (
+        f'{len(mismatches)} LAW=1 points differ from the Fortran '
+        f'reference beyond rtol=1e-5, atol=1e-15; first 10:\n'
+        + '\n'.join(mismatches[:10])
+    )
 
 
 def test_dist1d_law2_interface():
