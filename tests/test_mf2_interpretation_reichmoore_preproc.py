@@ -398,17 +398,20 @@ def test_per_L_apl_reconstruction_uses_per_L_phase():
 # ============================================================
 
 
-_U235 = (
-    '/home/gschnabel/bigdata/nuclibs/endfb8.1/'
-    'neutrons-version.VIII.1/n-092_U_235.endf'
+from _corpus import resolve_u235_endfb81  # noqa: E402
+
+_U235 = resolve_u235_endfb81()
+_U235_SKIP = (
+    'ENDF/B-VIII.1 U-235 not available (run '
+    'tests/data_law1_adhoc/fetch.sh or set U235_ENDFB81_ENDF)'
 )
 
 
 def _u235_available():
-    return os.path.exists(_U235)
+    return _U235 is not None
 
 
-@pytest.mark.skipif(not _u235_available(), reason='U-235 ENDF not available')
+@pytest.mark.skipif(not _u235_available(), reason=_U235_SKIP)
 def test_u235_structural_counts():
     """Preprocess U-235 and check top-level structure. Ground truth
     from earlier survey (survey scratchpad script):
@@ -425,7 +428,7 @@ def test_u235_structural_counts():
     assert (data.group_nfis == 2).all()
 
 
-@pytest.mark.skipif(not _u235_available(), reason='U-235 ENDF not available')
+@pytest.mark.skipif(not _u235_available(), reason=_U235_SKIP)
 def test_u235_thermal_capture_and_fission_match_ENDF():
     """End-to-end sanity: preprocessor + R-M reconstruction on
     U-235 must give the widely-tabulated thermal cross sections
