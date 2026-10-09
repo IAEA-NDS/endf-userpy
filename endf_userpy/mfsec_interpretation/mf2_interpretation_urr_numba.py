@@ -116,25 +116,39 @@ def _interp_dispatch_scalar(es_row, y_row, e, int_code):
 
 
 @njit(cache=True, inline='always')
-def _channel_factor_scalar(alpha, nu, t, order):
-    """Scalar version of :func:`mf2_interpretation_urr._channel_factor`.
+def _channel_factors_scalar(alpha, nu, t):
+    """Scalar version of :func:`mf2_interpretation_urr._channel_factor`,
+    all three orders ``(g0, g1, g2)`` (Gamma-power 0 / 1 / 2 inside the
+    expectation) for one channel at one quadrature node ``t``.
+    ``nu == 0`` (deterministic width) gives ``exp(-t * alpha)`` at all
+    orders.
 
-    ``alpha`` and ``nu`` are per-channel scalars at a fixed (E,
-    group); ``t`` is a scalar quadrature node. ``order`` selects
-    which Gamma-power is inside the expectation (0 / 1 / 2).
-
-    nu == 0 (deterministic width) returns ``exp(-t * alpha)`` at
-    all orders.
+    One power instead of three: with ``b = 1 + 2 t alpha / nu``,
+    ``g0 = b**(-nu/2)``, ``g1 = g0 / b`` and
+    ``g2 = (1 + 2/nu) g1 / b``. Integer ``nu`` in 1..4 (all AMUN /
+    AMUF degrees of freedom in practice) avoids ``pow`` altogether
+    via ``sqrt`` / reciprocals, and a zero width (``alpha == 0``,
+    e.g. the many URR ranges with zero fission / competitive widths)
+    short-circuits to the exact values ``1, 1, 1 + 2/nu``.
     """
     if nu <= _EPS:
-        return math.exp(-t * alpha)
-    base = 1.0 + 2.0 * t * alpha / nu
-    if order == 0:
-        return base ** (-nu / 2.0)
-    if order == 1:
-        return base ** (-nu / 2.0 - 1.0)
-    # order == 2
-    return (1.0 + 2.0 / nu) * base ** (-nu / 2.0 - 2.0)
+        v = math.exp(-t * alpha)
+        return v, v, v
+    if alpha == 0.0:
+        return 1.0, 1.0, 1.0 + 2.0 / nu
+    b = 1.0 + 2.0 * t * alpha / nu
+    if nu == 1.0:
+        g0 = 1.0 / math.sqrt(b)
+    elif nu == 2.0:
+        g0 = 1.0 / b
+    elif nu == 3.0:
+        g0 = 1.0 / (b * math.sqrt(b))
+    elif nu == 4.0:
+        g0 = 1.0 / (b * b)
+    else:
+        g0 = b ** (-nu / 2.0)
+    g1 = g0 / b
+    return g0, g1, (1.0 + 2.0 / nu) * g1 / b
 
 
 @njit(cache=True, parallel=True, fastmath=True)
@@ -239,16 +253,10 @@ def _reconstruct_kernel(
                 # integral has neutron as c1, so we always want
                 # g1_n or g2_n on the neutron side (same reason
                 # the numpy path drops g0_n).
-                g0_g = _channel_factor_scalar(alpha_g, nu_g, t, 0)
-                g0_f = _channel_factor_scalar(alpha_f, nu_f, t, 0)
-                g0_x = _channel_factor_scalar(alpha_x, nu_x, t, 0)
-
-                g1_n = _channel_factor_scalar(alpha_n, nu_n, t, 1)
-                g1_g = _channel_factor_scalar(alpha_g, nu_g, t, 1)
-                g1_f = _channel_factor_scalar(alpha_f, nu_f, t, 1)
-                g1_x = _channel_factor_scalar(alpha_x, nu_x, t, 1)
-
-                g2_n = _channel_factor_scalar(alpha_n, nu_n, t, 2)
+                g0_n, g1_n, g2_n = _channel_factors_scalar(alpha_n, nu_n, t)
+                g0_g, g1_g, _g2 = _channel_factors_scalar(alpha_g, nu_g, t)
+                g0_f, g1_f, _g2 = _channel_factors_scalar(alpha_f, nu_f, t)
+                g0_x, g1_x, _g2 = _channel_factors_scalar(alpha_x, nu_x, t)
 
                 R_ncap_val  += w * g1_n * g1_g * g0_f * g0_x
                 R_nfis_val  += w * g1_n * g0_g * g1_f * g0_x
