@@ -137,3 +137,28 @@ def test_mlbw_jax_blocked_grad_matches_forward_mode_and_fd():
     fd = (float(loss(args[0], args[1].at[i].add(h), *args[2:]))
           - float(loss(args[0], args[1].at[i].add(-h), *args[2:]))) / (2 * h)
     assert abs(float(grads[1][i]) - fd) <= 1e-3 * abs(fd), (grads[1][i], fd)
+
+
+@pytest.mark.parametrize('spi', [0.0, 1.5])
+def test_mlbw_jax_traced_spi_matches_numpy(spi):
+    """``spi`` may be a tracer (dict leaf traced for autodiff, or the
+    dataclass built inside a ``jax.jit`` as the composition layer
+    does): the competitive-channel ``lx = |L - 2|`` (spin-0 target) or
+    ``L`` selection must then not force it to numpy. Regression for
+    the blocked-scan path, which converted ``spi`` with ``np.asarray``
+    and raised TracerArrayConversionError under jit."""
+    import dataclasses
+    data = dataclasses.replace(_four_channel_data(), spi=spi)
+    e = np.linspace(1e-3, 1100.0, NE)
+    ref = mlbw.reconstruct(data, e, array_ns.get_backend('numpy'))
+    xp = array_ns.get_backend('jax')
+    got = jax.jit(lambda s, ee: mlbw.reconstruct(
+        dataclasses.replace(data, spi=s), ee, xp,
+        _max_intermediate_bytes=MAX_BYTES))(jnp.asarray(spi), jnp.asarray(e))
+    for key in KEYS:
+        np.testing.assert_allclose(
+            np.asarray(got[key]), ref[key],
+            rtol=1e-12, atol=1e-14 * np.max(np.abs(ref[key])),
+            err_msg=f'spi={spi}: {key}')
+    # The competitive channel actually differs between the two lx rules.
+    assert np.max(ref['rxx']) > 1.0
