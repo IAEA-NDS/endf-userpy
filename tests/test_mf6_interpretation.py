@@ -82,24 +82,51 @@ def find_subsections_by_law(endf_dict, law):
 
 
 def call_fortran_test(fortran_test_exe, endf_file, include=None):
+    """Run the Fortran reference program on ``endf_file`` in a scratch
+    directory and return ``(output_lines, endf_dict)``.
+
+    The program runs with ``cwd=`` the scratch directory instead of
+    ``os.chdir`` into it: a failure (e.g. the binary cannot start) used
+    to leave the whole pytest process inside the deleted temp
+    directory, so every later test with a relative corpus path failed
+    or skipped. A binary that exists but cannot be loaded (missing
+    runtime library, foreign architecture) is skipped like a missing
+    one; any other failure raises with the program's stderr.
+    """
+    import pytest
     parser = EndfParserCpp(ignore_missing_tpid=True)
     endf_dict = parser.parsefile(endf_file, include=include)
     mat = endf_dict[1][451]['MAT']
     with tempfile.TemporaryDirectory() as tmpdirname:
         shutil.copy2(fortran_test_exe, os.path.join(tmpdirname, 'runtest'))
         shutil.copyfile(endf_file, os.path.join(tmpdirname, 'endffile'))
-        orig_cwd = os.getcwd()
-        os.chdir(tmpdirname)
         test_inp = '\n'.join([
             "endffile",
             "output",
             str(mat),
             ""
         ])
-        subprocess.run(['./runtest'], input=test_inp, text=True)
-        with open('output', 'r') as f:
+        try:
+            proc = subprocess.run(
+                [os.path.join(tmpdirname, 'runtest')], input=test_inp,
+                text=True, cwd=tmpdirname, capture_output=True,
+            )
+        except OSError as exc:      # exec format error etc.
+            pytest.skip(f'{fortran_test_exe} cannot be executed here: {exc}')
+        if proc.returncode != 0 and (
+                'error while loading shared libraries' in proc.stderr):
+            pytest.skip(
+                f'{fortran_test_exe} cannot be loaded here: '
+                f'{proc.stderr.strip()}'
+            )
+        output_path = os.path.join(tmpdirname, 'output')
+        if proc.returncode != 0 or not os.path.exists(output_path):
+            raise RuntimeError(
+                f'{fortran_test_exe} failed (exit {proc.returncode}):\n'
+                f'{proc.stderr}'
+            )
+        with open(output_path, 'r') as f:
             cont = f.readlines()
-        os.chdir(orig_cwd)
     return cont, endf_dict
 
 
@@ -188,3 +215,32 @@ def test_dist2d_law7_interface():
     compute_dist2d_from_subsec(
         endf_dict, 16, 1, Einc, Eout, mu
     )
+
+
+def _fake_exe(tmp_path, stderr, code):
+    exe = tmp_path / 'fake_runtest'
+    exe.write_text(f'#!/bin/sh\necho "{stderr}" >&2\nexit {code}\n')
+    exe.chmod(0o755)
+    return exe
+
+
+def test_call_fortran_test_failure_keeps_cwd(tmp_path):
+    """A Fortran reference binary that cannot load is skipped, one that
+    crashes raises; in both cases the process cwd is unchanged. The
+    old os.chdir into the temp dir leaked on failure and broke every
+    later test that opens a relative corpus path."""
+    import pytest
+    if sys.platform == 'win32':
+        pytest.skip('POSIX shell script stands in for the binary')
+    endf_file = DATA_DIR / 'n-001_H_001.endf'
+    cwd = os.getcwd()
+    loader = _fake_exe(
+        tmp_path, 'runtest: error while loading shared libraries: '
+        'libgfortran.so.5: cannot open shared object file', 127)
+    with pytest.raises(pytest.skip.Exception, match='cannot be loaded'):
+        call_fortran_test(loader, endf_file)
+    assert os.getcwd() == cwd
+    crash = _fake_exe(tmp_path, 'Segmentation fault', 139)
+    with pytest.raises(RuntimeError, match='Segmentation fault'):
+        call_fortran_test(crash, endf_file)
+    assert os.getcwd() == cwd
