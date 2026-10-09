@@ -287,6 +287,35 @@ def _accumulate_range_contrib(total, e, in_range, keys, xp, reco_fn):
     return total_np
 
 
+def _per_call_cached(query_state, key, energies_in, reco_fn):
+    """Wrap ``reco_fn`` (one range's reconstruction on the slice of
+    ``energies_in`` the caller selects) with the per-call cache on
+    ``query_state.range_recon_cache``.
+
+    The MTs of one top-level query each read different keys of the
+    same range reconstruction; the cache computes it once. An entry
+    stores ``energies_in`` itself and is reused only when the next
+    call passes that same object (``is``), so an id-recycled or
+    different mesh can never hit; keeping the reference also keeps
+    the array alive for the lifetime of the cache (one top-level
+    call). Without a ``query_state`` (leaf-level callers) there is no
+    cache, as before.
+    """
+    if query_state is None:
+        return reco_fn
+    cache = query_state.range_recon_cache
+
+    def cached(e_slice):
+        hit = cache.get(key)
+        if hit is not None and hit[0] is energies_in:
+            return hit[1]
+        out = reco_fn(e_slice)
+        cache[key] = (energies_in, out)
+        return out
+
+    return cached
+
+
 def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
                              urr_quadrature='gauss_legendre_32',
                              _query_state=None):
@@ -372,9 +401,12 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
             continue
         new_total = _accumulate_range_contrib(
             total, e, in_range, keys, xp,
-            lambda e_slice: _reconstruct_lru1_range(
-                endf_dict, iso_i, rng_i, rng, e_slice, xp,
-            )[0],
+            _per_call_cached(
+                _query_state, ('lru1', iso_i, rng_i, xp.name), energies_in,
+                lambda e_slice: _reconstruct_lru1_range(
+                    endf_dict, iso_i, rng_i, rng, e_slice, xp,
+                )[0],
+            ),
         )
         if new_total is None:
             continue
@@ -419,18 +451,27 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
         if not any_in:
             continue
 
-        _err_box = [None]
-
-        def _reco_urr(e_slice, _err=_err_box):
-            recon_, err_ = _reconstruct_urr_range(
+        def _reco_urr(e_slice):
+            # (recon or None, failure reason) cached together so a
+            # cache hit still reports the reason.
+            return _reconstruct_urr_range(
                 endf_dict, iso_i, rng_i, rng, e_slice, xp,
                 urr_quadrature=urr_quadrature,
             )
+
+        _err_box = [None]
+        cached_urr = _per_call_cached(
+            _query_state, ('urr', iso_i, rng_i, xp.name, urr_quadrature),
+            energies_in, _reco_urr,
+        )
+
+        def _reco_urr_recon(e_slice, _err=_err_box):
+            recon_, err_ = cached_urr(e_slice)
             _err[0] = err_
             return recon_
 
         new_total = _accumulate_range_contrib(
-            total, e, in_range, keys_urr, xp, _reco_urr,
+            total, e, in_range, keys_urr, xp, _reco_urr_recon,
         )
         if new_total is None:
             # Reconstruction kernel refused the range; carry the error
