@@ -157,6 +157,7 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0, side='right') -> Any:
 
     return _apply_law_vectorised(
         law, x, x1, x2, y1, y2, xp, outside_value=outside_value,
+        laws=_static_laws(tab1.intp),
     )
 
 
@@ -202,7 +203,22 @@ def from_endf_dict(
     )
 
 
-def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0):
+_ALL_LAWS = (1, 2, 3, 4, 5)
+
+
+def _static_laws(intp):
+    """The ENDF interpolation laws a TAB1 can select, as a sorted tuple,
+    when its INT codes are concrete; all five otherwise (traced codes
+    never occur in practice, but stay correct)."""
+    try:
+        codes = np.unique(np.asarray(intp) % 10)
+    except Exception:
+        return _ALL_LAWS
+    return tuple(int(c) for c in codes if 1 <= int(c) <= 5) or _ALL_LAWS
+
+
+def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0,
+                          laws=_ALL_LAWS):
     """Vectorised element-wise dispatch across interpolation laws.
 
     Rather than `xp.switch` per element (branch-per-point, slow on
@@ -229,6 +245,13 @@ def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0):
     `x1_safe * (1 + EPS)`; y-values are floored to `EPS`. The
     discarded branch's numerical value doesn't matter (select masks
     it out); what matters is that its VJP graph never touches Inf.
+
+    ``laws`` (static) lists the ENDF laws 1..5 the table can select
+    (see :func:`_static_laws`); branches for absent laws are not
+    evaluated. MF3 tables are mostly lin-lin only, so this skips the
+    two logs and two exps per point the full dispatch pays. The
+    sentinels 0 / 1 / 6 (outside, degenerate panel) are always kept.
+    Results are identical: an absent law's condition never holds.
     """
     EPS = 1e-30
 
@@ -236,15 +259,25 @@ def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0):
     # can legitimately be 0 (below-mesh queries, out-of-range routed
     # to law=0); we still need a positive stand-in for the log
     # branch so the reverse-mode graph stays finite.
-    x_safe = xp.maximum(x, EPS)
+    need_log_x = 3 in laws or 5 in laws
+    need_log_y = 4 in laws or 5 in laws
+    if need_log_x:
+        x_safe = xp.maximum(x, EPS)
     x1_safe = xp.where(x1 <= 0.0, EPS, x1)
     x2_safe = xp.where(
         x2 <= x1_safe, x1_safe * (1.0 + EPS), x2,
     )
-    y1_safe = xp.where(y1 <= 0.0, EPS, y1)
-    y2_safe = xp.where(y2 <= 0.0, EPS, y2)
+    if need_log_y:
+        y1_safe = xp.where(y1 <= 0.0, EPS, y1)
+        y2_safe = xp.where(y2 <= 0.0, EPS, y2)
+    conds = [law == 0, law == 1, law == 6]
+    vals = [xp.full_like(x, float(outside_value)), y1, y2]
+    # Law code 6 is a private-to-this-module marker used by
+    # `interp(side='right')` to pick the right-limit (y2) at a
+    # doubled-x discontinuity instead of the default constant-y1
+    # collapse of law 1. Not an ENDF-6 law code; never surfaces
+    # to the caller.
 
-    const_law = y1
     # For lin-lin the denominator `x2 - x1` is 0 only when the panel
     # is degenerate, which we route to law=1 or law=6 anyway; guard
     # for both forward NaN and backward Inf with a safe denominator.
@@ -252,34 +285,29 @@ def _apply_law_vectorised(law, x, x1, x2, y1, y2, xp, outside_value=0.0):
     # to `x1_safe` in float64 when EPS is below machine epsilon, so
     # we clamp the derived denominators explicitly here rather than
     # relying on the input-side nudge.
-    x2m1_safe = xp.maximum(x2_safe - x1_safe, EPS)                 # > 0
-    lin_lin = y1 + (x - x1) * (y2 - y1) / x2m1_safe
-
-    log_x_over_x1 = xp.log(x_safe / x1_safe)
-    log_x2_over_x1_safe = xp.maximum(
-        xp.log(x2_safe / x1_safe), EPS,
-    )                                                              # > 0
-    log_y2_over_y1 = xp.log(y2_safe / y1_safe)
-
-    lin_log = y1 + log_x_over_x1 * (y2 - y1) / log_x2_over_x1_safe
-    log_lin = y1_safe * xp.exp(
-        (x - x1) * log_y2_over_y1 / x2m1_safe,
-    )
-    log_log = y1_safe * xp.exp(
-        log_x_over_x1 * log_y2_over_y1 / log_x2_over_x1_safe,
-    )
-
-    outside = xp.full_like(x, float(outside_value))
-    # Law code 6 is a private-to-this-module marker used by
-    # `interp(side='right')` to pick the right-limit (y2) at a
-    # doubled-x discontinuity instead of the default constant-y1
-    # collapse of law 1. Not an ENDF-6 law code; never surfaces
-    # to the caller.
-    right_const = y2
-    return xp.select(
-        [law == 0, law == 1, law == 2, law == 3,
-         law == 4, law == 5, law == 6],
-        [outside, const_law, lin_lin, lin_log,
-         log_lin, log_log, right_const],
-        default=float(outside_value),
-    )
+    if 2 in laws or 4 in laws:
+        x2m1_safe = xp.maximum(x2_safe - x1_safe, EPS)             # > 0
+    if 2 in laws:
+        conds.append(law == 2)
+        vals.append(y1 + (x - x1) * (y2 - y1) / x2m1_safe)
+    if need_log_x:
+        log_x_over_x1 = xp.log(x_safe / x1_safe)
+        log_x2_over_x1_safe = xp.maximum(
+            xp.log(x2_safe / x1_safe), EPS,
+        )                                                          # > 0
+    if need_log_y:
+        log_y2_over_y1 = xp.log(y2_safe / y1_safe)
+    if 3 in laws:
+        conds.append(law == 3)
+        vals.append(y1 + log_x_over_x1 * (y2 - y1) / log_x2_over_x1_safe)
+    if 4 in laws:
+        conds.append(law == 4)
+        vals.append(y1_safe * xp.exp(
+            (x - x1) * log_y2_over_y1 / x2m1_safe,
+        ))
+    if 5 in laws:
+        conds.append(law == 5)
+        vals.append(y1_safe * xp.exp(
+            log_x_over_x1 * log_y2_over_y1 / log_x2_over_x1_safe,
+        ))
+    return xp.select(conds, vals, default=float(outside_value))
