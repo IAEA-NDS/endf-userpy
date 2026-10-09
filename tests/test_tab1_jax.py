@@ -87,3 +87,55 @@ def test_grad_wrt_traced_ordinates_matches_generic(laws, monkeypatch):
     assert np.all(np.isfinite(np.asarray(g)))
     np.testing.assert_allclose(np.asarray(g), np.asarray(g_ref),
                                rtol=1e-13, atol=0.0)
+
+
+# ------------------------------------------------------------------
+# interpolation._endf_interp1d_traced_x (MF6 yields etc.)
+# ------------------------------------------------------------------
+
+from endf_userpy.primitives import interpolation  # noqa: E402
+
+
+def _traced(fn, q):
+    """Force the generic traced-x path by tracing the query."""
+    return np.asarray(jax.jit(fn)(jnp.asarray(q)))
+
+
+@pytest.mark.parametrize('laws', [(2,), (2, 5), (1, 2, 3, 4, 5)])
+@pytest.mark.parametrize('outside', [0.0, None])
+@pytest.mark.parametrize('batched', [False, True])
+def test_traced_x_host_path_matches_traced_path(laws, outside, batched,
+                                                monkeypatch):
+    t = _table(laws)
+    fp = np.stack([t.y, 2.0 * t.y + 0.1]) if batched else t.y
+    q = Q if outside is not None else np.clip(Q, t.x[0], t.x[-1])
+    calls = []
+    orig = tab1_jax.traced_x_from_lookup
+    monkeypatch.setattr(tab1_jax, 'traced_x_from_lookup',
+                        lambda *a, **k: calls.append(1) or orig(*a, **k))
+
+    def f(qq):
+        return interpolation._endf_interp1d_traced_x(
+            qq, t.x, fp, t.intp, t.nbt + 1, outside, XP)
+
+    got = np.asarray(f(q))
+    assert calls == [1]
+    ref = _traced(f, q)
+    assert len(calls) == 1          # traced query: generic path
+    np.testing.assert_allclose(got, ref, rtol=1e-15, atol=0.0)
+    assert got.shape == ((2, q.size) if batched else (q.size,))
+
+
+def test_traced_x_host_path_grad_wrt_ordinates():
+    t = _table((2, 5))
+
+    def loss(fp, use_host):
+        q = jnp.asarray(Q) if not use_host else Q
+        return jnp.sum(interpolation._endf_interp1d_traced_x(
+            q, t.x, fp, t.intp, t.nbt + 1, 0.0, XP) ** 2)
+
+    g = jax.grad(loss)(jnp.asarray(t.y), True)
+    g_ref = jax.jit(jax.grad(loss), static_argnums=1)(jnp.asarray(t.y), False)
+    assert np.all(np.isfinite(np.asarray(g)))
+    np.testing.assert_allclose(np.asarray(g), np.asarray(g_ref),
+                               rtol=1e-13, atol=0.0)

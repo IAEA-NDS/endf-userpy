@@ -408,6 +408,44 @@ def _endf_interp1d_traced_x(
         np.asarray(int_arr), np.asarray(nbt_arr),
     )
     int_per_mesh_point_xp = xp.asarray(int_per_mesh_point_np)
+    # The laws a query can select are the INT codes of mesh points
+    # 1..n_mesh-1 (concrete numpy): only those branches are evaluated.
+    # MF6 yields are mostly lin-lin only, which skips the two logs and
+    # two exps per point of the full five-law dispatch. Identical
+    # results: an absent law's mask never holds.
+    laws = sorted({int(v) for v in int_per_mesh_point_np[1:]})
+    if not laws or not set(laws) <= {1, 2, 3, 4, 5}:
+        laws = [1, 2, 3, 4, 5]     # unknown code: full dispatch, INT=5 fall-through
+
+    # JAX with a concrete query and a concrete mesh: bracket lookup on
+    # numpy, arithmetic in one jitted kernel (see :mod:`tab1_jax`);
+    # ``fp`` may be traced (gathered on jax with the host indices).
+    if getattr(xp, 'name', None) == 'jax' and getattr(x, 'ndim', None) == 1:
+        try:
+            x_np = np.asarray(x, dtype=np.float64)
+            mesh_np = np.asarray(xp_mesh_xp, dtype=np.float64)
+        except Exception:      # tracer: generic path below
+            x_np = None
+        if x_np is not None:
+            from . import tab1_jax
+            idx_np = np.clip(
+                np.searchsorted(mesh_np, x_np, side='right') - 1,
+                0, n_mesh - 2)
+            try:
+                fp_np = np.asarray(fp, dtype=np.float64)
+                y1, y2 = (np.take(fp_np, idx_np, axis=-1),
+                          np.take(fp_np, idx_np + 1, axis=-1))
+            except Exception:  # traced ordinates
+                y1, y2 = (xp.take(fp, idx_np, axis=-1),
+                          xp.take(fp, idx_np + 1, axis=-1))
+            return tab1_jax.traced_x_from_lookup(
+                x, mesh_np[idx_np], mesh_np[idx_np + 1], y1, y2,
+                int_per_mesh_point_np[idx_np + 1].astype(np.int32),
+                (x_np >= mesh_np[0]) & (x_np <= mesh_np[-1]),
+                xp.asarray(0.0 if outside_value is None else outside_value,
+                           dtype=xp.float64),
+                laws=tuple(laws), mask_outside=outside_value is not None,
+            )
 
     # Bracket each x point in the mesh. side='right' means idx = i
     # where xp_mesh[i-1] <= x < xp_mesh[i]; we shift to i-1 so idx is
@@ -428,15 +466,22 @@ def _endf_interp1d_traced_x(
     # Per-point INT law: read from the bracket's UPPER endpoint
     # (matches endf_interp1d's "boundary belongs to upper region"
     # convention). idx is the LOWER bracket, so lookup at idx + 1.
-    # The laws a query can select are the INT codes of mesh points
-    # 1..n_mesh-1 (concrete numpy): only those branches are evaluated.
-    # MF6 yields are mostly lin-lin only, which skips the two logs and
-    # two exps per point of the full five-law dispatch. Identical
-    # results: an absent law's mask never holds.
-    laws = sorted({int(v) for v in int_per_mesh_point_np[1:]})
-    if not laws or not set(laws) <= {1, 2, 3, 4, 5}:
-        laws = [1, 2, 3, 4, 5]     # unknown code: full dispatch, INT=5 fall-through
+    interp_type = (xp.take(int_per_mesh_point_xp, idx + 1)
+                   if len(laws) > 1 else None)
+    is_inside = (x >= xp_mesh_xp[0]) & (x <= xp_mesh_xp[-1])
+    return _traced_x_arith(x, x1, x2, y1, y2, interp_type, is_inside,
+                           outside_value, tuple(laws), xp)
 
+
+def _traced_x_arith(x, x1, x2, y1, y2, interp_type, is_inside,
+                    outside_value, laws, xp):
+    """Value arithmetic of :func:`_endf_interp1d_traced_x` given the
+    bracket lookup: per-law branches for ``laws`` only, selected by the
+    per-point ``interp_type`` (unused for a single law), then
+    ``outside_value`` off-mesh (no masking when it is ``None``). Shared
+    by the traced path and the jitted host-lookup kernel in
+    :mod:`tab1_jax`, so both evaluate identical expressions."""
+    _small = 1.0e-38
     # Safe denominators and log arguments so the branches we don't
     # select don't propagate NaN.
     dx = x2 - x1
@@ -473,7 +518,6 @@ def _endf_interp1d_traced_x(
     present = [code for code in (1, 2, 3, 4, 5) if code in branches]
     result = branches[present[-1]]
     if len(present) > 1:
-        interp_type = xp.take(int_per_mesh_point_xp, idx + 1)
         for code in reversed(present[:-1]):
             result = xp.where(interp_type == code, branches[code], result)
 
@@ -482,7 +526,6 @@ def _endf_interp1d_traced_x(
     # traced x might leave the mesh. When outside_value=None we
     # silently pass the clamped-bracket result (matches jax semantics
     # of "no error inside a trace").
-    is_inside = (x >= xp_mesh_xp[0]) & (x <= xp_mesh_xp[-1])
     if outside_value is not None:
         result = xp.where(is_inside, result, outside_value)
     return result
