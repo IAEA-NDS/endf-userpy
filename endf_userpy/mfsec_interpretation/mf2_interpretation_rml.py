@@ -380,7 +380,12 @@ def _group_gammas(data: RMLData, g: int, xp):
         else:
             p_r = xp.ones_like(sqrt_er)
         denom = xp.where(p_r > _EPS, 2.0 * p_r, 1.0)
-        signed = _signed_sqrt(gam_full[:, c], xp)
+        # Mask before the root: a zero width of a resonance outside
+        # this group (or of a padded channel slot) then has gradient 0
+        # instead of 0 * inf = NaN. In-group zeros keep the (infinite)
+        # derivative of the amplitude.
+        signed = _signed_sqrt(
+            xp.where(group_mask > 0, gam_full[:, c], 1.0), xp)
         gam_c = xp.where(
             p_r > _EPS,
             signed / xp.sqrt(denom),
