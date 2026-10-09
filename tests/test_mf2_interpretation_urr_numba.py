@@ -5,6 +5,12 @@ the chi-squared width factor from one power (integer ``nu`` without
 ``pow``, zero widths short-circuited); each order must equal the
 closed form ``(1 + 2/nu)**[order == 2] * b**(-nu/2 - order)`` with
 ``b = 1 + 2 t alpha / nu`` (``exp(-t alpha)`` for ``nu == 0``).
+
+The kernel looks the energy-table interval up once per (energy, group)
+and takes the per-row INT=5 log-log decision from the wrapper; the
+corpus parity tests below cover INT=5 groups (Nb-93), including rows
+that fall back to lin-lin, and INT=2 (Nd-143) against the numpy
+backend.
 """
 from __future__ import annotations
 
@@ -12,6 +18,16 @@ import math
 
 import numpy as np
 import pytest
+
+from endf_parserpy import EndfParserCpp
+
+from endf_userpy.primitives import array_ns
+from endf_userpy.mfsec_interpretation import mf2_interpretation_urr as urr
+from endf_userpy.mfsec_interpretation.mf2_interpretation_urr_preproc import (
+    urr_data_from_endf_dict,
+)
+
+from _corpus import resolve_nb93, resolve_nd143
 
 numba = pytest.importorskip('numba')
 
@@ -44,3 +60,34 @@ def test_channel_factors_match_closed_form(nu, alpha):
                 rtol=4e-15, atol=0.0,
                 err_msg=f'order={order} t={t}',
             )
+
+
+@pytest.mark.parametrize('resolve', [resolve_nb93, resolve_nd143])
+def test_urr_numba_matches_numpy_on_corpus(resolve):
+    path = resolve()
+    if path is None:
+        pytest.skip('corpus file not present (see fetch.sh)')
+    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
+    rngs = d[2][151]['isotope'][1]['range']
+    ri = next(k for k in rngs if int(rngs[k]['LRU']) == 2)
+    data = urr_data_from_endf_dict(d, isotope_idx=1, range_idx=ri)
+    group_int = np.asarray(data.group_int)
+    if resolve is resolve_nb93:
+        # INT=5 groups with both all-positive rows (log-log) and rows
+        # with zeros (lin-lin fallback): both branches run.
+        assert np.any(group_int == 5)
+        rows = [np.asarray(getattr(data, f'table_{k}'))[group_int == 5]
+                for k in ('gn0', 'gg', 'gf', 'gx', 'd')]
+        assert any(np.any(np.all(r > 0.0, axis=1)) for r in rows)
+        assert any(np.any(~np.all(r > 0.0, axis=1)) for r in rows)
+    el, eh = float(rngs[ri]['EL']), float(rngs[ri]['EH'])
+    # Below, inside and above the tables' energy span.
+    e = np.concatenate([[el * 0.5], np.geomspace(el, eh, 397), [eh * 2.0]])
+    ref = urr.reconstruct(data, e, array_ns.get_backend('numpy'))
+    got = urr.reconstruct(data, e, array_ns.get_backend('numba'))
+    for key in ('sct', 'cap', 'fis', 'rxx', 'pot', 'tot'):
+        np.testing.assert_allclose(
+            np.asarray(got[key]), np.asarray(ref[key]),
+            rtol=1e-12, atol=1e-14 * np.max(np.abs(np.asarray(ref[key]))),
+            err_msg=key,
+        )
