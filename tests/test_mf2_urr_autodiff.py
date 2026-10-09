@@ -239,3 +239,23 @@ def test_urr_grad_wrt_GG_matches_fd_ross_10(nb93_dict):
     assert val > 0.0
     assert abs(fd) > 0.0
     np.testing.assert_allclose(grad, fd, rtol=1e-6, atol=1e-20)
+
+
+def test_urr_jit_over_energies_with_numpy_built_int5_tables(nb93_dict):
+    """``jax.jit`` over the query energies with a URRData built by the
+    numpy preproc (``xp=None``): Nb-93's INT=5 (log-log) groups take
+    the log-log-vs-lin-lin decision on concrete table rows. That check
+    used ``bool(xp.all(...))``, which is a traced jnp op inside the
+    jit even for numpy rows and raised TracerBoolConversionError."""
+    import jax
+    import jax.numpy as jnp
+    xp_jx = array_ns.get_backend('jax')
+    data_np = urr_pre.urr_data_from_endf_dict(nb93_dict)
+    assert set(np.asarray(data_np.group_int).tolist()) == {5}
+    ein = np.geomspace(8.0e3, 5.0e5, 64)
+    ref = urr.reconstruct(data_np, ein, array_ns.get_backend('numpy'))
+    got = jax.jit(lambda e: urr.reconstruct(data_np, e, xp_jx))(jnp.asarray(ein))
+    for k in ('sct', 'cap', 'fis', 'tot', 'pot'):
+        np.testing.assert_allclose(
+            np.asarray(got[k]), np.asarray(ref[k]), rtol=1e-12, atol=1e-14,
+        )

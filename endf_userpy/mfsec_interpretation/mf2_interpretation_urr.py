@@ -365,7 +365,10 @@ def _interp_per_group(table, es, e_query, xp, int_codes=None):
             lin_col = xp.interp(e_query, e_row, y_row)
             cols.append(xp.where(all_pos, log_col, lin_col))
             continue
-        if bool(xp.all(y_row > 0)) and bool(xp.all(e_row > 0)):
+        # Concrete rows: decide on the host. ``xp.all`` would be a
+        # traced jnp op inside ``jax.jit`` over ``e_query`` even for
+        # numpy-built tables, and ``bool()`` of it raises.
+        if np.all(np.asarray(y_row) > 0) and np.all(np.asarray(e_row) > 0):
             cols.append(xp.exp(xp.interp(
                 xp.log(e_query), xp.log(e_row), xp.log(y_row),
             )))

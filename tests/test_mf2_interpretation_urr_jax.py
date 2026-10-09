@@ -162,14 +162,6 @@ def test_urr_jax_has_no_node_resolved_full_mesh_intermediate(nb93):
     only ever materialised per energy chunk."""
     data, _ = nb93
     xp = array_ns.get_backend('jax')
-    # Built with the jax preproc, as the pipeline does on this backend
-    # (numpy-built INT=5 tables cannot be jitted over E: the log-log
-    # fallback check in _interp_per_group then sees a traced bool;
-    # pre-existing, unrelated to this kernel).
-    data = dataclasses.replace(
-        data, **{k: jnp.asarray(getattr(data, k)) for k in (
-            'table_es', 'table_d', 'table_gn0', 'table_gg',
-            'table_gf', 'table_gx')})
     ne = 4096
     nj = len(np.asarray(data.group_l))
     nq = len(urr._T_NODES)
