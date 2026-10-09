@@ -37,6 +37,33 @@ from __future__ import annotations
 _HIGH_L_START = 6   # First L whose factors need the Newton recurrence.
 
 
+def _pnt_shf_low_L(rho, r2, L, xp):
+    """Closed-form ``(P_L, S_L)`` for one ``L`` in 0..5 (Python int)."""
+    if L == 0:
+        return rho, xp.zeros_like(rho)
+    if L == 1:
+        d1 = 1.0 + r2
+        return rho * r2 / d1, -1.0 / d1
+    if L == 2:
+        d2 = 9.0 + r2 * (3.0 + r2)
+        return rho * r2 ** 2 / d2, -(18.0 + 3.0 * r2) / d2
+    if L == 3:
+        d3 = 225.0 + r2 * (45.0 + r2 * (6.0 + r2))
+        return (rho * r2 ** 3 / d3,
+                -(675.0 + r2 * (90.0 + 6.0 * r2)) / d3)
+    if L == 4:
+        d4 = 11025.0 + r2 * (1575.0 + r2 * (135.0 + r2 * (10.0 + r2)))
+        return (rho * r2 ** 4 / d4,
+                -(44100.0 + r2 * (4725.0 + r2 * (270.0 + 10.0 * r2))) / d4)
+    d5 = 893025.0 + r2 * (
+        99225.0 + r2 * (6300.0 + r2 * (315.0 + r2 * (15.0 + r2)))
+    )
+    return rho * r2 ** 5 / d5, -(
+        4465125.0
+        + r2 * (396900.0 + r2 * (18900.0 + r2 * (630.0 + 15.0 * r2)))
+    ) / d5
+
+
 def low_L_pnt_shf(rho, xp):
     """Compute (P_L, S_L) for L=0..5 elementwise, stacked on axis 0.
 
@@ -45,45 +72,29 @@ def low_L_pnt_shf(rho, xp):
     (numpy) / advanced indexing / `xp.where`.
     """
     r2 = rho * rho
-    zero = xp.zeros_like(rho)
-
-    # L=0
-    p0 = rho
-    s0 = zero
-
-    # L=1
-    d1 = 1.0 + r2
-    p1 = rho * r2 / d1
-    s1 = -1.0 / d1
-
-    # L=2
-    d2 = 9.0 + r2 * (3.0 + r2)
-    p2 = rho * r2 ** 2 / d2
-    s2 = -(18.0 + 3.0 * r2) / d2
-
-    # L=3
-    d3 = 225.0 + r2 * (45.0 + r2 * (6.0 + r2))
-    p3 = rho * r2 ** 3 / d3
-    s3 = -(675.0 + r2 * (90.0 + 6.0 * r2)) / d3
-
-    # L=4
-    d4 = 11025.0 + r2 * (1575.0 + r2 * (135.0 + r2 * (10.0 + r2)))
-    p4 = rho * r2 ** 4 / d4
-    s4 = -(44100.0 + r2 * (4725.0 + r2 * (270.0 + 10.0 * r2))) / d4
-
-    # L=5
-    d5 = 893025.0 + r2 * (
-        99225.0 + r2 * (6300.0 + r2 * (315.0 + r2 * (15.0 + r2)))
-    )
-    p5 = rho * r2 ** 5 / d5
-    s5 = -(
-        4465125.0
-        + r2 * (396900.0 + r2 * (18900.0 + r2 * (630.0 + 15.0 * r2)))
-    ) / d5
-
-    p = xp.stack([p0, p1, p2, p3, p4, p5], axis=0)
-    s = xp.stack([s0, s1, s2, s3, s4, s5], axis=0)
+    ps = [_pnt_shf_low_L(rho, r2, L, xp) for L in range(6)]
+    p = xp.stack([q[0] for q in ps], axis=0)
+    s = xp.stack([q[1] for q in ps], axis=0)
     return p, s
+
+
+def _phase_low_L(rho, r2, L, xp):
+    """Closed-form hard-sphere phase for one ``L`` in 0..5."""
+    if L == 0:
+        return rho
+    if L == 1:
+        return rho - xp.arctan(rho)
+    if L == 2:
+        return rho - xp.arctan2(3.0 * rho, 3.0 - r2)
+    if L == 3:
+        return rho - xp.arctan2(rho * (15.0 - r2), 15.0 - 6.0 * r2)
+    if L == 4:
+        return rho - xp.arctan2(rho * (105.0 - 10.0 * r2),
+                                105.0 - r2 * (45.0 - r2))
+    return rho - xp.arctan2(
+        rho * (945.0 - r2 * (105.0 - r2)),
+        945.0 - r2 * (420.0 - 15.0 * r2),
+    )
 
 
 def low_L_phase(rho, xp):
@@ -100,18 +111,22 @@ def low_L_phase(rho, xp):
       L=5:  rho - atan2(rho (945 - 105 r2 + r4), 945 - 420 r2 + 15 r4)
     """
     r2 = rho * rho
+    return xp.stack([_phase_low_L(rho, r2, L, xp) for L in range(6)], axis=0)
 
-    ph0 = rho
-    ph1 = rho - xp.arctan(rho)
-    ph2 = rho - xp.arctan2(3.0 * rho, 3.0 - r2)
-    ph3 = rho - xp.arctan2(rho * (15.0 - r2), 15.0 - 6.0 * r2)
-    ph4 = rho - xp.arctan2(rho * (105.0 - 10.0 * r2), 105.0 - r2 * (45.0 - r2))
-    ph5 = rho - xp.arctan2(
-        rho * (945.0 - r2 * (105.0 - r2)),
-        945.0 - r2 * (420.0 - 15.0 * r2),
-    )
 
-    return xp.stack([ph0, ph1, ph2, ph3, ph4, ph5], axis=0)
+def _static_l(L):
+    """``L`` as a Python int when it is a concrete non-negative scalar
+    (Python / numpy int, 0-d numpy or concrete JAX array); ``None``
+    for arrays and tracers, which take the vectorised path."""
+    if isinstance(L, bool):
+        return None
+    if getattr(L, 'shape', ()) != ():
+        return None
+    try:
+        v = int(L)
+    except Exception:          # JAX tracer, or not integral
+        return None
+    return v if v >= 0 else None
 
 
 def newton_step_pnt_shf(p_prev, s_prev, r2, L):
@@ -157,6 +172,17 @@ def pnt_shf(rho, L, xp, nl_max: int = 8):
     the recurrence to ``nl_max - 1`` and pick per-element.
     """
     rho = xp.asarray(rho, dtype=xp.float64)
+    L_static = _static_l(L)
+    if L_static is not None:
+        # Scalar L (every per-group call in RM / RML / URR): evaluate
+        # only that L's closed form, then only the Newton steps it
+        # needs. Same values as the masked selection below, which
+        # adds exact zeros to the selected branch.
+        r2 = rho * rho
+        p, s = _pnt_shf_low_L(rho, r2, min(L_static, 5), xp)
+        for LL in range(_HIGH_L_START, min(L_static, nl_max - 1) + 1):
+            p, s = newton_step_pnt_shf(p, s, r2, LL)
+        return p, s
     L = xp.asarray(L, dtype=xp.int32)
 
     p_low, s_low = low_L_pnt_shf(rho, xp)  # (6, *rho.shape)
@@ -188,6 +214,16 @@ def pnt_shf(rho, L, xp, nl_max: int = 8):
 def phase(rho, L, xp, nl_max: int = 8):
     """Vectorised phi_L(rho) for L an integer array."""
     rho = xp.asarray(rho, dtype=xp.float64)
+    L_static = _static_l(L)
+    if L_static is not None:
+        # Scalar-L fast path, see :func:`pnt_shf`.
+        r2 = rho * rho
+        ph = _phase_low_L(rho, r2, min(L_static, 5), xp)
+        if L_static >= _HIGH_L_START and nl_max > _HIGH_L_START:
+            p, s = _pnt_shf_low_L(rho, r2, 5, xp)
+            for LL in range(_HIGH_L_START, min(L_static, nl_max - 1) + 1):
+                ph, p, s = newton_step_phase(ph, p, s, r2, LL, xp)
+        return ph
     L = xp.asarray(L, dtype=xp.int32)
 
     ph_low = low_L_phase(rho, xp)  # (6, *rho.shape)
