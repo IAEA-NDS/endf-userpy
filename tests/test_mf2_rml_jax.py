@@ -92,9 +92,10 @@ def test_rml_jax_grad_matches_forward_mode_and_fd(pu239):
     """Reverse-mode ``jax.grad`` through the checkpointed scan wrt the
     resonance energies matches forward-mode ``jax.jvp`` along a random
     direction; wrt a non-zero channel width in each J-group it matches
-    a central finite difference. (Forward mode through ``res_gam`` is
-    NaN on any backend: ``_signed_sqrt`` has an infinite slope at the
-    zero widths of padded / non-member channels.)"""
+    a central finite difference. (Forward mode through the full
+    ``res_gam`` is NaN when the file has a genuine zero width of a
+    group's own particle channel: the amplitude's derivative is
+    infinite there; see the zero-width convention test below.)"""
     _, data_jx = pu239
     xp = array_ns.get_backend('jax')
     e = jnp.geomspace(1e-3, 4000.0, NE)
@@ -128,3 +129,32 @@ def test_rml_jax_grad_matches_forward_mode_and_fd(pu239):
               - float(loss_gam(jnp.asarray(x0 - h), r, c))) / (2 * h)
         assert abs(fd) > 0.0
         assert abs(ad - fd) <= 1e-4 * abs(fd), (g, r, c, ad, fd)
+
+
+def test_rml_grad_wrt_res_gam_zero_only_where_width_cannot_matter(pu239):
+    """Zero-width gradient convention: every zero ``res_gam`` entry that
+    cannot affect the output (padded channel slot, or a channel of
+    another J-group) has gradient exactly 0 instead of NaN; only
+    genuine zero widths of a group's own particle channels keep the
+    amplitude's infinite derivative."""
+    _, data_jx = pu239
+    xp = array_ns.get_backend('jax')
+    e = jnp.geomspace(1e-3, 4000.0, NE)
+    gam0 = np.asarray(data_jx.res_gam)
+
+    def loss(gam):
+        out = rml.reconstruct(dataclasses.replace(data_jx, res_gam=gam), e, xp)
+        return jnp.sum(out['tot'] + out['fis'])
+
+    g = np.asarray(jax.grad(loss)(jnp.asarray(gam0)))
+    groups = np.asarray(data_jx.res_group)
+    real_zero = np.zeros(gam0.shape, dtype=bool)
+    for gi in np.unique(groups):
+        particle = rml._classify_group_channels(data_jx, int(gi))[1]
+        rows = groups == gi
+        for c in particle:
+            real_zero[rows, c] = gam0[rows, c] == 0.0
+    unused_zero = (gam0 == 0.0) & ~real_zero
+    assert unused_zero.any()
+    np.testing.assert_array_equal(g[unused_zero], 0.0)
+    assert np.all(np.isfinite(g[~real_zero]))

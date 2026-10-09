@@ -164,9 +164,20 @@ class RMData:
 
 def _signed_sqrt(x, xp):
     """``sign(x) * sqrt(|x|)``: reduced-width amplitude from a signed
-    width. Zero-safe."""
+    width. Zero-safe in value; its derivative at ``x = 0`` is infinite
+    (the amplitude really is non-differentiable there)."""
     ax = xp.abs(x)
     return xp.sign(x) * xp.sqrt(ax)
+
+
+def _masked_signed_sqrt(x, mask, xp):
+    """``_signed_sqrt(x) * mask`` with the mask applied BEFORE the root:
+    entries outside ``mask`` (resonances of another J-group) are
+    replaced by a constant, so their gradient is exactly 0 instead of
+    ``0 * inf = NaN`` when their width is 0. In-mask entries are
+    unchanged, so a genuine zero width keeps its infinite derivative.
+    """
+    return _signed_sqrt(xp.where(mask > 0, x, 1.0), xp) * mask
 
 
 def _rho(e, ki, r_tab, xp):
@@ -329,19 +340,20 @@ def _group_gammas(
     # Elastic reduced-width amplitude gamma_n0. Sign of GN matters.
     # gamma_{r,0} = sign(gn) * sqrt(|gn| / (2 * P_L(|E_r|))).
     #
-    # Multiply by `group_mask` at the end: for resonances not in this
-    # group we compute P_L with this group's L and (potentially wrong)
-    # r_a, so the intermediate gamma is meaningless, but the mask
-    # zeros it out before it can pollute the R-matrix sum. The extra
-    # `xp.where` on the mask side lets us avoid dividing by whatever
-    # tiny P_L we computed for out-of-group rows.
+    # Masked by `group_mask`: for resonances not in this group we
+    # compute P_L with this group's L and (potentially wrong) r_a, so
+    # the intermediate gamma is meaningless, but the mask zeros it out
+    # before it can pollute the R-matrix sum. The extra `xp.where` on
+    # the P_L side avoids dividing by whatever tiny P_L we computed for
+    # out-of-group rows; `_masked_signed_sqrt` applies the mask before
+    # the root so a zero width outside the group has gradient 0, not
+    # NaN.
     denom = xp.where(p_r > _EPS, 2.0 * p_r, 1.0)
     gamma0 = xp.where(
         p_r > _EPS,
-        _signed_sqrt(res_gn, xp) / xp.sqrt(denom),
+        _masked_signed_sqrt(res_gn, group_mask, xp) / xp.sqrt(denom),
         0.0,
     )   # (nres,)
-    gamma0 = gamma0 * group_mask
 
     # --- Fission reduced-width amplitudes (P=1 for fission channels). ---
     # Build as list to keep the code readable at nch=1..3. Fission
@@ -349,11 +361,11 @@ def _group_gammas(
     gammas = [gamma0]
     if nfis >= 1:
         gammas.append(
-            (_signed_sqrt(res_gf1, xp) / xp.sqrt(2.0)) * group_mask
+            _masked_signed_sqrt(res_gf1, group_mask, xp) / xp.sqrt(2.0)
         )
     if nfis >= 2:
         gammas.append(
-            (_signed_sqrt(res_gf2, xp) / xp.sqrt(2.0)) * group_mask
+            _masked_signed_sqrt(res_gf2, group_mask, xp) / xp.sqrt(2.0)
         )
     # gammas: list of (nres,) arrays, length nch
     return gammas

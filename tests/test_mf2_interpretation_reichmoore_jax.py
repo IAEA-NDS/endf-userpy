@@ -130,9 +130,8 @@ def test_rm_jax_blocked_grad_matches_forward_mode_and_fd():
     along a random direction (all entries, including the padded last
     block) and a central finite difference on one capture width.
 
-    Fission widths are left out: ``_signed_sqrt`` has an infinite
-    derivative at the zero widths of resonances in groups without
-    that channel (NaN gradient, same on the dense path)."""
+    Fission widths are covered by the zero-width convention test
+    below."""
     import dataclasses
     base = _three_group_data()
     xp = array_ns.get_backend('jax')
@@ -161,3 +160,55 @@ def test_rm_jax_blocked_grad_matches_forward_mode_and_fd():
     fd = (float(loss(*args[:2], args[2].at[i].add(h)))
           - float(loss(*args[:2], args[2].at[i].add(-h)))) / (2 * h)
     assert abs(float(grads[2][i]) - fd) <= 1e-3 * abs(fd), (grads[2][i], fd)
+
+
+def test_rm_grad_wrt_zero_widths_outside_group_is_zero_inside_is_infinite():
+    """Zero-width gradient convention (``_masked_signed_sqrt``):
+
+    - a fission width that is 0 because the resonance's J-group has no
+      such channel cannot affect the output, so its gradient is
+      exactly 0 (it was ``0 * inf = NaN``);
+    - a genuine zero width of a channel the group does have keeps the
+      amplitude's infinite derivative (non-finite gradient), so a fit
+      cannot silently stall at 0;
+    - forward and reverse mode agree on every other entry.
+    """
+    import dataclasses
+    base = _three_group_data()
+    grp = np.asarray(base.res_group)
+    nfis = np.asarray(base.group_nfis)[grp]
+    gf1 = np.asarray(base.res_gf1).copy()
+    gf2 = np.asarray(base.res_gf2).copy()
+    real_zero = int(np.flatnonzero(nfis >= 2)[0])     # group with 2 fission channels
+    gf2[real_zero] = 0.0
+    xp = array_ns.get_backend('jax')
+    e = jnp.linspace(1e-3, 1100.0, NE)
+
+    def loss(g1, g2):
+        data = dataclasses.replace(base, res_gf1=g1, res_gf2=g2)
+        out = rm.reconstruct(data, e, xp, _max_intermediate_bytes=MAX_BYTES)
+        return jnp.sum(out['tot'] + out['fis'])
+
+    g1, g2 = (np.asarray(g) for g in
+              jax.grad(loss, argnums=(0, 1))(jnp.asarray(gf1), jnp.asarray(gf2)))
+    absent1, absent2 = nfis < 1, nfis < 2
+    assert absent1.any() and absent2.any()
+    np.testing.assert_array_equal(g1[absent1], 0.0)
+    np.testing.assert_array_equal(g2[absent2], 0.0)
+    assert not np.isfinite(g2[real_zero])
+    others2 = ~absent2
+    others2[real_zero] = False
+    assert np.all(np.isfinite(g1[~absent1])) and np.all(np.isfinite(g2[others2]))
+
+    # Without the genuine zero, every zero width is unused: forward mode
+    # (which multiplies each tangent by the derivative, so any infinite
+    # entry poisons it) is now finite and agrees with reverse mode.
+    rng = np.random.default_rng(5)
+    v1 = jnp.asarray(rng.normal(size=NRES))
+    v2 = jnp.asarray(rng.normal(size=NRES))
+    args = (jnp.asarray(base.res_gf1), jnp.asarray(base.res_gf2))
+    r1, r2 = jax.grad(loss, argnums=(0, 1))(*args)
+    _, fwd = jax.jvp(loss, args, (v1, v2))
+    rev = float(jnp.dot(r1, v1) + jnp.dot(r2, v2))
+    assert np.isfinite(float(fwd)) and abs(float(fwd)) > 0.0
+    assert abs(rev - float(fwd)) <= 1e-9 * abs(float(fwd)), (rev, fwd)
