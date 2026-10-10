@@ -26,12 +26,16 @@ import pytest
 
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _corpus import resolve_n14, resolve_nb93, resolve_u235   # noqa: E402
+from _corpus import (   # noqa: E402
+    resolve_al27, resolve_fe56_tendl, resolve_h2, resolve_n14, resolve_nb93,
+    resolve_u235,
+)
 
 from endf_userpy.primitives import array_ns   # noqa: E402
 from endf_userpy.quantities import (   # noqa: E402
     get_particle_production_xs,
     get_reaction_xs,
+    get_residual_production_xs,
 )
 from endf_userpy.run_options import RunOptions   # noqa: E402
 
@@ -319,3 +323,36 @@ def test_jit_with_fixed_mesh_stages_energies_behind_a_barrier(u235_dict):
         warnings.simplefilter('ignore')
         jaxpr = str(jax.make_jaxpr(go)(jnp.asarray(float(rng['AP']))))
     assert 'optimization_barrier' in jaxpr
+
+
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+@pytest.mark.parametrize('resolve,residual', [
+    (resolve_al27, 'Na-24g'),      # MF10 (MT5) + MF3 x MF9 (MT107)
+    (resolve_h2, 'H-3g'),          # MF3 x MF9
+    (resolve_fe56_tendl, 'H-1g'),  # MF3 x MF6 yield, no MF8
+])
+def test_get_residual_production_xs_under_jit_over_energies(resolve, residual):
+    """The MF9 / MF10 readers and the residual dispatcher used to
+    np.asarray the (traced) query energies."""
+    import jax
+    import jax.numpy as jnp
+
+    path = resolve()
+    if path is None:
+        pytest.skip('corpus file not present (see tests/data_law1_adhoc/fetch.sh)')
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True, ignore_zero_mismatch=True,
+                      accept_spaces=True).parsefile(path)
+    ein = np.geomspace(1e5, 2.5e7, 30)
+    opts = RunOptions(backend='jax')
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        out = np.asarray(jax.jit(lambda e: get_residual_production_xs(
+            d, residual, e, options=opts))(jnp.asarray(ein)))
+        ref = np.asarray(get_residual_production_xs(
+            d, residual, ein, options=RunOptions(backend='numpy')))
+    np.testing.assert_array_equal(np.isnan(out), np.isnan(ref))
+    fin = np.isfinite(ref)
+    assert np.any(ref[fin] > 0.0)
+    np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-9, atol=0.0)

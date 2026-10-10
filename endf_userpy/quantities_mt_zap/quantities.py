@@ -661,7 +661,7 @@ def _compute_residual_xs_for_lfs(
         )
         y = mf6_interp.compute_yields(
             endf_dict, mt, za_residual, energies_in,
-            include_discrete=True, level=lfs,
+            include_discrete=True, level=lfs, xp=options.backend,
         )
         return xs * y
     if lmf == 9:
@@ -670,17 +670,26 @@ def _compute_residual_xs_for_lfs(
             options=options, _query_state=_query_state,
         )
         y = mf9_interp.compute_yields(
-            endf_dict, mt, za_residual, energies_in, level=lfs
+            endf_dict, mt, za_residual, energies_in, level=lfs,
+            xp=options.backend,
         )
         return xs * y
     if lmf == 10:
         return mf10_interp.compute_cross_section(
             endf_dict, mt, za_residual, energies_in, level=lfs,
             above_range=options.above_range, _query_state=_query_state,
+            xp=options.backend,
         )
     raise ValueError(
         f'unsupported LMF={lmf} in MF8/MT={mt} for ZAP={za_residual}, LFS={lfs}'
     )
+
+
+def _zeros_like_energies(energies_in, options):
+    """Zero cross section on the query grid, on the active backend (a
+    jax tracer query under ``jax.jit`` cannot go through numpy)."""
+    xp = options.backend
+    return xp.zeros_like(xp.asarray(energies_in, dtype=xp.float64))
 
 
 def compute_residual_xs(
@@ -715,7 +724,7 @@ def compute_residual_xs(
             )
             y = mf6_interp.compute_yields(
                 endf_dict, mt, za_residual, energies_in,
-                include_discrete=True, level=lfs,
+                include_discrete=True, level=lfs, xp=options.backend,
             )
             return xs * y
         if lfs not in (None, 0):
@@ -733,17 +742,17 @@ def compute_residual_xs(
         if sub['ZAP'] == za_residual
     })
     if not available_lfs:
-        return np.zeros_like(energies_in, dtype=float)
+        return _zeros_like_energies(energies_in, options)
 
     if lfs is not None:
         if lfs not in available_lfs:
-            return np.zeros_like(energies_in, dtype=float)
+            return _zeros_like_energies(energies_in, options)
         return _compute_residual_xs_for_lfs(
             endf_dict, mt, za_residual, lfs, energies_in,
             options=options, _query_state=_query_state,
         )
 
-    total = np.zeros_like(energies_in, dtype=float)
+    total = _zeros_like_energies(energies_in, options)
     for cur_lfs in available_lfs:
         total = total + _compute_residual_xs_for_lfs(
             endf_dict, mt, za_residual, cur_lfs, energies_in,

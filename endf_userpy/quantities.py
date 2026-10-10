@@ -564,7 +564,8 @@ def _get_residual_production_xs_impl(
         endf_dict
     )
     if xs is None:
-        xs = np.zeros_like(energies_in, dtype=float)
+        xp = options.backend
+        xs = xp.zeros_like(xp.asarray(energies_in, dtype=xp.float64))
     return xs
 
 
