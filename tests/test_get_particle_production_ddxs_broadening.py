@@ -156,6 +156,11 @@ def stub_quantities(monkeypatch):
         quantities.selectors, 'satisfies_select_heuristic',
         fake_satisfies_select_heuristic,
     )
+    # satisfies_particle_production_select also requires an MF3 section
+    # for non-photon admission; the stubbed dispatcher has no endf_dict.
+    monkeypatch.setattr(
+        quantities.selectors.prop, 'has_mf3_mt', lambda endf_dict, mt: True,
+    )
     monkeypatch.setattr(
         quantities.ddxb, 'compute_ddx_continuous_broadened',
         fake_cont_broadened,
