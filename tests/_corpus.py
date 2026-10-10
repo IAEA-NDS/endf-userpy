@@ -89,6 +89,16 @@ def resolve_n14() -> str | None:
     )
 
 
+def resolve_fe56_tendl() -> str | None:
+    """Resolve the Fe-56 ENDF file (TENDL-2021). Its residual
+    production of light ions (e.g. H-1) comes from MF6 yields without
+    an MF8 section."""
+    return _first_existing(
+        os.environ.get('FE56_TENDL_ENDF'),
+        os.path.join(_CORPUS_DIR, 'tendl21_n_Fe-56.endf'),
+    )
+
+
 def resolve_h2() -> str | None:
     """Resolve the H-2 ENDF file (JEFF-4.0). Used by the LAW=7
     kink-aware mu-integration parity tests: JEFF-4.0 H-2 MT16
