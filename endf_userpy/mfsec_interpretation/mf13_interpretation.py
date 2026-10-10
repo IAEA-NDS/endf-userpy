@@ -57,7 +57,7 @@ def compute_photon_production_xs(
         for t in subsecs
     ]
     if len(cols) == 0:
-        n_ein = np.asarray(eincs).size
+        n_ein = np.size(eincs)    # shape only: also works on jax tracers
         return xp.zeros((n_ein, 0), dtype=xp.float64)
     return xp.stack(cols, axis=1)
 
@@ -80,7 +80,8 @@ def compute_total_photon_production_xs(endf_dict, mt, energies_in, xp=None):
 
     ``xp=None`` (default) is numpy; passing a JAX adapter threads
     tracers through the per-subsection interp so gradients reach
-    file-side MF13 ``sigma`` leaves.
+    file-side MF13 ``sigma`` leaves. Under ``jax.jit`` / ``jax.grad``
+    the ``NK > 1`` consistency check is skipped (traced values).
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -89,7 +90,12 @@ def compute_total_photon_production_xs(endf_dict, mt, energies_in, xp=None):
         endf_dict, mt, energies_in, photon_energies, xp=xp,
     )
     total_prod_xs = xp.sum(prod_xs, axis=1)
-    if endf_dict[13][mt]['NK'] > 1:
+    # The consistency check compares values, so it needs concrete
+    # arrays; under ``jax.jit`` over the query energies the values are
+    # tracers and the check is skipped (it only validates the file,
+    # the returned sum is the same either way).
+    from .mf6_law1_kernel import _is_jax_tracer
+    if endf_dict[13][mt]['NK'] > 1 and not _is_jax_tracer(total_prod_xs):
         check_tot_prod_xs = _compute_total_production_xs(
             endf_dict, mt, energies_in, xp=xp,
         )

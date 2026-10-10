@@ -154,7 +154,7 @@ def compute_photon_yields_from_tabulated_yields(
     level_energies = dict2array(mtsec['ES'])
     photon_energies = dict2array(mtsec['Eg'])
     if len(tables) == 0:
-        n_ein = np.asarray(eincs).size
+        n_ein = np.size(eincs)    # shape only: also works on jax tracers
         photon_yields = xp.zeros((n_ein, 0), dtype=xp.float64)
     elif xp.name == 'jax':
         # Signature-bucketed batched interpolation (Lever C of #290).

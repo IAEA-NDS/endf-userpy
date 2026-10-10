@@ -26,10 +26,13 @@ import pytest
 
 
 sys.path.insert(0, os.path.dirname(__file__))
-from _corpus import resolve_nb93, resolve_u235   # noqa: E402
+from _corpus import resolve_n14, resolve_nb93, resolve_u235   # noqa: E402
 
 from endf_userpy.primitives import array_ns   # noqa: E402
-from endf_userpy.quantities import get_reaction_xs   # noqa: E402
+from endf_userpy.quantities import (   # noqa: E402
+    get_particle_production_xs,
+    get_reaction_xs,
+)
 from endf_userpy.run_options import RunOptions   # noqa: E402
 
 
@@ -179,3 +182,50 @@ def test_get_reaction_xs_eager_jax_with_mlbw_composition(nb93_dict):
     assert out_np.shape == (4,)
     assert np.all(np.isfinite(out_np))
     assert np.all(out_np > 0.0)
+
+
+def _load_corpus(path):
+    if path is None:
+        pytest.skip('corpus file not present (see tests/data_law1_adhoc/fetch.sh)')
+    from endf_parserpy import EndfParserCpp
+    return EndfParserCpp().parsefile(path)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+@pytest.mark.parametrize('resolve,particle', [
+    # MF1 nubar (MT452 / MT456) multiplies the fission cross section:
+    # the readers used to np.asarray the (traced) query energies.
+    (resolve_u235, 'n'),
+    # MF13 NK > 1: the total-vs-partials consistency check compared
+    # traced values, and the MF3 denominator of the photon yield was
+    # always evaluated on numpy.
+    (resolve_n14, 'g'),
+])
+def test_get_particle_production_xs_under_jit_over_energies(resolve, particle):
+    """``get_particle_production_xs`` under ``jax.jit`` with the query
+    energies as the traced argument agrees with the numpy backend."""
+    import jax
+    import jax.numpy as jnp
+
+    d = _load_corpus(resolve())
+    ein = np.geomspace(1e-3, 2e7, 64)
+    opts_jax = RunOptions(backend='jax')
+
+    @jax.jit
+    def jit_go(ein_arg):
+        return get_particle_production_xs(
+            d, '(n,total)', particle, ein_arg, options=opts_jax,
+        )
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        out = np.asarray(jit_go(jnp.asarray(ein)))
+        ref = np.asarray(get_particle_production_xs(
+            d, '(n,total)', particle, ein,
+            options=RunOptions(backend='numpy'),
+        ))
+    np.testing.assert_array_equal(np.isnan(out), np.isnan(ref))
+    fin = np.isfinite(ref)
+    assert np.any(ref[fin] > 0.0)
+    np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-9, atol=0.0)

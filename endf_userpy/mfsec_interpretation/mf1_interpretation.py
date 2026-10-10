@@ -27,13 +27,21 @@ def _compute_yields_from_polynomial(coefs, energies_in, xp=None):
     return result
 
 
+# The readers below flatten the query energies with ``xp.asarray``, not
+# ``np.asarray``: under ``jax.jit`` over the energies they are tracers
+# (``np.asarray`` raises TracerArrayConversionError), and both the
+# polynomial (Horner) and the tabulated (``endf_interp1d`` traced-x)
+# paths accept traced energies. On numpy / numba ``xp.asarray`` is
+# ``np.asarray``.
+
+
 def compute_yields_from_mt452(endf_dict, energies_in, xp=None):
     """Compute average total number of neutrons per fission."""
     if xp is None:
         xp = array_ns.get_backend('numpy')
     mtsec = endf_dict[1][452]
     lnu = mtsec['LNU']
-    ein = np.asarray(energies_in).reshape(-1)
+    ein = xp.asarray(energies_in).reshape(-1)
     if lnu == 1:
         coefs = dict2array(mtsec['C'], dtype=float)
         return _compute_yields_from_polynomial(coefs, ein, xp=xp)
@@ -54,7 +62,7 @@ def compute_yields_from_mt455(endf_dict, energies_in, xp=None):
         xp = array_ns.get_backend('numpy')
     mtsec = endf_dict[1][455]
     lnu = mtsec['LNU']
-    ein = np.asarray(energies_in).reshape(-1)
+    ein = xp.asarray(energies_in).reshape(-1)
     if lnu == 1:
         coefs = dict2array(mtsec['nubar_d'], dtype=float)
         return _compute_yields_from_polynomial(coefs, ein, xp=xp)
@@ -75,7 +83,7 @@ def compute_yields_from_mt456(endf_dict, energies_in, xp=None):
         xp = array_ns.get_backend('numpy')
     mtsec = endf_dict[1][456]
     lnu = mtsec['LNU']
-    ein = np.asarray(energies_in).reshape(-1)
+    ein = xp.asarray(energies_in).reshape(-1)
     if lnu == 1:
         # nubar_p is a scalar under LNU=1; broadcast to Ein shape via xp
         nubar = mtsec['nubar_p']

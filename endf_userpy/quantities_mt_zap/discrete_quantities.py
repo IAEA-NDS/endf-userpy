@@ -81,9 +81,11 @@ def compute_total_gamma_yields(endf_dict, mt, energies_in, xp=None):
         prodxs = mf13_interp.compute_total_photon_production_xs(
             endf_dict, mt, energies_in, xp=xp,
         )
+        # On the jax backend too, so traced query energies (jax.jit)
+        # and MF3 leaves (jax.grad) flow through the denominator.
         xs = mf3_interp.compute_cross_section(
-            endf_dict, mt, energies_in
-        )   # numpy
+            endf_dict, mt, energies_in, xp=xp,
+        )
         # Where MF3 xs is zero the yield is undefined; return 0 so
         # the caller multiplication (yield * MF3 xs) stays 0 rather
         # than nan. Use xp.where with a safe denominator for JAX so
