@@ -16,9 +16,9 @@ def _filter_energies_in(
         # don't come with an incident energy mesh
         return (eincs > 0)
     xp = kwargs.get('xp')
-    if xp is not None and xp.name != 'numpy':
-        # Under a non-numpy backend (e.g. JAX with a tracer mesh
-        # for mesh-knot autodiff) we cannot safely build a concrete
+    if xp is not None and xp.name == 'jax':
+        # Under the JAX backend (e.g. a tracer mesh for mesh-knot
+        # autodiff) we cannot safely build a concrete
         # in/out-of-range mask. The traced reconstruction kernels
         # below handle out-of-range via their own ``outside_value``
         # fill, so short-circuit to "all inside" and let the

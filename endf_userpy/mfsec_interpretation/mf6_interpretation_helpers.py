@@ -171,9 +171,9 @@ def _filter_energies_in(
 ):
     eincs = energies_in
     xp = kwargs.get('xp')
-    if xp is not None and xp.name != 'numpy':
-        # Under a non-numpy backend (e.g. JAX with a tracer mesh for
-        # mesh-knot autodiff, or a tracer query for query-side
+    if xp is not None and xp.name == 'jax':
+        # Under the JAX backend (e.g. a tracer mesh for mesh-knot
+        # autodiff, or a tracer query for query-side
         # autodiff) the ``pad_outside_values`` decorator cannot
         # inspect a JAX bool mask via its ``np.all(v)`` fast-path
         # check. Short-circuit to "all inside"; the traced
@@ -188,8 +188,8 @@ def _filter_energies_in(
 
 def _filter_energies_out(energies_out, *args, **kwargs):
     xp = kwargs.get('xp')
-    if xp is not None and xp.name != 'numpy':
-        # Same rationale as ``_filter_energies_in``: under a non-numpy
+    if xp is not None and xp.name == 'jax':
+        # Same rationale as ``_filter_energies_in``: under the JAX
         # backend the eout may be a JAX tracer and the ``np.all(v)``
         # fast-path check in ``pad_outside_values`` cannot inspect a
         # tracer bool. Short-circuit to "all inside" (the traced
