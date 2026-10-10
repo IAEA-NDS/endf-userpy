@@ -27,8 +27,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _corpus import (   # noqa: E402
-    resolve_al27, resolve_fe56_tendl, resolve_h2, resolve_n14, resolve_nb93,
-    resolve_u235,
+    resolve_al27, resolve_cu63_rml, resolve_fe56_tendl, resolve_h2, resolve_n14,
+    resolve_nb93, resolve_u235,
 )
 
 from endf_userpy.primitives import array_ns   # noqa: E402
@@ -356,3 +356,34 @@ def test_get_residual_production_xs_under_jit_over_energies(resolve, residual):
     fin = np.isfinite(ref)
     assert np.any(ref[fin] > 0.0)
     np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-9, atol=0.0)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_mf4_mixed_angular_distribution_under_jit_over_energies():
+    """MF4 LTT=3 (Legendre below / tabulated above a break energy):
+    the break energy was taken with ``float()`` from the xp-native
+    energy mesh, a tracer inside a jit trace (issue #220, step 1)."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.quantities_mt_zap import quantities as qz
+
+    path = resolve_cu63_rml()          # JEFF-4.0 Cu-63, MF4/MT2 LTT=3
+    if path is None:
+        pytest.skip('Cu-63 corpus file not present (see fetch.sh)')
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True, ignore_zero_mismatch=True,
+                      accept_spaces=True).parsefile(path)
+    assert d[4][2]['LTT'] == 3
+    ein = np.geomspace(1e3, 1.9e7, 40)
+    mu = np.linspace(-1.0, 1.0, 7)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = np.asarray(qz.compute_daxs(
+            d, 2, 1, ein, mu, options=RunOptions(backend='numpy')))
+        opts = RunOptions(backend='jax')
+        out = np.asarray(jax.jit(lambda e: qz.compute_daxs(
+            d, 2, 1, e, mu, options=opts))(jnp.asarray(ein)))
+    np.testing.assert_array_equal(np.isnan(out), np.isnan(ref))
+    fin = np.isfinite(ref)
+    np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-11, atol=0.0)

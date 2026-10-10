@@ -178,7 +178,10 @@ def compute_angdist_from_mixed(
     int_arr2 = np.array(mf4sec['ang_int']['INT'])
     tab1_records = list(mf4sec['angtable'].values())
     assert num_ens2 == len(tab1_records)
-    break_energy = float(en_mesh[num_ens1 - 1])
+    # No float(): ``en_mesh`` is xp-native and a tracer under jax.jit
+    # (also when the energies are traced); the comparison below works
+    # on either.
+    break_energy = en_mesh[num_ens1 - 1]
 
     energies_xp = xp.asarray(energies)
     n_e = int(energies_xp.shape[0])
