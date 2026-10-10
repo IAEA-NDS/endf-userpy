@@ -570,6 +570,25 @@ def endf_interp1d(x, xp_mesh, fp, int_arr, nbt_arr, outside_value=None, xp=None)
     # dict) would have its mesh silently modified, and a second
     # call on the same array would perturb it again (issue #49).
     xp_mesh = treat_duplicates(np.asarray(xp_mesh))
+    # Numba fast path: per-point panel lookup + arithmetic in one
+    # parallel kernel instead of per-region masks, gathers and the
+    # reordering argsort below; same panel / region / clamp semantics.
+    if (x.ndim == 1
+            and xp.wants_accelerator('numba')
+            and xp.accelerator_available('numba')):
+        from . import interpolation_numba
+        laws = interpolation_numba.panel_laws(int_arr, nbt_arr, xp_mesh.size)
+        if laws is not None:
+            fill = np.nan if outside_value is None else outside_value
+            y, n_outside = interpolation_numba._endf_interp1d_kernel(
+                np.asarray(x, dtype=np.float64),
+                np.asarray(xp_mesh, dtype=np.float64),
+                np.asarray(fp, dtype=np.float64),
+                laws, float(fill),
+            )
+            if n_outside and outside_value is None:
+                raise ValueError('some `x` value outside mesh given by `xp`')
+            return y
     is_inside = (
         (x >= np.min(xp_mesh)) & (x <= np.max(xp_mesh))
     ) | np.isnan(x)
