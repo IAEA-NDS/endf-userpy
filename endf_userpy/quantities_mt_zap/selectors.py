@@ -721,6 +721,17 @@ def satisfies_particle_production_select(
         return satisfies_gamma_production_select(
             endf_dict, mt, user_mts, aggregation=aggregation,
         )
+    # Production of anything but photons is yield x the MF3 cross
+    # section, so an MT without MF3 cannot contribute. The callers
+    # iterate the widened MT list (MF3 + MF12 + MF13 + MF15 keys, for
+    # MF13-only photon production, issue #130), which also holds MTs a
+    # file describes only through their photons: ENDF/B-VIII.1 N-14
+    # MT28 (n,np) and MT32 (n,nd) have MF13 / MF14 only, their
+    # particles being lumped into MT5. ``contains_zap`` (reaction
+    # physics: MT28 does emit a neutron) admitted them and the MF3
+    # lookup raised KeyError.
+    if not prop.has_mf3_mt(endf_dict, mt):
+        return False
     return satisfies_select_heuristic(
         endf_dict, mt, user_mts, aggregation=aggregation,
     )

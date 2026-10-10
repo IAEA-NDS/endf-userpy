@@ -150,6 +150,10 @@ def get_reaction_string_for_mt(endf_dict, mt):
     return r
 
 
+def has_mf3_mt(endf_dict, mt):
+    return 3 in endf_dict and mt in endf_dict[3]
+
+
 def has_mf4_mt(endf_dict, mt):
     return 4 in endf_dict and mt in endf_dict[4]
 
