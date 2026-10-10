@@ -377,3 +377,29 @@ def test_leaf_default_matches_ctx_default():
         r = mf3.compute_cross_section(d, 102, E)
     assert np.isnan(r[-1])
     assert len(w) == 1  # warn_nan emits one warning at leaf
+
+
+@pytest.mark.parametrize('backend', ['numpy', 'numba'])
+@pytest.mark.parametrize('policy,tail', [
+    ('warn_nan', 'nan'), ('nan', 'nan'), ('warn_zero', 0.0), ('zero', 0.0),
+])
+def test_composed_fill_applies_only_above_mesh(al27, backend, policy, tail):
+    """Composed (MF2 + MF3) path on the numpy-like backends: the fill
+    lands exactly on the above-mesh points, and a mesh that is fully
+    inside (no fill needed, the per-MT ``where`` is skipped) gives the
+    same values at the shared points."""
+    if backend == 'numba':
+        pytest.importorskip('numba')
+    inside = np.geomspace(1e-3, 1.4e8, 301)
+    E = np.concatenate([inside, [1.6e8, 2e8]])
+    opts = RunOptions(backend=backend, above_range=policy)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        xs = np.asarray(get_reaction_xs(al27, '(n,total)', E, options=opts))
+        xs_in = np.asarray(get_reaction_xs(al27, '(n,total)', inside, options=opts))
+    np.testing.assert_array_equal(xs[:-2], xs_in)
+    assert np.all(np.isfinite(xs_in)) and np.all(xs_in > 0.0)
+    if tail == 'nan':
+        assert np.all(np.isnan(xs[-2:]))
+    else:
+        assert np.all(xs[-2:] == 0.0)
