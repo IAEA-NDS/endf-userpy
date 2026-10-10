@@ -373,12 +373,9 @@ def integrate_mf6_dist2d_over_mu(
     return xp.asarray(result) if xp.name != 'numpy' else result
 
 
-def _prepare_angdist_to_energydist_conversion(
-    endf_dict, mt, zap, energies_in, energies_out, to_lab
-):
-    energies_in = energies_in.reshape(-1, 1)
-    energies_out = energies_out.reshape(1,-1)
-
+def _two_body_masses(endf_dict, mt, zap, to_lab):
+    """``(m_i, m_t, m_e, m_r)`` of the two-body kinematics of ``mt``
+    with ejectile ``zap`` (residual mass from the reaction Q-value)."""
     if to_lab is not True:
         raise ValueError('This function requires `to_lab=True`')
     m_i = get_projectile_mass(endf_dict)
@@ -392,6 +389,15 @@ def _prepare_angdist_to_energydist_conversion(
             f'Reaction stored in MT={mt} energetically infeasible, '
             'check Q-value stored in MF3/MT{mt}.'
         )
+    return m_i, m_t, m_e, m_r
+
+
+def _prepare_angdist_to_energydist_conversion(
+    endf_dict, mt, zap, energies_in, energies_out, to_lab
+):
+    energies_in = energies_in.reshape(-1, 1)
+    energies_out = energies_out.reshape(1,-1)
+    m_i, m_t, m_e, m_r = _two_body_masses(endf_dict, mt, zap, to_lab)
 
     # Standard-mu API (issue #185): returns cos(theta_lab) and the
     # matching signed Jacobian directly, no bridge negation needed.
@@ -434,6 +440,11 @@ def convert_angdist_to_energydist(
     module_logger.debug(
         f'convert angular distribution for MT={mt} to energy distribution',
     )
+    if getattr(xp, 'name', None) == 'jax' and _is_jax_tracer(energies_in):
+        return _convert_angdist_to_energydist_traced(
+            compute_angdist_func, endf_dict, mt, zap, energies_in,
+            energies_out, to_lab, xp,
+        )
     angle_cosines_out, jacvals = (
         _prepare_angdist_to_energydist_conversion(
             endf_dict, mt, zap, energies_in, energies_out, to_lab,
@@ -464,3 +475,35 @@ def convert_angdist_to_energydist(
     if xp is not None and xp.name != 'numpy':
         return xp.asarray(energydist)
     return energydist
+
+
+def _convert_angdist_to_energydist_traced(
+    compute_angdist_func, endf_dict, mt, zap, energies_in, energies_out,
+    to_lab, xp,
+):
+    """:func:`convert_angdist_to_energydist` for traced incident
+    energies (``jax.jit`` over them; issue #220): the kinematics and
+    the feasibility mask in ``xp``, the per-``E_in`` angular evaluation
+    as one ``xp.map`` body (``lax.map`` inside a trace) instead of the
+    Python loop. ``compute_angdist_func`` must accept ``xp=``.
+    ``energies_out`` stays concrete."""
+    m_i, m_t, m_e, m_r = _two_body_masses(endf_dict, mt, zap, to_lab)
+    e_in = xp.asarray(energies_in, dtype=xp.float64).reshape(-1)
+    e_out = xp.asarray(np.asarray(energies_out, dtype=float).reshape(1, -1))
+    mu = conv_relat.compute_mu_from_Ekin(
+        e_out, e_in.reshape(-1, 1), m_i, m_t, m_e, m_r, xp=xp,
+    )                                                       # (n_ein, n_eout)
+    jac = conv_relat.compute_dmu_dEkin(
+        e_out, e_in.reshape(-1, 1), m_i, m_t, m_e, m_r, xp=xp,
+    )
+    feasible = (~xp.isnan(mu)) & (xp.abs(mu) <= 1.0)
+    mu = xp.where(feasible, mu, 0.0)
+
+    def one_ein(args):
+        ein, mu_row = args
+        return compute_angdist_func(
+            endf_dict, mt, zap, ein.reshape(1), mu_row, to_lab, xp=xp,
+        )[0, :]
+
+    angdist = xp.map(one_ein, (e_in, mu))
+    return xp.where(feasible, angdist * xp.abs(jac), 0.0)
