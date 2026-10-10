@@ -798,3 +798,19 @@ def test_mt_without_mf2_contribution_is_plain_mf3(nd143_dict, backend):
     res = np.asarray(res_comp.reconstruct_resonance_xs(nd143_dict, 16, e, xp))
     assert res.shape == e.shape
     assert np.all(res == 0.0)
+
+
+def test_unsupported_range_warning_points_at_the_caller():
+    """``reconstruct_resonance_xs`` delegates to ``_resonance_xs``; its
+    'no supported LRF' warning must still be attributed to the line
+    that called ``reconstruct_resonance_xs``, not to library code."""
+    d = {2: {151: {'isotope': {1: {'range': {1: {
+        'LRU': 1, 'LRF': 4, 'EL': 1.0, 'EH': 10.0}}}}}}}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        out = res_comp.reconstruct_resonance_xs(
+            d, 102, np.array([2.0, 5.0]), array_ns.get_backend('numpy'))
+    assert np.all(np.asarray(out) == 0.0)
+    msgs = [w for w in caught if 'no supported LRF' in str(w.message)]
+    assert len(msgs) == 1
+    assert msgs[0].filename == __file__

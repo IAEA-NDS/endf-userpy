@@ -371,6 +371,7 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
     total = _resonance_xs(
         endf_dict, mt, energies_in, xp,
         urr_quadrature=urr_quadrature, _query_state=_query_state,
+        _stacklevel=3,
     )
     if total is None:
         return xp.zeros_like(xp.asarray(energies_in, dtype=xp.float64))
@@ -378,12 +379,17 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
 
 
 def _resonance_xs(endf_dict, mt, energies_in, xp,
-                  urr_quadrature='gauss_legendre_32', _query_state=None):
+                  urr_quadrature='gauss_legendre_32', _query_state=None,
+                  _stacklevel=2):
     """Body of :func:`reconstruct_resonance_xs`, but returns ``None``
     instead of an all-zero array when no supported range contributes
     to ``mt`` at any query energy (the common case: most MTs have no
     MF2 contribution), so the composition can skip allocating and
-    adding zeros on the full mesh."""
+    adding zeros on the full mesh. ``_stacklevel`` is the stack level
+    of the unsupported-range warnings as seen from here: 2 (default)
+    attributes them to the caller; :func:`reconstruct_resonance_xs`
+    passes 3 so they point at *its* caller, as before this helper was
+    split out."""
     e = xp.asarray(energies_in, dtype=xp.float64)
     total = None
     # In-range masks on the host whenever the energies are concrete --
@@ -457,7 +463,7 @@ def _resonance_xs(endf_dict, mt, energies_in, xp,
             f'Reich-Moore / 7 R-Matrix Limited KRM=3) LRU=1 range '
             f'found (saw: {parts}); returning zero resolved-resonance '
             f'contribution. Adler-Adler (LRF=4) is not implemented.',
-            UserWarning, stacklevel=2,
+            UserWarning, stacklevel=_stacklevel,
         )
 
     # ---- LRU=2 LSSF=0 (URR needing reconstruction).
@@ -531,7 +537,7 @@ def _resonance_xs(endf_dict, mt, energies_in, xp,
             f'physical average XS. For LSSF=1 URR (MF3 already '
             f'carries the average XS) the result would be correct '
             f'without any URR reconstruction.',
-            UserWarning, stacklevel=2,
+            UserWarning, stacklevel=_stacklevel,
         )
 
     return total
