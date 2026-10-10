@@ -7,27 +7,18 @@ Reich-Moore (LRF=3) and R-Matrix Limited (LRF=7 KRM=3) kernels.
 - Multi-group reconstruction with interleaved ``res_group`` and
   0 / 1 / 2 fission channels matches the numpy backend, which pins the
   per-group slicing of the sorted resonance arrays.
-- A zero R-matrix denominator (query energy exactly at a resonance
-  whose eliminated width is 0) gives NaN at that energy, matching the
-  numpy backend, instead of the arbitrary value (0.0) the fastmath
-  complex division of the previous kernel produced.
+
+Resonances with zero eliminated width (singular at their energy) are
+covered in ``test_rm_zero_width_limit.py``.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from endf_parserpy import EndfParserCpp
-
 from endf_userpy.primitives import array_ns
 from endf_userpy.primitives.tab1 import TAB1
 from endf_userpy.mfsec_interpretation import mf2_interpretation_reichmoore as rm
-from endf_userpy.mfsec_interpretation import mf2_interpretation_rml as rml
-from endf_userpy.mfsec_interpretation.mf2_interpretation_rml_preproc import (
-    rml_data_from_endf_dict,
-)
-
-from _corpus import resolve_pu239_rml
 
 numba = pytest.importorskip('numba')
 
@@ -69,7 +60,6 @@ def test_accumulate_r_matrix_matches_complex_sum(nch):
             expected = np.sum(a[k] * inv) if k < used else 0.0
             np.testing.assert_allclose(out[k], expected, rtol=1e-13,
                                        atol=1e-13 * np.abs(a[k]).sum())
-        assert out[6] == 0.0
 
 
 def test_rm_numba_matches_numpy_interleaved_groups():
@@ -107,50 +97,3 @@ def test_rm_numba_matches_numpy_interleaved_groups():
     for key in ('cap', 'tot'):
         diff = np.abs(np.asarray(xs_nb[key]) - np.asarray(xs_np[key]))
         assert np.all(diff < 1e-13 * pi_k2), key
-
-
-def test_rm_numba_zero_denominator_is_nan_like_numpy():
-    data = rm.RMData(
-        abn=1.0, spi=0.5, ki=1e-4,
-        r_a=_constant_tab1(0.6), r_ap=_constant_tab1(0.6),
-        group_l=np.array([0], dtype=np.int32),
-        group_g=np.array([1.0], dtype=np.float64),
-        group_nfis=np.array([1], dtype=np.int32),
-        res_group=np.array([0, 0], dtype=np.int32),
-        res_er=np.array([100.0, 200.0], dtype=np.float64),
-        res_gn=np.array([0.5, 0.5], dtype=np.float64),
-        res_gg=np.array([0.3, 0.0], dtype=np.float64),
-        res_gf1=np.array([0.1, 0.0], dtype=np.float64),
-        res_gf2=np.zeros(2),
-    )
-    e = np.array([150.0, 200.0, 200.0 + 1e-6])
-    with np.errstate(all='ignore'):
-        xs_np = rm.reconstruct(data, e, array_ns.get_backend('numpy'))
-    xs_nb = rm.reconstruct(data, e, array_ns.get_backend('numba'))
-    for key in ('sct', 'cap', 'fis', 'tot'):
-        nb = np.asarray(xs_nb[key])
-        assert np.isnan(nb[1]), key
-        assert np.all(np.isfinite(nb[[0, 2]])), key
-        np.testing.assert_array_equal(np.isnan(nb),
-                                      np.isnan(np.asarray(xs_np[key])))
-    assert np.all(np.isfinite(np.asarray(xs_nb['pot'])))
-
-
-def test_rml_numba_zero_denominator_is_nan():
-    path = resolve_pu239_rml()
-    if path is None:
-        pytest.skip('Pu-239 LRF=7 corpus file not present (see fetch.sh)')
-    d = EndfParserCpp(ignore_missing_tpid=True).parsefile(path)
-    data = rml_data_from_endf_dict(d)
-    g = int(data.res_group[0])
-    _, _, gamma_slots, _ = rml._classify_group_channels(data, g)
-    res_gam = np.array(data.res_gam, dtype=np.float64, copy=True)
-    res_gam[0, gamma_slots] = 0.0
-    data.res_gam = res_gam
-    er0 = float(data.res_er[0])
-    xs = rml.reconstruct(data, np.array([er0 * 0.999, er0, er0 * 1.001]),
-                         array_ns.get_backend('numba'))
-    for key in ('sct', 'cap', 'fis', 'tot'):
-        out = np.asarray(xs[key])
-        assert np.isnan(out[1]), key
-        assert np.all(np.isfinite(out[[0, 2]])), key

@@ -222,6 +222,75 @@ def capture_unitarity_deficit(W_inv, R, p_inc, inc, xp):
     return 4.0 * p_inc * xp.sum(ww * xp.imag(R), axis=(1, 2))
 
 
+def zero_width_mask(res_gg, xp):
+    """Concrete boolean mask of resonances whose eliminated (capture)
+    width is exactly zero, or ``None`` when there are none or the widths
+    are traced (``jax.grad`` wrt widths), in which case the regular
+    R-matrix path is used unchanged."""
+    try:
+        gg = np.asarray(res_gg, dtype=np.float64)
+    except Exception:          # traced widths
+        return None
+    zw = gg == 0.0
+    return zw if zw.any() else None
+
+
+def zero_width_group_xs(W, R, P_diag, omega, fis_cols, e, er_zw, gam_zw, xp,
+                        inc=0):
+    """Bracketed partial cross sections ``(|1-U_00|², 1-Σ_c|U_0c|²,
+    Σ_fis |U_0c|²)`` of one group (multiply by ``(π/k²) g_J``) whose
+    zero-width resonances were kept out of ``R``.
+
+    A resonance with zero eliminated width adds the real pole
+    ``γ γᵀ / (E_r - E)`` to the R-matrix. Folding it into ``R`` loses
+    all precision near ``E = E_r`` (relative error ~ eps / |E/E_r - 1|,
+    NaN at equality) although the cross sections are smooth there.
+    Instead ``W = I - i R P`` is built from the regular resonances and
+    each zero-width resonance is applied as an exact rank-one
+    (Sherman-Morrison) update of ``W⁻¹``,
+
+        ``W⁻¹ <- W⁻¹ + i W⁻¹γ γᵀP W⁻¹ / ((E_r - E) - i γᵀP W⁻¹γ)``,
+
+    smooth through ``E = E_r``. The U-matrix row follows from
+    ``(I - i P^½ R P^½)⁻¹ = P^½ W⁻¹ P^-½``:
+    ``U_ic = Ω_i Ω_c (2 √(P_i/P_c) (W⁻¹)_ic - δ_ic)`` for the incident
+    channel ``i = inc`` (0 for a closed channel, ``P_c = 0``), and the
+    capture deficit from :func:`capture_unitarity_deficit` (a real pole
+    adds nothing to ``Im R``).
+
+    ``W``, ``R``: ``(ne, n, n)`` from the regular resonances;
+    ``P_diag``, ``omega``: ``(ne, n)`` penetrabilities and outgoing
+    phase factors; ``fis_cols``: fission channel indices; ``er_zw``:
+    ``(k,)``; ``gam_zw``: ``(n, k)`` amplitudes.
+    """
+    ne, n = W.shape[0], W.shape[-1]
+    eye = xp.broadcast_to(xp.eye(n, dtype=W.dtype), W.shape)
+    W_inv = xp.linalg.solve(W, eye)
+    for s in range(int(er_zw.shape[0])):
+        u = gam_zw[:, s].astype(W.dtype)                       # (n,)
+        v = u.reshape(1, n) * P_diag                           # (ne, n): γᵀ P
+        Bu = xp.sum(W_inv * u.reshape(1, 1, n), axis=2)        # W⁻¹ γ
+        vB = xp.sum(v.reshape(ne, n, 1) * W_inv, axis=1)       # γᵀP W⁻¹
+        den = (er_zw[s] - e) - 1j * xp.sum(v * Bu, axis=1)
+        W_inv = W_inv + 1j * (Bu.reshape(ne, n, 1) * vB.reshape(ne, 1, n)
+                              / den.reshape(ne, 1, 1))
+    sqrt_p = xp.sqrt(P_diag)
+    open_c = sqrt_p > 0.0
+    u_prime = xp.where(
+        open_c,
+        2.0 * sqrt_p[:, inc:inc + 1] * W_inv[:, inc, :]
+        / xp.where(open_c, sqrt_p, 1.0),
+        0.0,
+    ) - (xp.arange(n) == inc).reshape(1, n)
+    U_row = omega[:, inc:inc + 1] * omega * u_prime            # (ne, n)
+    sct_b = xp.abs(1.0 - U_row[:, inc]) ** 2
+    fis_b = xp.zeros_like(sct_b)
+    for c in fis_cols:
+        fis_b = fis_b + xp.abs(U_row[:, c]) ** 2
+    cap_b = capture_unitarity_deficit(W_inv, R, P_diag[:, inc], inc, xp)
+    return sct_b, cap_b, fis_b
+
+
 def _reconstruct_group(
     e_safe, e_pos, k_e2, pi_k2,
     group_l, group_g, group_nfis,
@@ -229,7 +298,7 @@ def _reconstruct_group(
     group_mask,
     ki, r_a, r_ap, xp,
     r_a_val=None, r_ap_val=None,
-    r_matrix=None,
+    r_matrix=None, zero_width=None,
 ):
     """Reconstruct one J·π group's contribution to sct/cap/fis.
 
@@ -252,6 +321,11 @@ def _reconstruct_group(
     unused (the JAX backend passes it from
     :func:`mf2_interpretation_reichmoore_jax.accumulate_r_matrix`).
     Otherwise it is built by :func:`_r_matrix_dense`.
+
+    ``zero_width``, if given, is ``(er_zw (k,), gam_zw (nch, k))`` for
+    this group's resonances with zero capture width, which are then
+    excluded from ``R`` / ``group_mask`` by the caller and applied
+    exactly by :func:`zero_width_group_xs`.
 
     Returns three ``(ne,)`` arrays: ``sct``, ``cap``, ``fis``, each
     already multiplied by the group statistical weight and the
@@ -292,10 +366,6 @@ def _reconstruct_group(
     RP = R * P_diag.reshape(ne, 1, nch)                        # (ne, nch, nch)
     I_ = xp.eye(nch, dtype=xp.complex128).reshape(1, nch, nch)
     W = I_ - 1j * RP
-    # Small-matrix solve, (ne, nch, nch) inverse-solve applied to R.
-    # One LU for both W⁻¹R (the U-matrix) and W⁻¹ (capture, see
-    # :func:`capture_unitarity_deficit`).
-    X, W_inv = _solve_with_inverse(W, R, xp)
 
     # --- U-matrix. Only need the row U_{0, :} (incident = elastic). ---
     # Ω_c = exp(-i phi_L(rho_{ap}(E))): elastic gets the hard-sphere
@@ -310,6 +380,25 @@ def _reconstruct_group(
         rho_ap = _rho(e_safe, ki, r_ap, xp)                    # (ne,)
     phi_e = factors.phase(rho_ap, L_scalar, xp)                # (ne,)
     omega_c = xp.exp(-1j * phi_e)                              # (ne,)
+
+    if zero_width is not None:
+        er_zw, gam_zw = zero_width
+        omega_row = xp.stack([omega_c] + [xp.ones_like(omega_c)] * nfis,
+                             axis=1)
+        sct_b, cap_b, fis_b = zero_width_group_xs(
+            W, R, P_diag, omega_row, range(1, nch), e_safe, er_zw, gam_zw,
+            xp,
+        )
+        zero = xp.zeros_like(sct_b)
+        pre = pi_k2 * group_g
+        return (xp.where(e_pos, pre * sct_b, zero),
+                xp.where(e_pos, pre * cap_b, zero),
+                xp.where(e_pos, pre * fis_b, zero))
+
+    # Small-matrix solve, (ne, nch, nch) inverse-solve applied to R.
+    # One LU for both W⁻¹R (the U-matrix) and W⁻¹ (capture, see
+    # :func:`capture_unitarity_deficit`).
+    X, W_inv = _solve_with_inverse(W, R, xp)
     # omega_row for the fission channels are 1 (no hard-sphere phase).
     # U_{0,c} = omega_0 * omega_c * [δ_{0c} + 2 i sqrt(P_0) sqrt(P_c) X_{0,c}]
     sqrt_P0 = xp.sqrt(p_e)                                     # (ne,)
@@ -619,6 +708,18 @@ def reconstruct(
     have_per_group_r_a = getattr(data, 'group_r_a', None) is not None
     have_per_group_r_ap = getattr(data, 'group_r_ap', None) is not None
 
+    # Resonances with zero capture width are kept out of the R-matrix
+    # (zero amplitude through the mask; a unit width keeps their
+    # denominator finite) and applied exactly per group by
+    # :func:`zero_width_group_xs`.
+    # Probe the dataclass field, not ``res_gg``: inside a jax.jit trace
+    # ``xp.asarray`` of concrete widths is already a tracer.
+    zw = zero_width_mask(data.res_gg, xp)
+    res_mask_R, res_gg_R = res_mask, res_gg
+    if zw is not None:
+        res_mask_R = res_mask * xp.asarray(~zw, dtype=xp.float64).reshape(-1, 1)
+        res_gg_R = xp.where(xp.asarray(zw), 1.0, res_gg)
+
     # JAX: accumulate every group's R-matrix in one blocked scan over
     # the resonance axis (no (ne, nres) intermediate, each resonance
     # evaluated once rather than once per group). Each resonance
@@ -632,7 +733,7 @@ def reconstruct(
         gam = xp.zeros((nch_max, res_er.shape[0]), dtype=xp.float64)
         for g in range(ngroups):
             gam_g = _group_gammas(
-                res_er, res_gn, res_gf1, res_gf2, res_mask[:, g],
+                res_er, res_gn, res_gf1, res_gf2, res_mask_R[:, g],
                 xp.asarray(int(data.group_l[g])),
                 int(data.group_nfis[g]), data.ki, data.r_a, xp,
                 r_a_val=data.group_r_a[g] if have_per_group_r_a else None,
@@ -643,7 +744,7 @@ def reconstruct(
                      if _max_intermediate_bytes is not None
                      else _mlbw.NUMPY_MAX_INTERMEDIATE_BYTES)
         r_all = _jax.accumulate_r_matrix(
-            e_safe, res_er, res_gg, res_group, gam, ngroups,
+            e_safe, res_er, res_gg_R, res_group, gam, ngroups,
             _jax.block_size(int(e_safe.shape[0]), max_bytes),
         )                                      # (ngroups, nch, nch, ne)
 
@@ -654,14 +755,26 @@ def reconstruct(
         if r_all is not None:
             nch_g = 1 + int(data.group_nfis[g])
             r_matrix_g = xp.moveaxis(r_all[g, :nch_g, :nch_g], -1, 0)
+        zero_width_g = None
+        if zw is not None:
+            idx = np.nonzero(zw & (np.asarray(data.res_group) == g))[0]
+            if idx.size:
+                gam_zw = _group_gammas(
+                    res_er, res_gn, res_gf1, res_gf2,
+                    res_mask[:, g] * xp.asarray(zw, dtype=xp.float64),
+                    xp.asarray(int(data.group_l[g])),
+                    int(data.group_nfis[g]), data.ki, data.r_a, xp,
+                    r_a_val=r_a_val_g,
+                )
+                zero_width_g = (res_er[idx], xp.stack(gam_zw)[:, idx])
         sct_g, cap_g, fis_g = _reconstruct_group(
             e_safe, e_pos, k_e2, pi_k2,
             data.group_l[g], data.group_g[g], data.group_nfis[g],
-            res_er, res_gn, res_gg, res_gf1, res_gf2,
-            res_mask[:, g],
+            res_er, res_gn, res_gg_R, res_gf1, res_gf2,
+            res_mask_R[:, g],
             data.ki, data.r_a, data.r_ap, xp,
             r_a_val=r_a_val_g, r_ap_val=r_ap_val_g,
-            r_matrix=r_matrix_g,
+            r_matrix=r_matrix_g, zero_width=zero_width_g,
         )
         sct_tot = sct_tot + sct_g
         cap_tot = cap_tot + cap_g

@@ -397,6 +397,43 @@ def _group_gammas(data: RMLData, g: int, xp):
     return gamma_pc, gamma_gg
 
 
+def _eliminated_widths(data: RMLData, xp):
+    """Every resonance's own eliminated (capture) width ``Γ_γ,r``,
+    ``(nres,)``, plus the R-matrix inputs derived from it:
+    ``(res_gg_R, reg_mask, zw)`` where ``zw`` is the concrete mask of
+    zero-width resonances (``None`` if there are none or the widths are
+    traced), ``res_gg_R`` the denominator widths with those replaced by
+    1 and ``reg_mask`` (or ``None``) zeroing their amplitudes in ``R``.
+
+    Building a group's R-matrix with every resonance's own width keeps
+    the denominators of the zero-amplitude out-of-group resonances
+    complex: with group-masked widths (0 outside the group) a query
+    exactly at another group's ``E_r`` gave ``0 / 0`` = NaN on the
+    numpy backend."""
+    gg = xp.zeros(int(data.res_er.shape[0]), dtype=xp.float64)
+    for g in range(data.n_groups()):
+        gg = gg + _group_gammas(data, g, xp)[1]
+    # Zero widths are detected on the dataclass fields (numpy) rather
+    # than on ``gg``: inside a jax.jit trace the xp arithmetic above
+    # already yields tracers even for concrete widths.
+    try:
+        gam_np = np.abs(np.asarray(data.res_gam, dtype=np.float64))
+        grp_np = np.asarray(data.res_group)
+    except Exception:          # traced widths
+        return gg, None, None
+    gg_np = np.zeros(gam_np.shape[0])
+    for g in range(data.n_groups()):
+        slots = _classify_group_channels(data, g)[2]
+        m = grp_np == g
+        if slots:
+            gg_np[m] = gam_np[m][:, slots].sum(axis=1)
+    zw = _rm.zero_width_mask(gg_np, xp)
+    if zw is None:
+        return gg, None, None
+    reg_mask = xp.asarray(~zw, dtype=xp.float64)
+    return xp.where(xp.asarray(zw), 1.0, gg), reg_mask, zw
+
+
 def _r_matrix_dense(e_safe, res_er, gamma_gg, gamma_pc, xp):
     """Dense ``(ne, npart, npart)`` complex R-matrix over one
     group's particle channels; materialises the ``(ne, nres)``
@@ -425,6 +462,7 @@ def _r_matrix_dense(e_safe, res_er, gamma_gg, gamma_pc, xp):
 
 def _reconstruct_group(
     data: RMLData, g: int, e_safe, e_pos, pi_k2, xp, r_matrix=None,
+    res_gg_R=None, reg_mask=None, zero_width=None,
 ):
     """Reconstruct one J-group's contribution to (elastic, capture,
     fission).
@@ -437,7 +475,14 @@ def _reconstruct_group(
 
     ``r_matrix``, if given, is the group's precomputed ``(ne, npart,
     npart)`` R-matrix (JAX backend); otherwise it is built by
-    :func:`_r_matrix_dense` from :func:`_group_gammas`.
+    :func:`_r_matrix_dense` from :func:`_group_gammas`, with the
+    denominators' eliminated widths ``res_gg_R`` (every resonance's
+    own, see :func:`_eliminated_widths`) and the amplitudes multiplied
+    by ``reg_mask`` (0 for zero-width resonances).
+
+    ``zero_width``, if given, is ``(er_zw (k,), gam_zw (npart, k))`` for
+    this group's resonances with zero eliminated width, applied exactly
+    by :func:`mf2_interpretation_reichmoore.zero_width_group_xs`.
 
     Returns three ``(ne,)`` arrays: ``sct``, ``cap``, ``fis``,
     each with the group's statistical weight and the ``π/k²``
@@ -494,8 +539,11 @@ def _reconstruct_group(
     # --- R-matrix R_{cc'}(E) over particle channels only. ---
     if r_matrix is None:
         gamma_pc, gamma_gg = _group_gammas(data, g, xp)
+        if reg_mask is not None:
+            gamma_pc = [gam * reg_mask for gam in gamma_pc]
         r_matrix = _r_matrix_dense(
-            e_safe, data.res_er, gamma_gg, gamma_pc, xp,
+            e_safe, data.res_er,
+            gamma_gg if res_gg_R is None else res_gg_R, gamma_pc, xp,
         )
     R = r_matrix
 
@@ -506,6 +554,19 @@ def _reconstruct_group(
     RP = R * P_diag.reshape(ne, 1, npart)                          # (ne, npart, npart)
     I_ = xp.eye(npart, dtype=xp.complex128).reshape(1, npart, npart)
     W = I_ - 1j * RP
+    if zero_width is not None:
+        er_zw, gam_zw = zero_width
+        omega_row = xp.stack([xp.exp(-1j * ph) for ph in phase_list], axis=1)
+        fis_cols = [i for i, c in enumerate(particle) if kinds[c] == 'fission']
+        sct_b, cap_b, fis_b = _rm.zero_width_group_xs(
+            W, R, P_diag, omega_row, fis_cols, e_safe, er_zw, gam_zw, xp,
+            inc=elastic_slot,
+        )
+        zero = xp.zeros_like(sct_b)
+        pre = pi_k2 * g_J
+        return (xp.where(e_pos, pre * sct_b, zero),
+                xp.where(e_pos, pre * cap_b, zero),
+                xp.where(e_pos, pre * fis_b, zero))
     X, W_inv = _rm._solve_with_inverse(W, R, xp)                    # (ne, npart, npart) x2
 
     # --- U-row for the elastic (incident) channel. ---
@@ -570,12 +631,13 @@ def _r_matrix_all_groups_jax(data: RMLData, e_safe, xp):
     npart_max = max(npart)
     nres = int(data.res_er.shape[0])
     gam = xp.zeros((npart_max, nres), dtype=xp.float64)
-    gg = xp.zeros(nres, dtype=xp.float64)
+    gg, reg_mask, _ = _eliminated_widths(data, xp)
     for g in range(ngroups):
-        gamma_pc, gamma_gg = _group_gammas(data, g, xp)
+        gamma_pc, _ = _group_gammas(data, g, xp)
         gamma_pc = gamma_pc + [xp.zeros(nres)] * (npart_max - len(gamma_pc))
         gam = gam + xp.stack(gamma_pc)
-        gg = gg + gamma_gg
+    if reg_mask is not None:
+        gam = gam * reg_mask
     return _rm_jax.accumulate_r_matrix(
         e_safe, xp.asarray(data.res_er, dtype=xp.float64), gg,
         xp.asarray(data.res_group, dtype=xp.int32), gam, ngroups,
@@ -638,6 +700,7 @@ def reconstruct(data: RMLData, energies_in, xp):
     r_all = None
     if getattr(xp, 'name', None) == 'jax' and int(data.res_er.shape[0]) > 0:
         r_all = _r_matrix_all_groups_jax(data, e_safe, xp)
+    res_gg_R, reg_mask, zw = _eliminated_widths(data, xp)
     for g in range(ngroups):
         # Potential scattering contribution: sum g_J sin^2(phi_e_L)
         # over groups, using the elastic channel's APE. Multi-
@@ -661,8 +724,15 @@ def reconstruct(data: RMLData, energies_in, xp):
         if r_all is not None:
             npart_g = len(_classify_group_channels(data, g)[1])
             r_matrix_g = xp.moveaxis(r_all[g, :npart_g, :npart_g], -1, 0)
+        zero_width_g = None
+        if zw is not None:
+            idx = np.nonzero(zw & (np.asarray(data.res_group) == g))[0]
+            if idx.size:
+                gamma_pc, _ = _group_gammas(data, g, xp)
+                zero_width_g = (data.res_er[idx], xp.stack(gamma_pc)[:, idx])
         sct_g, cap_g, fis_g = _reconstruct_group(
             data, g, e_safe, e_pos, pi_k2, xp, r_matrix=r_matrix_g,
+            res_gg_R=res_gg_R, reg_mask=reg_mask, zero_width=zero_width_g,
         )
         sct_tot = sct_tot + sct_g
         cap_tot = cap_tot + cap_g
