@@ -139,3 +139,62 @@ def test_traced_x_host_path_grad_wrt_ordinates():
     assert np.all(np.isfinite(np.asarray(g)))
     np.testing.assert_allclose(np.asarray(g), np.asarray(g_ref),
                                rtol=1e-13, atol=0.0)
+
+
+@pytest.mark.parametrize('laws', [(2,), (2, 5), (1, 2, 3, 4, 5)])
+@pytest.mark.parametrize('side', ['right', 'left'])
+@pytest.mark.parametrize('outside', [0.0, float('nan')])
+def test_traced_query_with_x_host_matches_generic_path(laws, side, outside):
+    """A traced query with its host copy (the staged mesh of a jit
+    trace) takes the host-lookup kernel inside the trace and equals
+    the generic traced path (doubled x, flat panels, out of range)."""
+    t = _table(laws)
+    got = jax.jit(lambda q: tab1.interp(
+        t, q, XP, outside_value=outside, side=side, x_host=Q))(jnp.asarray(Q))
+    ref = jax.jit(lambda q: tab1.interp(
+        t, q, XP, outside_value=outside, side=side))(jnp.asarray(Q))
+    np.testing.assert_array_equal(np.asarray(got), np.asarray(ref))
+
+
+def _primitives(jaxpr, acc=None):
+    """Primitive names in ``jaxpr`` and its sub-jaxprs."""
+    acc = set() if acc is None else acc
+    for eq in jaxpr.eqns:
+        acc.add(eq.primitive.name)
+        for v in eq.params.values():
+            for sub in (v if isinstance(v, (list, tuple)) else [v]):
+                j = getattr(sub, 'jaxpr', None)
+                if j is not None:
+                    _primitives(getattr(j, 'jaxpr', j), acc)
+    return acc
+
+
+def test_traced_query_with_x_host_avoids_device_lookup():
+    """With ``x_host`` the traced program has no device-side panel
+    search (the ``scan`` of ``jnp.searchsorted``); the host indices
+    enter behind an optimisation barrier."""
+    t = _table((2, 5))
+    q = jnp.asarray(Q)
+    with_host = _primitives(jax.make_jaxpr(
+        lambda q: tab1.interp(t, q, XP, x_host=Q))(q).jaxpr)
+    without = _primitives(jax.make_jaxpr(
+        lambda q: tab1.interp(t, q, XP))(q).jaxpr)
+    assert 'optimization_barrier' in with_host
+    assert 'scan' not in with_host
+    assert 'scan' in without
+
+
+def test_traced_query_with_x_host_grad_wrt_ordinates():
+    t = _table((2, 5))
+
+    def loss(y, use_host):
+        t2 = tab1.TAB1(x=t.x, y=y, nbt=t.nbt, intp=t.intp)
+        q = jnp.asarray(Q) * 1.0
+        kw = {'x_host': Q} if use_host else {}
+        return jnp.sum(tab1.interp(t2, q, XP, **kw) ** 2)
+
+    y0 = jnp.asarray(t.y)
+    g_host = jax.grad(lambda y: loss(y, True))(y0)
+    g_ref = jax.grad(lambda y: loss(y, False))(y0)
+    np.testing.assert_allclose(np.asarray(g_host), np.asarray(g_ref),
+                               rtol=1e-13, atol=0.0)

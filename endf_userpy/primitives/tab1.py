@@ -51,7 +51,8 @@ class TAB1:
     intp: np.ndarray
 
 
-def interp(tab1: TAB1, x_query, xp, outside_value=0.0, side='right') -> Any:
+def interp(tab1: TAB1, x_query, xp, outside_value=0.0, side='right',
+           x_host=None) -> Any:
     """ENDF-6 TAB1 interpolation.
 
     ``x_query`` can be a scalar or array of the same backend as
@@ -91,6 +92,14 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0, side='right') -> Any:
     on out-of-range is not supported here (backend-agnostic code
     can't raise cleanly under JAX tracing); use ``nan`` and
     check.
+
+    ``x_host`` (jax backend only): the query energies as a numpy array
+    when ``x_query`` is a tracer of a concrete mesh, i.e. the staged
+    mesh of a ``jax.jit`` trace (see ``quantities._stage_energies``).
+    The panel lookup then runs on the host and only the int32 panel
+    indices enter the traced program; without it a tracer query takes
+    the fully traceable path below (device-side ``searchsorted``,
+    ~2x slower at 1M points).
     """
     if side not in ('right', 'left'):
         raise ValueError(f"side must be 'right' or 'left', got {side!r}")
@@ -145,6 +154,16 @@ def interp(tab1: TAB1, x_query, xp, outside_value=0.0, side='right') -> Any:
                 xp.asarray(outside_value, dtype=xp.float64),
                 laws=_static_laws(tab1.intp), side=side,
             )
+        if x_host is not None:
+            try:
+                tab_x_np = np.asarray(tab1.x, dtype=np.float64)
+            except Exception:      # traced abscissae
+                tab_x_np = None
+            if tab_x_np is not None:
+                return _interp_traced_query_host_lookup(
+                    tab1, x, np.asarray(x_host, dtype=np.float64),
+                    tab_x_np, xp, outside_value, side,
+                )
 
     tab_x = xp.asarray(tab1.x, dtype=xp.float64)
     tab_y = xp.asarray(tab1.y, dtype=xp.float64)
@@ -227,6 +246,30 @@ def from_endf_dict(
 
 
 _ALL_LAWS = (1, 2, 3, 4, 5)
+
+
+def _interp_traced_query_host_lookup(tab1, x, x_host, tab_x_np, xp,
+                                     outside_value, side):
+    """jax: traced query ``x`` whose values are known on the host
+    (``x_host``). Panel lookup on numpy; the int32 indices and law codes
+    are the only query-sized constants in the traced program and sit
+    behind an optimisation barrier so XLA does not constant-fold the
+    interpolation at compile time. Panel values are gathered on jax, so
+    traced ordinates keep their gradient."""
+    import jax
+    from . import tab1_jax
+    i, law = tab1_jax.host_lookup(
+        tab_x_np, np.asarray(tab1.nbt), np.asarray(tab1.intp), x_host, side,
+    )
+    i, law = jax.lax.optimization_barrier(
+        (xp.asarray(i.astype(np.int32)), xp.asarray(law)))
+    tab_x = xp.asarray(tab_x_np)
+    tab_y = xp.asarray(tab1.y, dtype=xp.float64)
+    return tab1_jax.interp_from_lookup(
+        law, x, tab_x[i - 1], tab_x[i], tab_y[i - 1], tab_y[i],
+        xp.asarray(outside_value, dtype=xp.float64),
+        laws=_static_laws(tab1.intp), side=side,
+    )
 
 
 def _host_arrays(x, tab1):
