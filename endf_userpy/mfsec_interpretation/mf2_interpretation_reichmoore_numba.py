@@ -88,10 +88,9 @@ def accumulate_r_matrix(E, er, hg, a00, a01, a11, a02, a12, a22, nch):
     accumulators or ``range(start, end)`` over the full arrays do not
     vectorise (~4-6x slower). The reciprocal is written as a power
     so the per-division zero check of numba's default error model
-    does not block vectorisation; a zero denominator (``E == E_r``
-    with a zero radiation width) is counted instead and returned as
-    ``nzero`` so the caller can flag those energies (NaN) outside the
-    parallel loop.
+    does not block vectorisation. ``hg`` must be positive: resonances
+    with zero capture width are kept out of the sum by the wrapper and
+    applied exactly by :func:`zero_width_group_xs`.
     """
     r00r = 0.0
     r00i = 0.0
@@ -105,14 +104,12 @@ def accumulate_r_matrix(E, er, hg, a00, a01, a11, a02, a12, a22, nch):
     r12i = 0.0
     r22r = 0.0
     r22i = 0.0
-    nzero = 0.0
     n = er.shape[0]
     if nch == 1:
         for r in range(n):
             dr = er[r] - E
             h = hg[r]
             d = dr * dr + h * h
-            nzero += 1.0 if d == 0.0 else 0.0
             q = d ** -1.0
             cr = dr * q
             ci = h * q
@@ -123,7 +120,6 @@ def accumulate_r_matrix(E, er, hg, a00, a01, a11, a02, a12, a22, nch):
             dr = er[r] - E
             h = hg[r]
             d = dr * dr + h * h
-            nzero += 1.0 if d == 0.0 else 0.0
             q = d ** -1.0
             cr = dr * q
             ci = h * q
@@ -138,7 +134,6 @@ def accumulate_r_matrix(E, er, hg, a00, a01, a11, a02, a12, a22, nch):
             dr = er[r] - E
             h = hg[r]
             d = dr * dr + h * h
-            nzero += 1.0 if d == 0.0 else 0.0
             q = d ** -1.0
             cr = dr * q
             ci = h * q
@@ -155,8 +150,7 @@ def accumulate_r_matrix(E, er, hg, a00, a01, a11, a02, a12, a22, nch):
             r22r += a22[r] * cr
             r22i += a22[r] * ci
     return (complex(r00r, r00i), complex(r01r, r01i), complex(r11r, r11i),
-            complex(r02r, r02i), complex(r12r, r12i), complex(r22r, r22i),
-            nzero)
+            complex(r02r, r02i), complex(r12r, r12i), complex(r22r, r22i))
 
 
 @njit(cache=True, inline='always')
@@ -176,6 +170,99 @@ def capture_deficit_row(w0, w1, w2, R00, R01, R11, R02, R12, R22):
             + 2.0 * (a01 * R01.imag + a02 * R02.imag + a12 * R12.imag))
 
 
+@njit(cache=True)
+def small_r_matrix(n, R00, R01, R11, R02, R12, R22):
+    """The symmetric ``(n, n)`` R-matrix (n <= 3) from its upper
+    triangle scalars."""
+    R = np.zeros((n, n), dtype=np.complex128)
+    R[0, 0] = R00
+    if n >= 2:
+        R[0, 1] = R01
+        R[1, 0] = R01
+        R[1, 1] = R11
+    if n >= 3:
+        R[0, 2] = R02
+        R[2, 0] = R02
+        R[1, 2] = R12
+        R[2, 1] = R12
+        R[2, 2] = R22
+    return R
+
+
+@njit(cache=True)
+def zero_width_group_xs(R, P, omega, is_fis, E, zw_er, zw_gam):
+    """numba twin of
+    :func:`mf2_interpretation_reichmoore.zero_width_group_xs` at one
+    energy: ``R`` ``(n, n)`` complex from the group's regular
+    resonances, ``P`` / ``omega`` / ``is_fis`` ``(n,)`` per channel
+    (incident channel 0), ``zw_er`` ``(k,)`` / ``zw_gam`` ``(k, >= n)``
+    the zero-capture-width resonances. Returns the bracketed
+    ``(|1-U_00|², 1-Σ_c|U_0c|², Σ_fis |U_0c|²)``. Only called for
+    groups that have zero-width resonances (none in ENDF/B-VIII.1)."""
+    n = P.shape[0]
+    # W⁻¹ by Gauss-Jordan on [W | I] (n <= 3, partial pivoting).
+    A = np.zeros((n, 2 * n), dtype=np.complex128)
+    for a in range(n):
+        for b in range(n):
+            A[a, b] = (1.0 if a == b else 0.0) - 1j * R[a, b] * P[b]
+        A[a, n + a] = 1.0
+    for c in range(n):
+        piv = c
+        for a in range(c + 1, n):
+            if abs(A[a, c]) > abs(A[piv, c]):
+                piv = a
+        for b in range(2 * n):
+            A[c, b], A[piv, b] = A[piv, b], A[c, b]
+        d = A[c, c]
+        for b in range(2 * n):
+            A[c, b] = A[c, b] / d
+        for a in range(n):
+            if a != c:
+                f = A[a, c]
+                for b in range(2 * n):
+                    A[a, b] = A[a, b] - f * A[c, b]
+    Winv = A[:, n:].copy()
+    Bu = np.zeros(n, dtype=np.complex128)
+    vB = np.zeros(n, dtype=np.complex128)
+    for s in range(zw_er.shape[0]):
+        # Sherman-Morrison: W⁻¹ += i W⁻¹γ γᵀP W⁻¹ / ((E_r - E) - i γᵀP W⁻¹γ)
+        vBu = 0j
+        for a in range(n):
+            Bu[a] = 0j
+            vB[a] = 0j
+        for a in range(n):
+            for b in range(n):
+                Bu[a] += Winv[a, b] * zw_gam[s, b]
+                vB[b] += zw_gam[s, a] * P[a] * Winv[a, b]
+        for a in range(n):
+            vBu += zw_gam[s, a] * P[a] * Bu[a]
+        den = (zw_er[s] - E) - 1j * vBu
+        for a in range(n):
+            for b in range(n):
+                Winv[a, b] = Winv[a, b] + 1j * Bu[a] * vB[b] / den
+    sqrt_p0 = math.sqrt(P[0]) if P[0] > 0.0 else 0.0
+    sct_b = 0.0
+    fis_b = 0.0
+    for c in range(n):
+        pc = P[c]
+        up = 0j
+        if pc > 0.0:
+            up = 2.0 * sqrt_p0 * Winv[0, c] / math.sqrt(pc)
+        if c == 0:
+            up = up - 1.0
+        u = omega[0] * omega[c] * up
+        if c == 0:
+            sct_b = (1.0 - u.real) ** 2 + u.imag ** 2
+        if is_fis[c]:
+            fis_b += u.real * u.real + u.imag * u.imag
+    q = 0.0
+    for a in range(n):
+        for b in range(n):
+            w_ab = Winv[0, a] * Winv[0, b].conjugate()
+            q += w_ab.real * R[a, b].imag
+    return sct_b, 4.0 * P[0] * q, fis_b
+
+
 @njit(cache=True, parallel=True, fastmath=True)
 def _reconstruct_kernel(
     e,                     # (ne,) float64
@@ -191,6 +278,8 @@ def _reconstruct_kernel(
     res_hg,                # (nres,) float  -- Gamma_gamma / 2
     a00, a01, a11,         # (nres,) float  -- reduced-width products
     a02, a12, a22,         #   gamma_c * gamma_d (n = 0, f1 = 1, f2 = 2)
+    zw_start, zw_end,      # (ngroups,) int  -- each group's zero-capture-width
+    zw_er, zw_gam,         # (k,), (k, 3)       resonances (kept out of R)
 ):
     ne = e.shape[0]
     ngroups = group_l.shape[0]
@@ -199,7 +288,6 @@ def _reconstruct_kernel(
     cap = np.zeros(ne)
     fis = np.zeros(ne)
     pot = np.zeros(ne)
-    nzero = np.zeros(ne)
 
     # --- Parallel per-energy loop. Each thread computes all groups
     # at one energy. Per-group R-matrix and U-matrix stay in
@@ -220,7 +308,6 @@ def _reconstruct_kernel(
         pot_sum = 0.0
 
         sqrt_E = math.sqrt(E_safe)
-        nzero_i = 0.0
 
         for g in range(ngroups):
             L = group_l[g]
@@ -260,12 +347,11 @@ def _reconstruct_kernel(
             # are already computed from Γ_n(|E_r|) in the wrapper.
             r0 = group_res_start[g]
             r1 = group_res_end[g]
-            R00, R01, R11, R02, R12, R22, nz = accumulate_r_matrix(
+            R00, R01, R11, R02, R12, R22 = accumulate_r_matrix(
                 E_safe, res_er[r0:r1], res_hg[r0:r1],
                 a00[r0:r1], a01[r0:r1], a11[r0:r1],
                 a02[r0:r1], a12[r0:r1], a22[r0:r1], nfis + 1,
             )
-            nzero_i += nz
 
             # --- Solve (I - i R P) X = R for row 0 of X. ---
             # P = diag(p_e, 1, 1) with fission channels having P=1.
@@ -274,7 +360,24 @@ def _reconstruct_kernel(
             omega2 = omega1 * omega1
             sqrt_pe = math.sqrt(p_e) if p_e > 0.0 else 0.0
 
-            if nfis == 0:
+            if zw_end[g] > zw_start[g]:
+                # Zero-capture-width resonances: exact rank-one updates.
+                n_ = nfis + 1
+                Rm = small_r_matrix(n_, R00, R01, R11, R02, R12, R22)
+                Pv = np.ones(n_)
+                Pv[0] = p_e
+                om = np.ones(n_, dtype=np.complex128)
+                om[0] = omega1
+                isf = np.ones(n_, dtype=np.bool_)
+                isf[0] = False
+                z0 = zw_start[g]
+                z1 = zw_end[g]
+                sb, cb, fb = zero_width_group_xs(
+                    Rm, Pv, om, isf, E_safe, zw_er[z0:z1], zw_gam[z0:z1])
+                sct_g = pi_k2 * gJ * sb
+                cap_g = pi_k2 * gJ * cb
+                fis_g = pi_k2 * gJ * fb
+            elif nfis == 0:
                 # nch = 1: scalar inverse.
                 W00 = 1.0 - 1j * R00 * p_e
                 X00 = R00 / W00
@@ -343,9 +446,28 @@ def _reconstruct_kernel(
         cap[i] = cap_sum
         fis[i] = fis_sum
         pot[i] = 4.0 * pi_k2 * pot_sum
-        nzero[i] = nzero_i
 
-    return sct, cap, fis, pot, nzero
+    return sct, cap, fis, pot
+
+
+def split_zero_width(er_s, hg_s, gam, res_group_s, ngroups):
+    """Separate resonances with zero capture width (group-sorted input).
+
+    Returns ``(hg, gam_R, zw_start, zw_end, zw_er, zw_gam)``: the
+    regular-sum inputs with zero-width rows neutralised (amplitudes 0,
+    half-width 1, so they add exactly nothing to the R-matrix), and the
+    zero-width resonances per group (``[zw_start[g], zw_end[g])`` into
+    ``zw_er`` / ``zw_gam``) for :func:`zero_width_group_xs`."""
+    zw = hg_s == 0.0
+    hg = np.where(zw, 1.0, hg_s)
+    gam_R = np.where(zw[:, None], 0.0, gam)
+    grp_zw = res_group_s[zw]
+    groups = np.arange(ngroups)
+    zw_start = np.searchsorted(grp_zw, groups, side='left').astype(np.int64)
+    zw_end = np.searchsorted(grp_zw, groups, side='right').astype(np.int64)
+    zw_gam = np.zeros((int(zw.sum()), 3), dtype=np.float64)
+    zw_gam[:, :gam.shape[1]] = gam[zw]
+    return hg, gam_R, zw_start, zw_end, er_s[zw].astype(np.float64), zw_gam
 
 
 def reconstruct(data, energies_in):
@@ -460,23 +582,20 @@ def reconstruct(data, energies_in):
                 math.sqrt(abs(gf2_s[r]) / 2.0), gf2_s[r],
             )
 
-    sct, cap, fis, pot, nzero = _reconstruct_kernel(
+    gam3 = np.stack([gamma_n, gamma_f1, gamma_f2], axis=1)
+    hg, gam3, zw_start, zw_end, zw_er, zw_gam = split_zero_width(
+        er_s, 0.5 * gg_s, gam3, res_group_s, ngroups,
+    )
+    g0, g1, g2 = gam3[:, 0], gam3[:, 1], gam3[:, 2]
+    sct, cap, fis, pot = _reconstruct_kernel(
         e, group_r_a_arr, group_r_ap_arr,
         float(data.abn), float(data.ki),
         group_l, group_g, group_nfis,
         group_res_start, group_res_end,
-        er_s, 0.5 * gg_s,
-        gamma_n * gamma_n, gamma_n * gamma_f1, gamma_f1 * gamma_f1,
-        gamma_n * gamma_f2, gamma_f1 * gamma_f2, gamma_f2 * gamma_f2,
+        er_s, hg,
+        g0 * g0, g0 * g1, g1 * g1, g0 * g2, g1 * g2, g2 * g2,
+        zw_start, zw_end, zw_er, zw_gam,
     )
-    # A zero R-matrix denominator (E == E_r with a zero eliminated
-    # width) makes R infinite; return NaN there, as the numpy / jax
-    # backends do, instead of fastmath's arbitrary value.
-    bad = nzero > 0.0
-    if bad.any():
-        sct[bad] = np.nan
-        cap[bad] = np.nan
-        fis[bad] = np.nan
     tot = sct + cap + fis
     return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot, 'tot': tot}
 
