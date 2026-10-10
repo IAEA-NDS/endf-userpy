@@ -643,7 +643,10 @@ def integrate_law7_subsec_over_mu(
     # under xp=jax (same pattern as integrate_law7_subsec_over_eout).
     zero_row = xp.zeros(n_eout)
     row_cells = [zero_row for _ in range(len(einc))]
-    use_refine = xp.name == 'numpy'
+    # Refinement needs concrete values (``np.any`` on the error
+    # estimate); only the jax backend can carry tracers here. The
+    # numba backend computes on numpy arrays and must refine too.
+    use_refine = xp.name != 'jax'
 
     for i, e in enumerate(einc):
         # Outside the section's Ein range -> zero.
