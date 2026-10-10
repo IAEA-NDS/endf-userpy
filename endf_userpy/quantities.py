@@ -369,6 +369,20 @@ def _stage_energies(energies_in, options, query_state):
     return staged
 
 
+def _zeros_if_nothing_produced(result, reaction, particle, options,
+                               query_state, *axes):
+    """``result`` of a particle-production entry point, or zeros of its
+    usual shape (the shapes of ``axes`` -- incident energies, then
+    outgoing energies / cosines -- concatenated) when no MT was
+    admitted, which the cumulative sum reports as ``None``. The zero
+    case is recorded for one summary UserWarning."""
+    if result is not None:
+        return result
+    query_state.no_production.append((reaction, particle))
+    shape = sum((tuple(np.shape(a)) for a in axes), ())
+    return options.backend.zeros(shape, dtype=options.backend.float64)
+
+
 def get_reaction_xs(
     endf_dict, reaction, energies_in, *, options=None,
 ):
@@ -584,6 +598,8 @@ def get_particle_production_xs(
     result = _get_particle_production_xs_impl(
             endf_dict, reaction, particle, energies_in, options=options,
          _query_state=query_state)
+    result = _zeros_if_nothing_produced(
+        result, reaction, particle, options, query_state, energies_in)
     _emit_summary_warnings(query_state, options)
     return result
 
@@ -664,6 +680,9 @@ def get_particle_production_dxs_dE(
             endf_dict, reaction, particle, energies_in, energies_out,
             broadening, options=options,
          _query_state=query_state)
+    result = _zeros_if_nothing_produced(
+        result, reaction, particle, options, query_state,
+        energies_in, energies_out)
     _emit_summary_warnings(query_state, options)
     return result
 
@@ -834,6 +853,9 @@ def get_particle_production_dxs_dmu(
             endf_dict, reaction, particle, energies_in, angle_cosines_out,
             options=options,
          _query_state=query_state)
+    result = _zeros_if_nothing_produced(
+        result, reaction, particle, options, query_state,
+        energies_in, angle_cosines_out)
     _emit_summary_warnings(query_state, options)
     return result
 
@@ -893,6 +915,9 @@ def get_particle_production_ddxs(
             endf_dict, reaction, particle, energies_in, energies_out,
             angle_cosines_out, broadening, options=options,
          _query_state=query_state)
+    result = _zeros_if_nothing_produced(
+        result, reaction, particle, options, query_state,
+        energies_in, energies_out, angle_cosines_out)
     _emit_summary_warnings(query_state, options)
     return result
 

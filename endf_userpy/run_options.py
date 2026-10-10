@@ -244,6 +244,10 @@ class _QueryState:
     the composition layer silently returned raw MF3 for them.
     Populated inside ``reconstruct_resonance_xs``, scoped to
     ``user_mts`` to avoid noise. Mode 2 of #311."""
+    no_production: list = field(default_factory=list)
+    """``(reaction, particle)`` pairs of a particle-production query
+    for which no MT in the file was admitted, so the result is zeros.
+    Populated by the four ``get_particle_production_*`` entry points."""
     user_mts: set = field(default_factory=set)
     """MTs the user explicitly requested at the top-level entry
     point. Threaded here so the composition layer can scope mode 2
@@ -332,6 +336,18 @@ def _emit_summary_warnings(query_state, options):
             f'fission, often absent). Use '
             f"endf_userpy.quantities_mt_zap.get_reaction_mt_numbers "
             f"to inspect what the file carries.",
+            UserWarning, stacklevel=3,
+        )
+    if query_state.no_production:
+        pairs = ', '.join(
+            f'{particle!r} from {reaction!r}'
+            for reaction, particle in sorted(set(query_state.no_production))
+        )
+        warnings.warn(
+            f'no reaction in the file produces {pairs}: no MT carries '
+            f'data for that ejectile (production is either absent from '
+            f'the evaluation or lumped into an MT without it), so the '
+            f'result is zero.',
             UserWarning, stacklevel=3,
         )
     if query_state.aggregation_fallback:
