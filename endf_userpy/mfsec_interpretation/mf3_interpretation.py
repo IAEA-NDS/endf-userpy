@@ -362,6 +362,7 @@ def compute_cross_section(
 
 def compute_cross_section_agnostic(
     endf_dict, mt, energies_in, xp, outside_value=0.0, side='right',
+    x_host=None,
 ):
     """Backend-agnostic MF3 cross-section reconstruction.
 
@@ -406,6 +407,9 @@ def compute_cross_section_agnostic(
         convention; away from doubled-E points the setting has no
         effect. Pass ``'left'`` to force the pre-discontinuity
         value at the exact-E query.
+    x_host : numpy array, optional
+        Host copy of traced ``energies_in`` (staged mesh of a
+        ``jax.jit`` trace); see :func:`primitives.tab1.interp`.
     """
     # Local import avoids pulling primitives.tab1 at module import
     # time; keeps the existing MF3 code path free of extra deps.
@@ -414,5 +418,5 @@ def compute_cross_section_agnostic(
     t = tab1_mod.from_endf_dict(sec, x_key='E', y_key='xs')
     return tab1_mod.interp(
         t, energies_in, xp,
-        outside_value=outside_value, side=side,
+        outside_value=outside_value, side=side, x_host=x_host,
     )

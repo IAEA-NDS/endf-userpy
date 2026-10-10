@@ -587,6 +587,7 @@ def compute_reconstructed_cross_section(
         xp = array_ns.get_backend('numpy')
     mf3_xs = mf3_interpretation.compute_cross_section_agnostic(
         endf_dict, mt, energies_in, xp,
+        x_host=_host_energies(energies_in, _query_state),
     )
     resonance_xs = _resonance_xs(
         endf_dict, mt, energies_in, xp,
