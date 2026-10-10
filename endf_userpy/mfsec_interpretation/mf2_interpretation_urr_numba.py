@@ -58,83 +58,87 @@ _EPS = 1e-38
 
 
 @njit(cache=True, inline='always')
-def _interp_lin_lin_scalar(es_row, y_row, e):
-    """Scalar lin-lin interpolation with clamp-at-endpoint outside.
+def _es_interval(es_row, e):
+    """Interval of ``e`` on one J-group's (monotone) energy table.
 
-    ``es_row`` and ``y_row`` are 1D arrays of the same length; ``e``
-    is a scalar query energy. Assumes ``es_row`` is monotone
-    increasing. Below ``es_row[0]`` returns ``y_row[0]``; above
-    ``es_row[-1]`` returns ``y_row[-1]``.
+    Returns ``0`` at or below ``es_row[0]`` and ``n`` at or above
+    ``es_row[-1]`` (clamp-at-endpoint), else ``j`` with
+    ``es_row[j - 1] <= e < es_row[j]``. All width tables of a group
+    share ``es_row``, so the kernel looks the interval up once per
+    (energy, group). Linear search: URR tables have few knots
+    (NE ~ 20).
     """
     n = es_row.shape[0]
     if e <= es_row[0]:
-        return y_row[0]
+        return 0
     if e >= es_row[n - 1]:
-        return y_row[n - 1]
-    # Linear search is fine for typical NE ~ 20 (URR ranges have
-    # few knots). Bisection would be faster asymptotically but
-    # adds branching in the hot loop.
+        return n
     for j in range(1, n):
         if e < es_row[j]:
-            e0 = es_row[j - 1]
-            e1 = es_row[j]
-            y0 = y_row[j - 1]
-            y1 = y_row[j]
-            return y0 + (e - e0) / (e1 - e0) * (y1 - y0)
-    return y_row[n - 1]   # unreachable given the clamp above
+            return j
+    return n   # unreachable given the clamp above
 
 
 @njit(cache=True, inline='always')
-def _interp_dispatch_scalar(es_row, y_row, e, int_code):
-    """Dispatch INT=2 (lin-lin) and INT=5 (log-log) per group. Rows
-    with any non-positive y fall back to lin-lin for numerical
-    safety (typical case: GF row all zero on a non-fissile group)."""
-    if int_code != 5:
-        return _interp_lin_lin_scalar(es_row, y_row, e)
-    n = y_row.shape[0]
-    all_pos = True
-    for j in range(n):
-        if y_row[j] <= 0.0 or es_row[j] <= 0.0:
-            all_pos = False
-            break
-    if not all_pos:
-        return _interp_lin_lin_scalar(es_row, y_row, e)
-    # log-log with clamp-at-endpoint.
-    if e <= es_row[0]:
+def _interp_at_interval(es_row, y_row, e, j, log_log):
+    """Interpolate one width table at ``e`` inside interval ``j`` of
+    :func:`_es_interval`, constant outside the table. ``log_log``
+    selects INT=5; the wrapper only sets it for rows whose energies and
+    values are all positive (others, typically an all-zero GF row,
+    fall back to lin-lin for numerical safety)."""
+    n = es_row.shape[0]
+    if j == 0:
         return y_row[0]
-    if e >= es_row[n - 1]:
+    if j == n:
         return y_row[n - 1]
-    for j in range(1, n):
-        if e < es_row[j]:
-            le0 = math.log(es_row[j - 1])
-            le1 = math.log(es_row[j])
-            ly0 = math.log(y_row[j - 1])
-            ly1 = math.log(y_row[j])
-            frac = (math.log(e) - le0) / (le1 - le0)
-            return math.exp(ly0 + frac * (ly1 - ly0))
-    return y_row[n - 1]
+    if log_log:
+        le0 = math.log(es_row[j - 1])
+        le1 = math.log(es_row[j])
+        ly0 = math.log(y_row[j - 1])
+        ly1 = math.log(y_row[j])
+        frac = (math.log(e) - le0) / (le1 - le0)
+        return math.exp(ly0 + frac * (ly1 - ly0))
+    e0 = es_row[j - 1]
+    e1 = es_row[j]
+    y0 = y_row[j - 1]
+    y1 = y_row[j]
+    return y0 + (e - e0) / (e1 - e0) * (y1 - y0)
 
 
 @njit(cache=True, inline='always')
-def _channel_factor_scalar(alpha, nu, t, order):
-    """Scalar version of :func:`mf2_interpretation_urr._channel_factor`.
+def _channel_factors_scalar(alpha, nu, t):
+    """Scalar version of :func:`mf2_interpretation_urr._channel_factor`,
+    all three orders ``(g0, g1, g2)`` (Gamma-power 0 / 1 / 2 inside the
+    expectation) for one channel at one quadrature node ``t``.
+    ``nu == 0`` (deterministic width) gives ``exp(-t * alpha)`` at all
+    orders.
 
-    ``alpha`` and ``nu`` are per-channel scalars at a fixed (E,
-    group); ``t`` is a scalar quadrature node. ``order`` selects
-    which Gamma-power is inside the expectation (0 / 1 / 2).
-
-    nu == 0 (deterministic width) returns ``exp(-t * alpha)`` at
-    all orders.
+    One power instead of three: with ``b = 1 + 2 t alpha / nu``,
+    ``g0 = b**(-nu/2)``, ``g1 = g0 / b`` and
+    ``g2 = (1 + 2/nu) g1 / b``. Integer ``nu`` in 1..4 (all AMUN /
+    AMUF degrees of freedom in practice) avoids ``pow`` altogether
+    via ``sqrt`` / reciprocals, and a zero width (``alpha == 0``,
+    e.g. the many URR ranges with zero fission / competitive widths)
+    short-circuits to the exact values ``1, 1, 1 + 2/nu``.
     """
     if nu <= _EPS:
-        return math.exp(-t * alpha)
-    base = 1.0 + 2.0 * t * alpha / nu
-    if order == 0:
-        return base ** (-nu / 2.0)
-    if order == 1:
-        return base ** (-nu / 2.0 - 1.0)
-    # order == 2
-    return (1.0 + 2.0 / nu) * base ** (-nu / 2.0 - 2.0)
+        v = math.exp(-t * alpha)
+        return v, v, v
+    if alpha == 0.0:
+        return 1.0, 1.0, 1.0 + 2.0 / nu
+    b = 1.0 + 2.0 * t * alpha / nu
+    if nu == 1.0:
+        g0 = 1.0 / math.sqrt(b)
+    elif nu == 2.0:
+        g0 = 1.0 / b
+    elif nu == 3.0:
+        g0 = 1.0 / (b * math.sqrt(b))
+    elif nu == 4.0:
+        g0 = 1.0 / (b * b)
+    else:
+        g0 = b ** (-nu / 2.0)
+    g1 = g0 / b
+    return g0, g1, (1.0 + 2.0 / nu) * g1 / b
 
 
 @njit(cache=True, parallel=True, fastmath=True)
@@ -155,7 +159,7 @@ def _reconstruct_kernel(
     table_gg,
     table_gf,
     table_gx,
-    group_int,       # (nJ,) ENDF INT law per group (2 or 5)
+    table_log,       # (nJ, 5) bool: interpolate GN0 / GG / GF / GX / D log-log
     t_nodes,         # (Nq,)
     w_t,             # (Nq,)
     group_pot_weight,  # (nJ,) 2L+1 at the first J-group of
@@ -199,12 +203,13 @@ def _reconstruct_kernel(
             nu_x = group_amux[g]
 
             # ---- Interpolated widths + level spacing at E.
-            int_code = group_int[g]
-            gn0 = _interp_dispatch_scalar(table_es[g], table_gn0[g], E, int_code)
-            gg  = _interp_dispatch_scalar(table_es[g], table_gg[g],  E, int_code)
-            gf  = _interp_dispatch_scalar(table_es[g], table_gf[g],  E, int_code)
-            gx  = _interp_dispatch_scalar(table_es[g], table_gx[g],  E, int_code)
-            D   = _interp_dispatch_scalar(table_es[g], table_d[g],   E, int_code)
+            es_g = table_es[g]
+            j = _es_interval(es_g, E)
+            gn0 = _interp_at_interval(es_g, table_gn0[g], E, j, table_log[g, 0])
+            gg = _interp_at_interval(es_g, table_gg[g], E, j, table_log[g, 1])
+            gf = _interp_at_interval(es_g, table_gf[g], E, j, table_log[g, 2])
+            gx = _interp_at_interval(es_g, table_gx[g], E, j, table_log[g, 3])
+            D = _interp_at_interval(es_g, table_d[g], E, j, table_log[g, 4])
 
             # ---- Penetration / phase; v_L = P_L / rho (with L=0
             # branch pinned to 1 near rho=0).
@@ -239,16 +244,10 @@ def _reconstruct_kernel(
                 # integral has neutron as c1, so we always want
                 # g1_n or g2_n on the neutron side (same reason
                 # the numpy path drops g0_n).
-                g0_g = _channel_factor_scalar(alpha_g, nu_g, t, 0)
-                g0_f = _channel_factor_scalar(alpha_f, nu_f, t, 0)
-                g0_x = _channel_factor_scalar(alpha_x, nu_x, t, 0)
-
-                g1_n = _channel_factor_scalar(alpha_n, nu_n, t, 1)
-                g1_g = _channel_factor_scalar(alpha_g, nu_g, t, 1)
-                g1_f = _channel_factor_scalar(alpha_f, nu_f, t, 1)
-                g1_x = _channel_factor_scalar(alpha_x, nu_x, t, 1)
-
-                g2_n = _channel_factor_scalar(alpha_n, nu_n, t, 2)
+                g0_n, g1_n, g2_n = _channel_factors_scalar(alpha_n, nu_n, t)
+                g0_g, g1_g, _g2 = _channel_factors_scalar(alpha_g, nu_g, t)
+                g0_f, g1_f, _g2 = _channel_factors_scalar(alpha_f, nu_f, t)
+                g0_x, g1_x, _g2 = _channel_factors_scalar(alpha_x, nu_x, t)
 
                 R_ncap_val  += w * g1_n * g1_g * g0_f * g0_x
                 R_nfis_val  += w * g1_n * g0_g * g1_f * g0_x
@@ -351,6 +350,22 @@ def reconstruct(data, energies_in):
         seen_L.add(int(L_val))
         group_pot_weight[g_idx] = 2.0 * int(L_val) + 1.0
 
+    # INT=5 (log-log) applies to a width table only when all its
+    # energies and values are positive; other rows (typically an
+    # all-zero GF row) interpolate lin-lin. Decided once per row here
+    # instead of per (energy, group) in the kernel.
+    table_es = np.asarray(data.table_es, dtype=np.float64)
+    table_d = np.asarray(data.table_d, dtype=np.float64)
+    table_gn0 = np.asarray(data.table_gn0, dtype=np.float64)
+    table_gg = np.asarray(data.table_gg, dtype=np.float64)
+    table_gf = np.asarray(data.table_gf, dtype=np.float64)
+    table_gx = np.asarray(data.table_gx, dtype=np.float64)
+    es_pos = np.all(table_es > 0.0, axis=1)
+    table_log = np.stack([
+        (group_int == 5) & es_pos & np.all(y > 0.0, axis=1)
+        for y in (table_gn0, table_gg, table_gf, table_gx, table_d)
+    ], axis=1)
+
     sct, cap, fis, rxx, pot = _reconstruct_kernel(
         e, r_a_e, r_ap_e,
         float(data.abn), float(data.ki),
@@ -360,13 +375,8 @@ def reconstruct(data, energies_in):
         np.asarray(data.group_amug, dtype=np.float64),
         np.asarray(data.group_amuf, dtype=np.float64),
         np.asarray(data.group_amux, dtype=np.float64),
-        np.asarray(data.table_es, dtype=np.float64),
-        np.asarray(data.table_d, dtype=np.float64),
-        np.asarray(data.table_gn0, dtype=np.float64),
-        np.asarray(data.table_gg, dtype=np.float64),
-        np.asarray(data.table_gf, dtype=np.float64),
-        np.asarray(data.table_gx, dtype=np.float64),
-        group_int,
+        table_es, table_d, table_gn0, table_gg, table_gf, table_gx,
+        table_log,
         t_nodes, w_t,
         group_pot_weight,
     )
