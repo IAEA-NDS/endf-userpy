@@ -10,11 +10,6 @@ def _filter_energies_in(
     energies_in, endf_dict, mt, *args, **kwargs
 ):
     eincs = energies_in
-    orig_en_dict = endf_dict[4][mt].get('E')
-    if orig_en_dict is None:
-        # Purely isotropic angular distributions (LTT=0, LI=1)
-        # don't come with an incident energy mesh
-        return (eincs > 0)
     xp = kwargs.get('xp')
     if xp is not None and xp.name == 'jax':
         # Under the JAX backend (e.g. a tracer mesh for mesh-knot
@@ -25,6 +20,11 @@ def _filter_energies_in(
         # ``pad_outside_values`` fast path take the wrapped call
         # unchanged.
         return np.ones(eincs.shape, dtype=bool)
+    orig_en_dict = endf_dict[4][mt].get('E')
+    if orig_en_dict is None:
+        # Purely isotropic angular distributions (LTT=0, LI=1)
+        # don't come with an incident energy mesh
+        return (eincs > 0)
     ei_mesh = dict2array(orig_en_dict, dtype=float)
     return (eincs >= np.min(ei_mesh)) & (eincs <= np.max(ei_mesh))
 

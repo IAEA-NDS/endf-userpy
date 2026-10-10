@@ -76,6 +76,9 @@ existing single-subsection LAW=1 Fortran shortcut in
 ``distribution1d_helpers.integrate_mf6_dist2d_over_mu``).
 Multi-subsection LAW=7 continues to use the general-purpose
 adaptive Simpson integrator.
+
+Traced incident energies (``jax.jit`` over them) are handled by
+:mod:`mf6_law7_integrals_traced`.
 """
 import numpy as np
 
@@ -90,6 +93,16 @@ from . import mf6_interpretation_subsecs as _subsec  # noqa: F401
 
 def _resolve_xp(xp):
     return xp if xp is not None else array_ns.get_backend('numpy')
+
+
+def _is_jax_tracer(x):
+    """True iff ``x`` is a JAX tracer (``jax.jit`` over the energies);
+    those route to :mod:`mf6_law7_integrals_traced` (issue #220)."""
+    try:
+        import jax.core
+    except ImportError:
+        return False
+    return isinstance(x, jax.core.Tracer)
 
 
 def _to_numpy(x, xp):
@@ -316,11 +329,12 @@ def integrate_law7_subsec_over_eout(
 
     Not covered by construction:
 
-    * Query points (``energies_in``, ``angle_cosines_out``) stay
-      concrete: those enter Python-level gating (``e < ei_mesh[0]``,
-      ``mu2 == mu1``) and integer indexing (``find_interval``,
-      ``searchsorted``) that would break tracers. Query-side
-      autodiff for LAW=7 is tracked in the roadmap issue #198.
+    * ``angle_cosines_out`` stays concrete: it enters Python-level
+      gating (``mu2 == mu1``) and integer indexing
+      (``find_interval``). Traced ``energies_in`` (``jax.jit`` over
+      them) route to
+      :func:`mf6_law7_integrals_traced.integrate_law7_subsec_over_eout_traced`,
+      which precomputes the per-panel data on the host (issue #220).
     * Mu-mesh values and Ein-mesh values stay concrete: those
       feed the same Python-level branching.
 
@@ -347,6 +361,13 @@ def integrate_law7_subsec_over_eout(
         raise ValueError(
             f'MT={mt} subsec_num={subsec_num} is LAW={sub["LAW"]}, '
             'not LAW=7',
+        )
+    if _is_jax_tracer(energies_in):
+        from .mf6_law7_integrals_traced import (
+            integrate_law7_subsec_over_eout_traced,
+        )
+        return integrate_law7_subsec_over_eout_traced(
+            endf_dict, mt, subsec_num, energies_in, angle_cosines_out, xp,
         )
     einc = np.asarray(energies_in, dtype=float)
     mus = np.asarray(angle_cosines_out, dtype=float)
@@ -604,7 +625,11 @@ def integrate_law7_subsec_over_mu(
     H-2 (n,2n) MT=16 (the general-purpose adaptive Simpson with
     initial_n=81 max_iter=3 reaches ~4e-3 on the same integrand).
 
-    Under ``xp=jax`` the refine branch is skipped (the tracer
+    Traced ``energies_in`` (``jax.jit`` over them) route to
+    :func:`mf6_law7_integrals_traced.integrate_law7_subsec_over_mu_traced`,
+    which reproduces the numpy result including the refinement
+    (issue #220). Otherwise, under ``xp=jax`` the refine branch is
+    skipped (the tracer
     ``np.any(need_refine)`` decision would abort the trace); the
     fine-only integral stays within a few permille of the refined
     numpy path on the corpus, and gradients flow through the ``f``
@@ -632,6 +657,13 @@ def integrate_law7_subsec_over_mu(
         raise ValueError(
             f'MT={mt} subsec_num={subsec_num} is LAW={sub["LAW"]}, '
             'not LAW=7',
+        )
+    if _is_jax_tracer(energies_in):
+        from .mf6_law7_integrals_traced import (
+            integrate_law7_subsec_over_mu_traced,
+        )
+        return integrate_law7_subsec_over_mu_traced(
+            endf_dict, mt, subsec_num, energies_in, energies_out, xp,
         )
     einc = np.asarray(energies_in, dtype=float)
     eouts = np.asarray(energies_out, dtype=float)

@@ -27,14 +27,16 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _corpus import (   # noqa: E402
-    resolve_al27, resolve_cu63_rml, resolve_fe56_tendl, resolve_h2, resolve_n14,
-    resolve_nb93, resolve_u235,
+    resolve_al27, resolve_c12, resolve_cu63_rml, resolve_fe56_tendl,
+    resolve_h2, resolve_n14, resolve_nb93, resolve_u235,
+    resolve_u235_endfb81,
 )
 
 from endf_userpy.primitives import array_ns   # noqa: E402
 from endf_userpy.quantities import (   # noqa: E402
     get_particle_production_ddxs,
     get_particle_production_dxs_dE,
+    get_particle_production_dxs_dmu,
     get_particle_production_xs,
     get_reaction_xs,
     get_residual_production_xs,
@@ -448,6 +450,65 @@ def test_two_body_neutron_dxs_de_under_jit_over_energies():
         opts = RunOptions(backend='jax')
         out = np.asarray(jax.jit(lambda e: get_particle_production_dxs_dE(
             d, '(n,total)', 'n', e, eout, options=opts))(jnp.asarray(ein)))
+    np.testing.assert_array_equal(np.isnan(out), np.isnan(ref))
+    fin = np.isfinite(ref)
+    assert np.any(ref[fin] > 0.0)
+    np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-9, atol=0.0)
+
+
+def _resolve_h2_law6():
+    path = os.path.join(os.path.dirname(__file__), 'data', 'n-001_H_002.endf')
+    return path if os.path.exists(path) else None
+
+
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+@pytest.mark.parametrize('resolve,api,particle,emax', [
+    # MF6 LAW=1 E' spectrum, Kalbach NA varying across Ein panels
+    (resolve_cu63_rml, 'dE', 'n', 1.9e7),
+    # adaptive Simpson over E' (MF6 LAW=1); MF4 isotropic sections
+    (resolve_u235_endfb81, 'dmu', 'n', 1.9e7),
+    # MF6 LAW=6: adaptive Simpson over mu
+    (_resolve_h2_law6, 'dE', 'n', 1.9e7),
+    # MF6 LAW=7: knot-aware integrators over mu and E'
+    (resolve_h2, 'dE', 'n', 1.9e7),
+    (resolve_h2, 'dmu', 'n', 1.9e7),
+    # MF6 LAW=7 with unit-base outer Ein law (INT=22), several ZAPs
+    (resolve_c12, 'dmu', 'a', 1.5e8),
+])
+def test_production_spectra_under_jit_over_energies(
+    resolve, api, particle, emax,
+):
+    """dxs/dE and dxs/dmu integrate the MF6 double-differential data
+    over the other variable; under jax.jit over the incident energies
+    those integrators ran on numpy (issue #220, steps 4-5). The jit
+    result has to reproduce numpy's adaptive / knot-aware quadrature,
+    not just approximate it."""
+    import jax
+    import jax.numpy as jnp
+
+    path = resolve()
+    if path is None:
+        pytest.skip('corpus file not present (see fetch.sh)')
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True, ignore_zero_mismatch=True,
+                      accept_spaces=True).parsefile(path)
+    # Ein off the E' grid: at E' == Ein exactly (elastic, mu = 1) the
+    # kinematic feasibility test |mu| <= 1 is decided by one ulp.
+    ein = np.geomspace(1.3e5, emax, 12)
+    eout = np.geomspace(1e4, 1e7, 10)
+    mu = np.linspace(-1.0, 1.0, 5)
+    func, axis = {
+        'dE': (get_particle_production_dxs_dE, eout),
+        'dmu': (get_particle_production_dxs_dmu, mu),
+    }[api]
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = np.asarray(func(d, '(n,total)', particle, ein, axis,
+                              options=RunOptions(backend='numpy')))
+        opts = RunOptions(backend='jax')
+        out = np.asarray(jax.jit(lambda e: func(
+            d, '(n,total)', particle, e, axis, options=opts))(jnp.asarray(ein)))
     np.testing.assert_array_equal(np.isnan(out), np.isnan(ref))
     fin = np.isfinite(ref)
     assert np.any(ref[fin] > 0.0)
