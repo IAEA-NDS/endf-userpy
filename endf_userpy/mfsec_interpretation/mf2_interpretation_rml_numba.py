@@ -37,6 +37,7 @@ from .mf2_interpretation_factors_numba import (
 from .mf2_interpretation_reichmoore_numba import (
     _pnt_shf_scalar,
     accumulate_r_matrix,
+    capture_deficit_row,
 )
 
 try:
@@ -168,11 +169,10 @@ def _reconstruct_kernel(
                 W00 = 1.0 - 1j * R00 * p0
                 X00 = R00 / W00
                 U00 = omega0 * omega0 * (1.0 + 2j * p0 * X00)
-                sumsq0 = U00.real * U00.real + U00.imag * U00.imag
-                sumsq = sumsq0
                 sct_g = pi_k2 * gJ * ((1.0 - U00.real) ** 2 + U00.imag ** 2)
                 fis_g = 0.0
-                cap_g = pi_k2 * gJ * (1.0 - sumsq)
+                cap_g = 4.0 * p0 * pi_k2 * gJ * capture_deficit_row(
+                    1.0 / W00, 0j, 0j, R00, R01, R11, R02, R12, R22)
             elif npart == 2:
                 W00 = 1.0 - 1j * R00 * p0
                 W01 = -1j * R01 * p1
@@ -183,13 +183,14 @@ def _reconstruct_kernel(
                 X01 = (W11 * R01 - W01 * R11) / det
                 U00 = omega0 * omega0 * (1.0 + 2j * sqrt_p0 * sqrt_p0 * X00)
                 U01 = omega0 * omega1 * (2j * sqrt_p0 * sqrt_p1 * X01)
-                sumsq0 = U00.real * U00.real + U00.imag * U00.imag
                 sumsq1 = U01.real * U01.real + U01.imag * U01.imag
-                sumsq = sumsq0 + sumsq1
                 sct_g = pi_k2 * gJ * ((1.0 - U00.real) ** 2 + U00.imag ** 2)
                 fis_slot1 = sumsq1 if slot_is_fis[g, 1] == 1 else 0.0
                 fis_g = pi_k2 * gJ * fis_slot1
-                cap_g = pi_k2 * gJ * (1.0 - sumsq)
+                # Capture (eliminated channels) = (π/k²) g (1 - Σ_c|U_0c|²)
+                # without the subtraction; row 0 of W⁻¹ = (W11, -W01) / det.
+                cap_g = 4.0 * p0 * pi_k2 * gJ * capture_deficit_row(
+                    W11 / det, -W01 / det, 0j, R00, R01, R11, R02, R12, R22)
             else:   # npart == 3
                 W00 = 1.0 - 1j * R00 * p0
                 W01 = -1j * R01 * p1
@@ -213,15 +214,14 @@ def _reconstruct_kernel(
                 U00 = omega0 * omega0 * (1.0 + 2j * sqrt_p0 * sqrt_p0 * X00)
                 U01 = omega0 * omega1 * (2j * sqrt_p0 * sqrt_p1 * X01)
                 U02 = omega0 * omega2 * (2j * sqrt_p0 * sqrt_p2 * X02)
-                sumsq0 = U00.real * U00.real + U00.imag * U00.imag
                 sumsq1 = U01.real * U01.real + U01.imag * U01.imag
                 sumsq2 = U02.real * U02.real + U02.imag * U02.imag
-                sumsq = sumsq0 + sumsq1 + sumsq2
                 sct_g = pi_k2 * gJ * ((1.0 - U00.real) ** 2 + U00.imag ** 2)
                 fis_slot1 = sumsq1 if slot_is_fis[g, 1] == 1 else 0.0
                 fis_slot2 = sumsq2 if slot_is_fis[g, 2] == 1 else 0.0
                 fis_g = pi_k2 * gJ * (fis_slot1 + fis_slot2)
-                cap_g = pi_k2 * gJ * (1.0 - sumsq)
+                cap_g = 4.0 * p0 * pi_k2 * gJ * capture_deficit_row(
+                    Winv00, Winv01, Winv02, R00, R01, R11, R02, R12, R22)
 
             sct_sum += sct_g
             cap_sum += cap_g
