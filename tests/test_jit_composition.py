@@ -33,6 +33,7 @@ from _corpus import (   # noqa: E402
 
 from endf_userpy.primitives import array_ns   # noqa: E402
 from endf_userpy.quantities import (   # noqa: E402
+    get_particle_production_ddxs,
     get_particle_production_xs,
     get_reaction_xs,
     get_residual_production_xs,
@@ -387,3 +388,35 @@ def test_mf4_mixed_angular_distribution_under_jit_over_energies():
     np.testing.assert_array_equal(np.isnan(out), np.isnan(ref))
     fin = np.isfinite(ref)
     np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-11, atol=0.0)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_photon_ddxs_with_mf15_continuum_under_jit_over_energies():
+    """The MF15 / MF14 photon-continuum DDX normalised the incident
+    energies with np.asarray (issue #220, step 2)."""
+    import jax
+    import jax.numpy as jnp
+
+    path = resolve_al27()               # MF15 photon continuum
+    if path is None:
+        pytest.skip('Al-27 corpus file not present (see fetch.sh)')
+    from endf_parserpy import EndfParserCpp
+    d = EndfParserCpp(ignore_missing_tpid=True, ignore_zero_mismatch=True,
+                      accept_spaces=True).parsefile(path)
+    assert 15 in d
+    ein = np.geomspace(1e5, 1.9e7, 16)
+    eout = np.geomspace(1e4, 1e7, 10)
+    mu = np.linspace(-1.0, 1.0, 5)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = np.asarray(get_particle_production_ddxs(
+            d, '(n,total)', 'g', ein, eout, mu,
+            options=RunOptions(backend='numpy')))
+        opts = RunOptions(backend='jax')
+        out = np.asarray(jax.jit(lambda e: get_particle_production_ddxs(
+            d, '(n,total)', 'g', e, eout, mu, options=opts))(jnp.asarray(ein)))
+    np.testing.assert_array_equal(np.isnan(out), np.isnan(ref))
+    fin = np.isfinite(ref)
+    assert np.any(ref[fin] > 0.0)
+    np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-9, atol=0.0)

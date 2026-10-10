@@ -459,9 +459,9 @@ def compute_ddxs(
         options = RunOptions()
     xp = options.backend
     if _is_mf13_only_gamma(endf_dict, mt, zap):
-        n_einc = np.asarray(energies_in).size
-        n_eout = np.asarray(energies_out).size
-        n_mu = np.asarray(angle_cosines_out).size
+        n_einc = np.size(energies_in)     # shape only: tracers too
+        n_eout = np.size(energies_out)
+        n_mu = np.size(angle_cosines_out)
         return xp.zeros((n_einc, n_eout, n_mu), dtype=xp.float64)
     yields = compute_yields(
         endf_dict, mt, zap, energies_in, include_discrete=False, xp=xp,
@@ -525,10 +525,15 @@ def compute_ddxs_from_mf15_mf14(
             'MF15 continuum unbroadened DDX is gamma-only; got '
             f'ZAP={zap}'
         )
-    energies_in = np.asarray(energies_in, dtype=float)
+    # Traced incident energies (jax.jit over them) stay tracers: every
+    # reader below takes ``xp``. Concrete ones are normalised as before.
+    try:
+        energies_in = np.asarray(energies_in, dtype=float)
+    except Exception:          # jax tracer
+        pass
     energies_out = np.asarray(energies_out, dtype=float)
     angle_cosines_out = np.asarray(angle_cosines_out, dtype=float)
-    n_einc = len(energies_in)
+    n_einc = np.shape(energies_in)[0]
     n_eouts = len(energies_out)
     n_mus = len(angle_cosines_out)
     result_zero = xp.zeros((n_einc, n_eouts, n_mus), dtype=xp.float64)
