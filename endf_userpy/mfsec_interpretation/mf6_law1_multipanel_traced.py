@@ -86,10 +86,18 @@ def _f6law1_con_panel_traced(
     ep_row = xp.take(data.ep_panels, p, axis=0)         # (max_nep,)
     b_row = xp.take(data.b_panels, p, axis=0)           # (max_nep, max_na+1)
 
-    # Searchsorted over the full padded row. Padding replicates
-    # ep_row[nep-1], so tp exactly at ep_row[nep-1] returns nep;
-    # tp beyond returns > nep. valid = strictly interior bracket.
-    idx_full = xp.searchsorted(ep_row, tp, side='right')
+    # Searchsorted over the padded row with the discrete-line slots
+    # [0, nd) masked to -inf: those hold the ND discrete photon /
+    # particle energies, typically in DESCENDING order before the
+    # ascending continuum (Cu-63 (n,g): 183 lines), and an unmasked
+    # row is not sorted -- the bracket then misses continuum points
+    # and they come out zero under jax.jit (same fix as the scanned
+    # DDX kernel, issue #328). Padding after nep replicates
+    # ep_row[nep-1], so tp at or beyond ep_row[nep-1] returns >= nep.
+    # valid = strictly interior bracket.
+    ep_search = xp.where(xp.arange(ep_row.shape[0]) < nd,
+                         xp.asarray(-1e38, dtype=ep_row.dtype), ep_row)
+    idx_full = xp.searchsorted(ep_search, tp, side='right')
     # Panel has continuum only if nep > nd; add mask.
     has_cont = nep > nd
     # Valid iff bracket falls in (nd, nep-1] — matches the pre-port
