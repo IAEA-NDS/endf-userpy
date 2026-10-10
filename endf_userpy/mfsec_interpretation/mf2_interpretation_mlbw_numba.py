@@ -68,7 +68,8 @@ def _reconstruct_kernel(
     r_a_at_er_qx,  # (nres,) r_a at max(E_r + qx, 0)
     abn, spi, ki, qx,
     ch_l, ch_g,    # (nch,) int, (nch,) float
-    res_channel,   # (nres,) int
+    ch_start,      # (nch,) int -- resonances sorted by channel; channel
+    ch_end,        # (nch,) int    c owns the slice [ch_start[c], ch_end[c])
     res_l,         # (nres,) int
     res_er,        # (nres,)
     res_gn, res_gg, res_gf, res_gx,
@@ -129,60 +130,66 @@ def _reconstruct_kernel(
         pi_k2 = abn * inv_k2
         twopi_k2 = 2.0 * pi_k2
 
-        A_ch = np.zeros(nch)
-        B_ch = np.zeros(nch)
-        cap_ch = np.zeros(nch)
-        fis_ch = np.zeros(nch)
-        rxx_ch = np.zeros(nch)
-
         r_a_i = r_a_e[i]
         r_ap_i = r_ap_e[i]
+        rho_e = ki * math.sqrt(E_safe) * r_a_i
+        e_x_scalar = E_safe + qx if (E + qx) > 0.0 else 0.0
+        rho_xe = ki * math.sqrt(e_x_scalar) * r_a_i
+        rho_s = ki * math.sqrt(E_safe) * r_ap_i
 
-        # Per-resonance contributions to per-channel accumulators.
-        for r in range(nres):
-            L = res_l[r]
-            rho_e = ki * math.sqrt(E_safe) * r_a_i
-            p_e, s_e = _pnt_shf(rho_e, L)
-            e_x_scalar = E_safe + qx if (E + qx) > 0.0 else 0.0
-            rho_xe = ki * math.sqrt(e_x_scalar) * r_a_i
-            lx = L if spi != 0.0 else abs(L - 2)
-            px_e, _ = _pnt_shf(rho_xe, lx)
-
-            gn_e = p_e * gn0[r]
-            gx_e = px_e * gx0[r]
-            gt = gn_e + res_gg[r] + res_gf[r] + gx_e
-
-            erp = res_er[r] + 0.5 * (shf_r[r] - s_e) * gn0[r]
-            de = 2.0 * (E_safe - erp)
-            denom = gt * gt + de * de
-            ratio = 2.0 * gn_e / denom if denom > _EPS else 0.0
-
-            c = res_channel[r]
-            A_ch[c] += ratio * gt
-            B_ch[c] += ratio * de
-            cap_ch[c] += ratio * res_gg[r]
-            fis_ch[c] += ratio * res_gf[r]
-            rxx_ch[c] += ratio * gx_e
-
-        # Per-channel hard-sphere phase, sct, and reduce over channels.
         sct_sum = 0.0
         pot_sum = 0.0
         cap_sum = 0.0
         fis_sum = 0.0
         rxx_sum = 0.0
         for c in range(nch):
-            rho_s = ki * math.sqrt(E_safe) * r_ap_i
-            phi2 = 2.0 * _phase(rho_s, ch_l[c])
+            # Every resonance of channel c has L = ch_l[c], so the
+            # energy-dependent factors are evaluated once per channel;
+            # the resonance loop below is plain arithmetic over the
+            # channel's contiguous slice, which LLVM vectorises.
+            L = ch_l[c]
+            p_e, s_e = _pnt_shf(rho_e, L)
+            lx = L if spi != 0.0 else abs(L - 2)
+            px_e, _ = _pnt_shf(rho_xe, lx)
+
+            r0 = ch_start[c]
+            r1 = ch_end[c]
+            er_c = res_er[r0:r1]
+            shf_c = shf_r[r0:r1]
+            gn0_c = gn0[r0:r1]
+            gx0_c = gx0[r0:r1]
+            gg_c = res_gg[r0:r1]
+            gf_c = res_gf[r0:r1]
+            A_c = 0.0
+            B_c = 0.0
+            cap_c = 0.0
+            fis_c = 0.0
+            rxx_c = 0.0
+            for r in range(er_c.shape[0]):
+                gn_e = p_e * gn0_c[r]
+                gx_e = px_e * gx0_c[r]
+                gt = gn_e + gg_c[r] + gf_c[r] + gx_e
+                erp = er_c[r] + 0.5 * (shf_c[r] - s_e) * gn0_c[r]
+                de = 2.0 * (E_safe - erp)
+                denom = gt * gt + de * de
+                ratio = 2.0 * gn_e / denom if denom > _EPS else 0.0
+                A_c += ratio * gt
+                B_c += ratio * de
+                cap_c += ratio * gg_c[r]
+                fis_c += ratio * gf_c[r]
+                rxx_c += ratio * gx_e
+
+            phi2 = 2.0 * _phase(rho_s, L)
             pot_c = 1.0 - math.cos(phi2)
             sin_phi2 = math.sin(phi2)
-            sct_c = (pot_c - A_ch[c]) ** 2 + (sin_phi2 + B_ch[c]) ** 2
+            sct_c = (pot_c - A_c) ** 2 + (sin_phi2 + B_c) ** 2
 
             g = ch_g[c]
             sct_sum += sct_c * g
             pot_sum += pot_c * g
-            cap_sum += cap_ch[c] * g
-            fis_sum += fis_ch[c] * g
-            rxx_sum += rxx_ch[c] * g
+            cap_sum += cap_c * g
+            fis_sum += fis_c * g
+            rxx_sum += rxx_c * g
 
         sct[i] = sct_sum * pi_k2
         cap[i] = cap_sum * twopi_k2
@@ -224,18 +231,35 @@ def reconstruct(data, energies_in):
     e_x = np.maximum(er + data.qx, 0.0)
     r_a_at_er_qx = np.asarray(tab1_mod.interp(data.r_a, e_x, xp))
 
+    # The kernel walks each channel's resonances as one contiguous
+    # slice and evaluates P_L / S_L once per channel, which relies on
+    # the MLBWData invariant res_l == ch_l[res_channel].
+    ch_l = np.asarray(data.ch_l, dtype=np.int64)
+    res_channel = np.asarray(data.res_channel, dtype=np.int64)
+    res_l = np.asarray(data.res_l, dtype=np.int64)
+    if not np.array_equal(res_l, ch_l[res_channel]):
+        raise ValueError(
+            'MLBWData.res_l must equal ch_l[res_channel] for every '
+            'resonance (each channel has a single L).'
+        )
+    order = np.argsort(res_channel, kind='stable')
+    channels = np.arange(ch_l.shape[0])
+    ch_start = np.searchsorted(res_channel[order], channels, side='left')
+    ch_end = np.searchsorted(res_channel[order], channels, side='right')
+
+    def _sorted(a):
+        return np.asarray(a, dtype=np.float64)[order]
+
     sct, cap, fis, pot, rxx = _reconstruct_kernel(
-        e, r_a_e, r_ap_e, r_a_at_er, r_a_at_er_qx,
+        e, r_a_e, r_ap_e, r_a_at_er[order], r_a_at_er_qx[order],
         float(data.abn), float(data.spi), float(data.ki), float(data.qx),
-        np.asarray(data.ch_l, dtype=np.int64),
+        ch_l,
         np.asarray(data.ch_g, dtype=np.float64),
-        np.asarray(data.res_channel, dtype=np.int64),
-        np.asarray(data.res_l, dtype=np.int64),
-        er,
-        np.asarray(data.res_gn, dtype=np.float64),
-        np.asarray(data.res_gg, dtype=np.float64),
-        np.asarray(data.res_gf, dtype=np.float64),
-        np.asarray(data.res_gx, dtype=np.float64),
+        ch_start.astype(np.int64), ch_end.astype(np.int64),
+        res_l[order],
+        er[order],
+        _sorted(data.res_gn), _sorted(data.res_gg),
+        _sorted(data.res_gf), _sorted(data.res_gx),
     )
     tot = sct + cap + fis + rxx
     return {'sct': sct, 'cap': cap, 'fis': fis, 'pot': pot,
