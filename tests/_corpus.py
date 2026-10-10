@@ -79,6 +79,16 @@ def resolve_al27() -> str | None:
     )
 
 
+def resolve_n14() -> str | None:
+    """Resolve the N-14 ENDF file (ENDF/B-VIII.1). Gamma production
+    comes from MF13 sections with NK > 1 (a stored total that is
+    checked against the sum of partials) and NK = 1."""
+    return _first_existing(
+        os.environ.get('N14_ENDF'),
+        os.path.join(_CORPUS_DIR, 'endfb81_n_N-14.endf'),
+    )
+
+
 def resolve_h2() -> str | None:
     """Resolve the H-2 ENDF file (JEFF-4.0). Used by the LAW=7
     kink-aware mu-integration parity tests: JEFF-4.0 H-2 MT16
