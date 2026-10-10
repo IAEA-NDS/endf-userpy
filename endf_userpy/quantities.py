@@ -1,5 +1,6 @@
 import numpy as np
 import warnings
+from .primitives import array_ns
 from .primitives import physical_constants as physconst
 from .primitives import properties as prop
 from .primitives import reactions as reac
@@ -342,6 +343,32 @@ def get_emission_energies(endf_dict, reaction, particle, nofail=False):
     return np.unique(np.concatenate(energy_meshes))
 
 
+def _stage_energies(energies_in, options, query_state):
+    """Under a ``jax.jit`` trace with a concrete (numpy) query mesh,
+    convert the mesh to a jax array once, behind an optimisation
+    barrier, and keep the host copy in ``query_state.host_energies``.
+
+    A mesh closed over by a jitted function would otherwise reach every
+    layer as a separate compile-time constant: XLA then tries to
+    constant-fold everything computed from it that does not depend on
+    the traced arguments (minutes of compile time, ~15 GB at 1M
+    points), and the composition layer, seeing only tracers, evaluates
+    each resonance range on the full mesh instead of its in-range
+    points. Eager calls and traced meshes pass through unchanged.
+    """
+    xp = options.backend
+    if getattr(xp, 'name', None) != 'jax' or not array_ns._inside_jit_trace():
+        return energies_in
+    try:
+        e_host = np.asarray(energies_in, dtype=np.float64)
+    except Exception:          # traced mesh: nothing to stage
+        return energies_in
+    import jax
+    staged = jax.lax.optimization_barrier(xp.asarray(e_host))
+    query_state.host_energies = (staged, e_host)
+    return staged
+
+
 def get_reaction_xs(
     endf_dict, reaction, energies_in, *, options=None,
 ):
@@ -358,6 +385,7 @@ def get_reaction_xs(
     if options is None:
         options = RunOptions()
     query_state = _QueryState()
+    energies_in = _stage_energies(energies_in, options, query_state)
     result = _get_reaction_xs_impl(
             endf_dict, reaction, energies_in, options=options,
          _query_state=query_state)
@@ -552,6 +580,7 @@ def get_particle_production_xs(
     if options is None:
         options = RunOptions()
     query_state = _QueryState()
+    energies_in = _stage_energies(energies_in, options, query_state)
     result = _get_particle_production_xs_impl(
             endf_dict, reaction, particle, energies_in, options=options,
          _query_state=query_state)

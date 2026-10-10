@@ -316,6 +316,19 @@ def _per_call_cached(query_state, key, energies_in, reco_fn):
     return cached
 
 
+def _host_energies(energies_in, query_state):
+    """The query energies as a float64 numpy array: directly when they
+    are concrete, from ``query_state.host_energies`` when they are the
+    staged mesh of a ``jax.jit`` trace, else ``None`` (traced)."""
+    staged = getattr(query_state, 'host_energies', None)
+    if staged is not None and energies_in is staged[0]:
+        return staged[1]
+    try:
+        return np.asarray(energies_in, dtype=np.float64)
+    except Exception:          # tracer
+        return None
+
+
 def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
                              urr_quadrature='gauss_legendre_32',
                              _query_state=None):
@@ -373,6 +386,13 @@ def _resonance_xs(endf_dict, mt, energies_in, xp,
     adding zeros on the full mesh."""
     e = xp.asarray(energies_in, dtype=xp.float64)
     total = None
+    # In-range masks on the host whenever the energies are concrete --
+    # also for the staged mesh of a jax.jit trace -- so
+    # ``_accumulate_range_contrib`` reconstructs only the in-range
+    # points; traced energies keep the xp-native full-mesh mask.
+    e_mask = _host_energies(energies_in, _query_state)
+    if e_mask is None:
+        e_mask = e
 
     # ---- LRU=1 (RRR): MLBW / Reich-Moore / R-Matrix Limited.
     saw_lru1_supported = False
@@ -408,7 +428,7 @@ def _resonance_xs(endf_dict, mt, energies_in, xp,
         # or MF3 above URR) owns the value. Matches NJOY's right-limit
         # convention at doubled-x range transitions (issue #149; same
         # side selection as PR #146 for MF3 tab1 lookups).
-        in_range = (e >= el) & (e < eh)
+        in_range = (e_mask >= el) & (e_mask < eh)
         try:
             any_in = bool(in_range.any())
         except Exception:
@@ -460,7 +480,7 @@ def _resonance_xs(endf_dict, mt, energies_in, xp,
         eh = float(rng['EH'])
         # Half-open [EL, EH): at E == EH the MF3 above-URR tabulation
         # owns the value. See issue #149.
-        in_range = (e >= el) & (e < eh)
+        in_range = (e_mask >= el) & (e_mask < eh)
         try:
             any_in = bool(in_range.any())
         except Exception:

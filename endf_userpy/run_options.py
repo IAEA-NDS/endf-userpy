@@ -249,6 +249,14 @@ class _QueryState:
     point. Threaded here so the composition layer can scope mode 2
     reporting to user-requested MTs only, not the widened
     iteration set in differential queries."""
+    host_energies: tuple | None = None
+    """``(staged, host)`` when the top-level call runs inside a
+    ``jax.jit`` trace with a concrete query mesh (see
+    ``quantities._stage_energies``): ``staged`` is the jax array every
+    layer below receives, ``host`` the same energies as a numpy array,
+    so the composition layer can still locate a resonance range's
+    in-range points on the host and reconstruct only those. ``None``
+    otherwise."""
     range_recon_cache: dict = field(default_factory=dict)
     """Per-call cache of MF2 range reconstructions (one dict of
     partial cross sections per resonance range). A top-level query

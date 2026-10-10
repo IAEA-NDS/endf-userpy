@@ -229,3 +229,93 @@ def test_get_particle_production_xs_under_jit_over_energies(resolve, particle):
     fin = np.isfinite(ref)
     assert np.any(ref[fin] > 0.0)
     np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-9, atol=0.0)
+
+
+def _with_rrr_ap(d, value):
+    """Copy of ``d`` with the first resolved range's AP replaced (only
+    the dicts on the path are copied)."""
+    d2 = dict(d)
+    d2[2] = dict(d[2])
+    d2[2][151] = dict(d[2][151])
+    iso = dict(d2[2][151]['isotope'])
+    d2[2][151]['isotope'] = iso
+    iso[1] = dict(iso[1])
+    rngs = dict(iso[1]['range'])
+    iso[1]['range'] = rngs
+    rngs[1] = dict(rngs[1])
+    rngs[1]['AP'] = value
+    return d2
+
+
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_jit_with_fixed_mesh_reconstructs_only_in_range_points(
+        u235_dict, monkeypatch):
+    """``jax.jit`` over a resonance parameter with the energy mesh
+    closed over: the composition still finds the in-range points on the
+    host (``_stage_energies`` / ``_QueryState.host_energies``), so
+    Reich-Moore runs on those points only -- not on the full mesh as
+    for traced energies -- and the result matches numpy."""
+    import jax
+    import jax.numpy as jnp
+    from endf_userpy.mfsec_interpretation import (
+        mf2_interpretation_reichmoore as rm,
+    )
+
+    rng = u235_dict[2][151]['isotope'][1]['range'][1]
+    el, eh = float(rng['EL']), float(rng['EH'])
+    ein = np.geomspace(1e-3, 2e7, 8192)
+    n_in = int(np.count_nonzero((ein >= el) & (ein < eh)))
+    assert 0 < n_in < ein.size - 2048      # slicing applies
+
+    sizes = []
+    orig = rm.reconstruct
+
+    def spy(data, energies, xp, *args, **kwargs):
+        sizes.append(int(np.shape(energies)[0]))
+        return orig(data, energies, xp, *args, **kwargs)
+
+    monkeypatch.setattr(rm, 'reconstruct', spy)
+    opts = RunOptions(backend='jax')
+    ap = float(rng['AP'])
+
+    @jax.jit
+    def go(ap_arg):
+        return get_reaction_xs(
+            _with_rrr_ap(u235_dict, ap_arg), '(n,total)', ein, options=opts,
+        )
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        out = np.asarray(go(jnp.asarray(ap)))
+        ref = np.asarray(get_reaction_xs(
+            u235_dict, '(n,total)', ein, options=RunOptions(backend='numpy'),
+        ))
+    assert sizes and all(s == n_in for s in sizes)
+    np.testing.assert_array_equal(np.isnan(out), np.isnan(ref))
+    fin = np.isfinite(ref)
+    np.testing.assert_allclose(out[fin], ref[fin], rtol=1e-9, atol=0.0)
+
+
+@pytest.mark.skipif(not _jax_available(), reason='JAX not installed')
+def test_jit_with_fixed_mesh_stages_energies_behind_a_barrier(u235_dict):
+    """The closed-over mesh enters the traced program once, through
+    ``optimization_barrier``, so XLA does not constant-fold everything
+    computed from it at compile time."""
+    import jax
+    import jax.numpy as jnp
+
+    ein = np.geomspace(1e-3, 2e7, 64)
+    opts = RunOptions(backend='jax')
+    rng = u235_dict[2][151]['isotope'][1]['range'][1]
+
+    def go(ap_arg):
+        return get_reaction_xs(
+            _with_rrr_ap(u235_dict, ap_arg), '(n,total)', ein, options=opts,
+        )
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        jaxpr = str(jax.make_jaxpr(go)(jnp.asarray(float(rng['AP']))))
+    assert 'optimization_barrier' in jaxpr
