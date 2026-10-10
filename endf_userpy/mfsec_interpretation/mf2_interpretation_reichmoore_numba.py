@@ -159,6 +159,23 @@ def accumulate_r_matrix(E, er, hg, a00, a01, a11, a02, a12, a22, nch):
             nzero)
 
 
+@njit(cache=True, inline='always')
+def capture_deficit_row(w0, w1, w2, R00, R01, R11, R02, R12, R22):
+    """``w Im(R) w^H`` for the incident row ``w = (w0, w1, w2)`` of
+    ``W⁻¹`` (unused channels zero), ``R`` symmetric. Times
+    ``4 P_incident`` this is ``1 - Σ_c |U_{inc,c}|²`` without the
+    cancelling subtraction; see
+    :func:`mf2_interpretation_reichmoore.capture_unitarity_deficit`."""
+    a00 = w0.real * w0.real + w0.imag * w0.imag
+    a11 = w1.real * w1.real + w1.imag * w1.imag
+    a22 = w2.real * w2.real + w2.imag * w2.imag
+    a01 = w0.real * w1.real + w0.imag * w1.imag      # Re(w0 conj(w1))
+    a02 = w0.real * w2.real + w0.imag * w2.imag
+    a12 = w1.real * w2.real + w1.imag * w2.imag
+    return (a00 * R00.imag + a11 * R11.imag + a22 * R22.imag
+            + 2.0 * (a01 * R01.imag + a02 * R02.imag + a12 * R12.imag))
+
+
 @njit(cache=True, parallel=True, fastmath=True)
 def _reconstruct_kernel(
     e,                     # (ne,) float64
@@ -263,10 +280,9 @@ def _reconstruct_kernel(
                 X00 = R00 / W00
                 U00 = omega2 * (1.0 + 2j * p_e * X00)
                 sct_g = pi_k2 * gJ * ((1.0 - U00.real) ** 2 + U00.imag ** 2)
-                sumsq = U00.real * U00.real + U00.imag * U00.imag
-                abs_g = pi_k2 * gJ * (1.0 - sumsq)
                 fis_g = 0.0
-                cap_g = abs_g
+                cap_g = 4.0 * p_e * pi_k2 * gJ * capture_deficit_row(
+                    1.0 / W00, 0j, 0j, R00, R01, R11, R02, R12, R22)
             elif nfis == 1:
                 # nch = 2: 2×2 inverse via adjugate.
                 W00 = 1.0 - 1j * R00 * p_e
@@ -280,10 +296,11 @@ def _reconstruct_kernel(
                 U01 = omega1 * (2j * sqrt_pe * X01)
                 sct_g = pi_k2 * gJ * ((1.0 - U00.real) ** 2 + U00.imag ** 2)
                 s01 = U01.real * U01.real + U01.imag * U01.imag
-                sumsq = U00.real * U00.real + U00.imag * U00.imag + s01
-                abs_g = pi_k2 * gJ * (1.0 - sumsq)
                 fis_g = pi_k2 * gJ * s01
-                cap_g = abs_g   # `abs_` is already σ_cap in R-M (see numpy path)
+                # Capture = (π/k²) g (1 - Σ_c|U_0c|²), evaluated without
+                # the subtraction; row 0 of W⁻¹ = (W11, -W01) / det.
+                cap_g = 4.0 * p_e * pi_k2 * gJ * capture_deficit_row(
+                    W11 / det, -W01 / det, 0j, R00, R01, R11, R02, R12, R22)
             else:
                 # nch = 3: 3×3 inverse via cofactor expansion.
                 W00 = 1.0 - 1j * R00 * p_e
@@ -314,10 +331,9 @@ def _reconstruct_kernel(
                 sct_g = pi_k2 * gJ * ((1.0 - U00.real) ** 2 + U00.imag ** 2)
                 s01 = U01.real * U01.real + U01.imag * U01.imag
                 s02 = U02.real * U02.real + U02.imag * U02.imag
-                sumsq = U00.real * U00.real + U00.imag * U00.imag + s01 + s02
-                abs_g = pi_k2 * gJ * (1.0 - sumsq)
                 fis_g = pi_k2 * gJ * (s01 + s02)
-                cap_g = abs_g   # `abs_` is already σ_cap in R-M (see numpy path)
+                cap_g = 4.0 * p_e * pi_k2 * gJ * capture_deficit_row(
+                    Winv00, Winv01, Winv02, R00, R01, R11, R02, R12, R22)
 
             sct_sum += sct_g
             cap_sum += cap_g

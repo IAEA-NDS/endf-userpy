@@ -53,6 +53,7 @@ import numpy as np
 
 from ..primitives import tab1
 from . import mf2_interpretation_factors as factors
+from . import mf2_interpretation_reichmoore as _rm
 
 
 _EPS = 1e-38
@@ -505,7 +506,7 @@ def _reconstruct_group(
     RP = R * P_diag.reshape(ne, 1, npart)                          # (ne, npart, npart)
     I_ = xp.eye(npart, dtype=xp.complex128).reshape(1, npart, npart)
     W = I_ - 1j * RP
-    X = xp.linalg.solve(W, R)                                       # (ne, npart, npart)
+    X, W_inv = _rm._solve_with_inverse(W, R, xp)                    # (ne, npart, npart) x2
 
     # --- U-row for the elastic (incident) channel. ---
     # U_{ec, c} = Ω_ec Ω_c [ δ_{ec, c} + 2 i sqrt(P_ec) sqrt(P_c) X_{ec, c} ]
@@ -530,7 +531,6 @@ def _reconstruct_group(
     U_ee = U_row[:, ec]
     sct = pi_k2 * g_J * xp.abs(1.0 - U_ee) ** 2
     sumsq = xp.abs(U_row) ** 2
-    sumsq_total = xp.sum(sumsq, axis=1)
     fis_slots = [
         i for i, c in enumerate(particle)
         if kinds[c] == 'fission'
@@ -541,9 +541,13 @@ def _reconstruct_group(
             axis=1,
         )
     else:
-        sumsq_fis = xp.zeros_like(sumsq_total)
+        sumsq_fis = xp.zeros_like(e_safe)
     fis = pi_k2 * g_J * sumsq_fis
-    cap = pi_k2 * g_J * (1.0 - sumsq_total)
+    # Eliminated channels (capture): ``1 - Σ_c |U_{ec,c}|²`` without the
+    # cancelling subtraction (KRM=3 is Reich-Moore).
+    cap = pi_k2 * g_J * _rm.capture_unitarity_deficit(
+        W_inv, R, p_e_list[ec], ec, xp,
+    )
 
     zero = xp.zeros_like(sct)
     sct = xp.where(e_pos, sct, zero)
