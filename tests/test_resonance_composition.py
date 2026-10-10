@@ -38,6 +38,7 @@ from endf_userpy.mfsec_interpretation import (
     mf2_interpretation_mlbw_preproc as mlbw_pre,
     mf2_interpretation_reichmoore as rm,
     mf2_interpretation_reichmoore_preproc as rm_pre,
+    mf3_interpretation,
 )
 
 from _corpus import resolve_nb93, resolve_u235, resolve_nd143
@@ -777,3 +778,23 @@ def test_cached_urr_failure_still_reports_reason(nd143_dict, monkeypatch):
     e = np.geomspace(6e3, 2e5, 50)
     with pytest.warns(UserWarning, match='synthetic refusal'):
         user_api.get_reaction_xs(nd143_dict, '(n,total)', e)
+
+
+@pytest.mark.parametrize('backend', ['numpy', 'numba', 'jax'])
+def test_mt_without_mf2_contribution_is_plain_mf3(nd143_dict, backend):
+    """MT=16 (n,2n) gets no MF2 contribution from any range: the
+    composition returns the MF3 interpolation itself (no zeros array
+    added), and the public ``reconstruct_resonance_xs`` still returns
+    zeros of the query shape."""
+    if backend not in array_ns.available_backends():
+        pytest.skip(f'{backend} not installed')
+    xp = array_ns.get_backend(backend)
+    e = np.geomspace(1e-3, 2e7, 257)
+    composed = np.asarray(res_comp.compute_reconstructed_cross_section(
+        nd143_dict, 16, e, xp))
+    mf3 = np.asarray(mf3_interpretation.compute_cross_section_agnostic(
+        nd143_dict, 16, e, xp))
+    np.testing.assert_array_equal(composed, mf3)
+    res = np.asarray(res_comp.reconstruct_resonance_xs(nd143_dict, 16, e, xp))
+    assert res.shape == e.shape
+    assert np.all(res == 0.0)

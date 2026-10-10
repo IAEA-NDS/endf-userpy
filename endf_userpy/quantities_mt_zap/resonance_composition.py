@@ -355,8 +355,24 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    total = _resonance_xs(
+        endf_dict, mt, energies_in, xp,
+        urr_quadrature=urr_quadrature, _query_state=_query_state,
+    )
+    if total is None:
+        return xp.zeros_like(xp.asarray(energies_in, dtype=xp.float64))
+    return total
+
+
+def _resonance_xs(endf_dict, mt, energies_in, xp,
+                  urr_quadrature='gauss_legendre_32', _query_state=None):
+    """Body of :func:`reconstruct_resonance_xs`, but returns ``None``
+    instead of an all-zero array when no supported range contributes
+    to ``mt`` at any query energy (the common case: most MTs have no
+    MF2 contribution), so the composition can skip allocating and
+    adding zeros on the full mesh."""
     e = xp.asarray(energies_in, dtype=xp.float64)
-    total = xp.zeros_like(e)
+    total = None
 
     # ---- LRU=1 (RRR): MLBW / Reich-Moore / R-Matrix Limited.
     saw_lru1_supported = False
@@ -400,7 +416,8 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
         if not any_in:
             continue
         new_total = _accumulate_range_contrib(
-            total, e, in_range, keys, xp,
+            xp.zeros_like(e) if total is None else total,
+            e, in_range, keys, xp,
             _per_call_cached(
                 _query_state, ('lru1', iso_i, rng_i, xp.name), energies_in,
                 lambda e_slice: _reconstruct_lru1_range(
@@ -471,7 +488,8 @@ def reconstruct_resonance_xs(endf_dict, mt, energies_in, xp=None,
             return recon_
 
         new_total = _accumulate_range_contrib(
-            total, e, in_range, keys_urr, xp, _reco_urr_recon,
+            xp.zeros_like(e) if total is None else total,
+            e, in_range, keys_urr, xp, _reco_urr_recon,
         )
         if new_total is None:
             # Reconstruction kernel refused the range; carry the error
@@ -550,9 +568,13 @@ def compute_reconstructed_cross_section(
     mf3_xs = mf3_interpretation.compute_cross_section_agnostic(
         endf_dict, mt, energies_in, xp,
     )
-    resonance_xs = reconstruct_resonance_xs(
+    resonance_xs = _resonance_xs(
         endf_dict, mt, energies_in, xp,
         urr_quadrature=urr_quadrature,
         _query_state=_query_state,
     )
+    if resonance_xs is None:
+        # No range contributes to this MT: MF3 + 0 is MF3; skip the
+        # full-mesh zeros and the add.
+        return xp.asarray(mf3_xs)
     return xp.asarray(mf3_xs) + xp.asarray(resonance_xs)
