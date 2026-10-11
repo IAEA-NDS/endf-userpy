@@ -101,9 +101,11 @@ def compute_angdist_from_isotropic(
         xp = array_ns.get_backend('numpy')
     mu = angle_cosines
     mu = mu.reshape(1, -1) if mu.ndim == 1 else mu
-    m = len(energies)
     n = mu.shape[1]
-    return xp.full((m, n), 0.5, dtype=xp.float64)
+    # Zero at E <= 0 in-kernel: the non-numpy backends skip the
+    # decorator's query mask (traced energies under jax.jit).
+    ens = xp.asarray(energies, dtype=xp.float64).reshape(-1, 1)
+    return xp.where(ens > 0, xp.full((1, n), 0.5, dtype=xp.float64), 0.0)
 
 
 def compute_angdist_from_legrepr(
@@ -178,7 +180,10 @@ def compute_angdist_from_mixed(
     int_arr2 = np.array(mf4sec['ang_int']['INT'])
     tab1_records = list(mf4sec['angtable'].values())
     assert num_ens2 == len(tab1_records)
-    break_energy = float(en_mesh[num_ens1 - 1])
+    # No float(): ``en_mesh`` is xp-native and a tracer under jax.jit
+    # (also when the energies are traced); the comparison below works
+    # on either.
+    break_energy = en_mesh[num_ens1 - 1]
 
     energies_xp = xp.asarray(energies)
     n_e = int(energies_xp.shape[0])

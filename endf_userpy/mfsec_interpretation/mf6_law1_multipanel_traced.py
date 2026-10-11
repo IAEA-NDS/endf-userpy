@@ -23,18 +23,15 @@ zero-width subpanels under sort. The single-panel numpy kernel
 never dereferences those slots (bounded by ``nep_arr[p]``), so this
 padding is invisible to it.
 
-Uniform-NA assumption
----------------------
+Per-panel NA
+------------
 The traced amplitude uses ``max(na_arr) + 1`` columns for every
 panel; slots beyond ``na_arr[p] + 1`` in ``b_panels`` are zero (from
 the standard preproc padding). For Legendre (LANG=1) that adds
-zero-contribution higher-degree terms — harmless. For Kalbach-Mann
-(LANG=2) the semantics differ between ``na=1`` (r only, ``a`` from
-``bachaa``) and ``na=2`` (r and ``a`` both from evaluator); to avoid
-a per-panel branch on ``na``, we require all panels of a subsection
-to share the same NA. The K-39 MT649 / MT849 corner (NA varies per
-panel) is not handled here; callers with such data can fall back to
-the single-panel entry via explicit ``panel_idx=``.
+zero-contribution higher-degree terms. For Kalbach-Mann (LANG=2)
+``na=1`` (r only, ``a`` from ``bachaa``) and ``na=2`` (r and ``a``
+tabulated) differ, so the evaluator selects on the gathered panel NA
+(NA varies per panel in e.g. U-235, Cu-63, K-39 MT649 / MT849).
 """
 from __future__ import annotations
 
@@ -55,12 +52,6 @@ def _requires_jax(xp):
         )
 
 
-def _uniform_na(data):
-    """Validate that all panels in ``data`` share the same NA."""
-    nas = np.asarray(data.na_arr)
-    return int(nas.min()) == int(nas.max())
-
-
 def _gather_panel_scalar(arr_xp, p, xp):
     """xp.take on a scalar index, returning a scalar-shape array."""
     return xp.take(arr_xp, p, axis=0)
@@ -73,15 +64,13 @@ def _f6law1_con_panel_traced(
     """Traced single-panel continuum amplitude. Analogue of
     ``mf6_law1_kernel._f6law1_con_panel_bc`` with ``p`` as a tracer.
 
-    Assumes LANG in {1, 2} and uniform NA across panels of the
-    subsection (both enforced by the caller).
+    Assumes LANG in {1, 2} (enforced below).
     """
     nep = _gather_panel_scalar(data.nep_arr, p, xp)     # tracer scalar
     nd = _gather_panel_scalar(data.nd_arr, p, xp)
-    # na (angular parameter count) is uniform across panels; we use
-    # max_na_plus_one for the trailing dim of the b row and let the
-    # Legendre / Kalbach evaluator zero-fill the trailing L terms
-    # implicitly via the padded b values.
+    # na (angular parameter count) may vary across panels; we use
+    # max_na_plus_one for the trailing dim of the b row (zero-padded
+    # beyond the panel's own NA).
 
     ep_row = xp.take(data.ep_panels, p, axis=0)         # (max_nep,)
     b_row = xp.take(data.b_panels, p, axis=0)           # (max_nep, max_na+1)
@@ -122,8 +111,8 @@ def _f6law1_con_panel_traced(
 
     # Fixed-size na: use max_na_plus_one columns always. Trailing
     # zeros in b_row contribute nothing to the Legendre sum
-    # (na_true+1..max_na_plus_one all zero) and are harmless for
-    # Kalbach with uniform NA.
+    # (na_true+1..max_na_plus_one all zero); Kalbach selects on the
+    # panel NA below.
     nt = max_na_plus_one
     # b_row[i1] has shape (..., max_na+1) via advanced indexing on
     # the leading axis. We use jnp.take_along_axis or plain fancy
@@ -144,17 +133,16 @@ def _f6law1_con_panel_traced(
         # contribute nothing to the sum.
         f = _kernel._yleg_bc(a_interp, w, nt - 1, xp)
     else:  # lang == 2
-        # Kalbach-Mann. na_true is uniform across panels (enforced
-        # by caller); use the Python-side max as the static na to
-        # feed _ykalbach_bc. na=1 vs na=2 semantics differ; require
-        # uniform NA so we know at trace time which branch to use.
-        na_static = int(np.asarray(data.na_arr).max())
+        # Kalbach-Mann: na=1 (r only, ``a`` from systematics) and
+        # na=2 (``a`` tabulated) differ, and NA may vary per panel
+        # (U-235, Cu-63, K-39), so select on the gathered panel NA.
+        na = _gather_panel_scalar(data.na_arr, p, xp)
         e_full = xp.broadcast_to(
             xp.asarray(e_scalar, dtype=tp.dtype), tp.shape,
         )
-        f = _kernel._ykalbach_bc(
+        f = _kernel._ykalbach_bc_scanned(
             data.zai, data.zap, data.za,
-            e_full, tp, w, a_interp, na_static, xp,
+            e_full, tp, w, a_interp, na, nt, xp,
         )
 
     return xp.where(valid, f, xp.zeros_like(f))
@@ -284,14 +272,11 @@ def _law1_spectrum_panel_pair_traced(
     # (issue #281 follow-up; without this the multipanel-traced path
     # requests ~50 GB and OOMs).
     #
-    # Gate is fully Python-side static: c0, lang, and the uniform-NA
-    # value are all set at data-preproc time. na uniformity is
-    # already required by the caller
-    # (:func:`integrate_law1_spectrum_multipanel_traced`), so
-    # ``na_arr[0]`` is the constant NA.
+    # Gate is fully Python-side static: c0, lang, and the panel NAs
+    # are all set at data-preproc time; every panel must be NA=0.
     c0_static = float(np.sqrt(data.awi * data.awp) / (data.awi + data.awr))
-    na_static = int(np.asarray(data.na_arr)[0])
-    if c0_static == 0.0 and lang == 1 and na_static == 0:
+    na_max = int(np.asarray(data.na_arr).max())
+    if c0_static == 0.0 and lang == 1 and na_max == 0:
         e_bc_2d = e_sub[:, None]                             # (nE, 1)
         tp_bc_2d = ep_out_xp[None, :]                        # (1, nEp)
         w_bc = xp.zeros_like(tp_bc_2d)                       # (1, nEp) -- unused
@@ -407,13 +392,6 @@ def integrate_law1_spectrum_multipanel_traced(
     amplitude at every panel boundary).
     """
     _requires_jax(xp)
-    if not _uniform_na(data):
-        raise NotImplementedError(
-            'multipanel-traced kernel requires uniform NA across '
-            'panels of the subsection. This file has varying NA; '
-            'use explicit panel_idx= entry per panel instead.'
-        )
-
     max_nep = int(data.ep_panels.shape[1])
     max_na_plus_one = int(data.b_panels.shape[2])
     lang = int(data.lang)

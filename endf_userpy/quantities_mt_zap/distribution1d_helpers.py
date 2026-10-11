@@ -43,26 +43,19 @@ def _check_no_tracer_inputs(where, xp, *arrays):
     ``np.asarray(tracer)`` crash with the confusing
     ``TracerArrayConversionError`` (issue #220).
 
-    The affected integrator/kernel currently runs numpy internally
-    and cannot preserve grad through it; users who need jax.grad
-    through the ``dxs_dE`` / ``dxs_dmu`` API path should either
-    pass concrete numpy arrays as the differentiation axis (grad
-    wrt file-side leaves) or wait for the xp-native integrator
-    ports tracked in #220.
+    Guards the query axes that the integrators still need concrete
+    (the outgoing angle cosines of the E' integration); traced
+    incident energies are supported.
     """
     if getattr(xp, 'name', None) != 'jax':
         return
     for a in arrays:
         if _is_jax_tracer(a):
             raise NotImplementedError(
-                f'{where}: JAX tracer inputs are not supported '
-                f'because the underlying numeric integration runs '
-                f'on numpy internally. The autodiff-friendly '
-                f'port is tracked as issue #220. As a workaround, '
-                f'either pass concrete numpy arrays for the query '
-                f'axis and take jax.grad wrt file-side leaves, or '
-                f'call the direct-dist2d entry point (which is '
-                f'xp-native end-to-end).'
+                f'{where}: JAX tracers on this query axis are not '
+                f'supported (the integrator segments on concrete '
+                f'values; issue #220). Pass a concrete numpy array '
+                f'for it; traced incident energies are fine.'
             )
 
 
@@ -113,12 +106,68 @@ def _adaptive_simpson_along_axis(
     return I_new
 
 
-# Fixed mesh size for the xp-native (jax-tracer) Simpson path: no
-# adaptivity because ``xp.max``/comparison on tracers can't drive
-# Python control flow. n=321 matches the second-refinement level
-# of the numpy adaptive path -- enough to keep LAW=7 mu-integration
-# accurate to a few permille without dragging compile time out.
-_XP_SIMPSON_N = 321
+def _concrete_bool(x):
+    """``bool(x)``, or None when ``x`` is abstract (under ``jax.jit``)."""
+    try:
+        return bool(x)
+    except Exception as exc:
+        try:
+            import jax.errors
+        except ImportError:
+            raise exc
+        if isinstance(exc, jax.errors.ConcretizationTypeError):
+            return None
+        raise
+
+
+def _adaptive_simpson_along_axis_xp(
+    build_dist, axis_lo, axis_hi, xp,
+    rtol=_RTOL, initial_n=_INITIAL_MESH_N, max_iter=_MAX_ITER,
+):
+    """:func:`_adaptive_simpson_along_axis` for traced inputs (issue
+    #220): the same meshes and the same stopping rule, with the
+    data-dependent stop expressed as nested ``xp.cond`` (``lax.cond``)
+    when it is abstract (under ``jax.jit``), so only the levels numpy
+    would evaluate run.
+    ``axis_lo`` / ``axis_hi`` may be traced; ``build_dist`` receives
+    an xp mesh.
+    """
+    # Concrete bounds keep a numpy mesh: inside an ``xp.cond`` branch
+    # even a constant ``jnp.linspace`` is a tracer, and some dist2d
+    # kernels need the integration axis concrete (LAW=7 with traced E').
+    concrete = not (_is_jax_tracer(axis_lo) or _is_jax_tracer(axis_hi))
+
+    def level(n):
+        if concrete:
+            mesh = np.linspace(axis_lo, axis_hi, n)
+        else:
+            mesh = xp.linspace(axis_lo, axis_hi, n)
+        h = (axis_hi - axis_lo) / (n - 1)
+        return _simpson_uniform_xp(build_dist(mesh), h, xp)
+
+    def refine(it, n_prev, I_prev):
+        n = 2 * n_prev - 1
+        I_new = level(n)
+        if it == max_iter:
+            return I_new
+        scale = xp.maximum(xp.abs(I_new), 1e-30)
+        converged = xp.max(xp.abs(I_new - I_prev) / scale) < rtol
+        decided = _concrete_bool(converged)
+        if decided is not None:
+            # Eager (incl. jax.grad): branch in Python. A cond branch
+            # would trace its body and turn concrete inputs into
+            # tracers.
+            return I_new if decided else refine(it + 1, n, I_new)
+        return xp.cond(
+            converged,
+            lambda: I_new,
+            lambda: refine(it + 1, n, I_new),
+        )
+
+    I_first = level(initial_n)
+    if max_iter == 0:
+        return I_first
+    return refine(1, initial_n, I_first)
 
 
 def _simpson_uniform_xp(f, h, xp):
@@ -136,22 +185,6 @@ def _simpson_uniform_xp(f, h, xp):
     return (h / 3.0) * (f * w_xp).sum(axis=-1)
 
 
-def _fixed_simpson_along_axis_xp(
-    build_dist, axis_lo, axis_hi, xp, n=_XP_SIMPSON_N,
-):
-    """Non-adaptive Simpson on a uniform xp mesh of ``n`` points.
-
-    ``build_dist(mesh)`` receives an xp array; ``axis_lo`` /
-    ``axis_hi`` may be tracers themselves (Ep upper bound depends on
-    tracer E_in). One evaluation, no branching on the result -- so
-    ``jax.jit`` / ``jax.grad`` reach the file-side leaves cleanly.
-    """
-    mesh = xp.linspace(axis_lo, axis_hi, n)
-    dist = build_dist(mesh)
-    h = (mesh[-1] - mesh[0]) / (n - 1)
-    return _simpson_uniform_xp(dist, h, xp)
-
-
 def integrate_mf6_dist2d_over_eout(
     endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab=True, xp=None,
 ):
@@ -167,11 +200,14 @@ def integrate_mf6_dist2d_over_eout(
     ``xp=None`` (default) is numpy. Under ``xp=jax`` the LAW=7
     fast path is end-to-end xp-native and reverse-mode gradients
     flow through the ``f`` amplitudes and ``Ep`` knot positions
-    of the underlying tables (issue #220). The adaptive-Simpson
-    fallback still runs on numpy internally and materialises the
-    result to xp-native at the return boundary. The complementary
-    ``integrate_mf6_dist2d_over_mu`` path IS end-to-end xp-native
-    for LAW=1 (fast path).
+    of the underlying tables (issue #220). With concrete inputs the
+    adaptive-Simpson fallback runs on numpy and materialises the
+    result to xp-native at the return boundary; with traced
+    incident energies (``jax.jit`` over them) both paths run
+    xp-native and reproduce the numpy quadrature
+    (:func:`_integrate_mf6_over_eout_adaptive_simpson_traced`,
+    :mod:`mf6_law7_integrals_traced`). Traced ``angle_cosines_out``
+    are not supported.
 
     The LAW=7 fast path fires whenever every MF6 subsection
     matching ``zap`` is LAW=7 (a common pattern for files that
@@ -183,9 +219,9 @@ def integrate_mf6_dist2d_over_eout(
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
+    traced_ein = xp.name == 'jax' and _is_jax_tracer(energies_in)
     _check_no_tracer_inputs(
-        'integrate_mf6_dist2d_over_eout',
-        xp, energies_in, angle_cosines_out,
+        'integrate_mf6_dist2d_over_eout', xp, angle_cosines_out,
     )
     mtsec = endf_dict[6][mt]
     subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
@@ -206,6 +242,10 @@ def integrate_mf6_dist2d_over_eout(
                 energies_in, angle_cosines_out, to_lab, xp=xp,
             )
         return total
+    if traced_ein:
+        return _integrate_mf6_over_eout_adaptive_simpson_traced(
+            endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp,
+        )
     result = _integrate_mf6_over_eout_adaptive_simpson(
         endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab,
     )
@@ -243,6 +283,34 @@ def _integrate_mf6_over_eout_adaptive_simpson(
     return angdist
 
 
+def _integrate_mf6_over_eout_adaptive_simpson_traced(
+    endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp,
+):
+    """:func:`_integrate_mf6_over_eout_adaptive_simpson` for traced
+    incident energies (issue #220): one ``xp.map`` body per ``E_in``
+    running the same adaptive Simpson on ``[0, (E_in + q) * 1.1]``."""
+    mus_out = xp.asarray(np.asarray(angle_cosines_out, dtype=float))
+    q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
+    e_in = xp.asarray(energies_in, dtype=xp.float64).reshape(-1)
+
+    def one_ein(ein):
+        eout_max = (ein + q) * 1.1
+        positive = eout_max > 0
+        hi = xp.where(positive, eout_max, 1.0)
+
+        def build(ep_mesh):
+            dist = compute_dist2d_values(
+                endf_dict, mt, zap, ein.reshape(1), ep_mesh, mus_out,
+                to_lab, xp=xp,
+            )
+            return xp.moveaxis(dist[0], 0, 1)
+
+        row = _adaptive_simpson_along_axis_xp(build, 0.0, hi, xp)
+        return xp.where(positive, row, 0.0)
+
+    return xp.map(one_ein, e_in)
+
+
 def _integrate_mf6_dist2d_over_mu_default(
     endf_dict, mt, zap, energies_in, energies_out, to_lab=True
 ):
@@ -272,26 +340,16 @@ def _integrate_mf6_dist2d_over_mu_default(
 def _integrate_mf6_dist2d_over_mu_default_xp(
     endf_dict, mt, zap, energies_in, energies_out, to_lab, xp,
 ):
-    """xp-native mu-integration for the tracer path (issue #220).
-
-    Fixed-mesh Simpson (``_XP_SIMPSON_N=321``) so the whole
-    integration graph is one straight-line evaluation that
-    ``jax.grad`` / ``jax.jit`` compile cheaply. The mu axis is
-    static (``[-1, +1]``), so the mesh has no tracer dependence and
-    the underlying dist2d builder sees concrete mu values.
-
-    Trades the numpy-side per-segment ``rtol=1e-3`` adaptivity for
-    a fixed 321-point uniform mesh; measured accuracy on the same
-    Be-9 (n,2n) LAW=7 mu integrand is within a few permille of the
-    kink-aware kernel's ``<1e-5``, which is well within tabulation
-    noise for the top-level physics API this feeds.
-    """
+    """:func:`_integrate_mf6_dist2d_over_mu_default` for traced
+    incident energies (issue #220): the same adaptive Simpson, with
+    the stop expressed through ``xp.cond``. The mu axis is static
+    (``[-1, +1]``), so the meshes are concrete."""
     def build(mu_mesh):
         return compute_dist2d_values(
             endf_dict, mt, zap, energies_in, energies_out, mu_mesh,
             to_lab, xp=xp,
         )
-    return _fixed_simpson_along_axis_xp(build, -1.0, 1.0, xp)
+    return _adaptive_simpson_along_axis_xp(build, -1.0, 1.0, xp)
 
 
 def integrate_mf6_dist2d_over_mu(
@@ -313,10 +371,10 @@ def integrate_mf6_dist2d_over_mu(
       LAW=7 due to unresolved kinks at tabulated mu positions.
 
     ``xp=None`` (default) is numpy. LAW=1 fast path is end-to-end
-    xp-native. LAW=7 and the general-purpose adaptive-Simpson
-    fallback run on numpy internally and would materialise a jax
-    tracer input; those paths raise ``NotImplementedError`` under
-    ``xp=jax`` with tracer inputs, per issue #220.
+    xp-native. With traced incident energies (``jax.jit`` over them)
+    LAW=7 and the general-purpose adaptive Simpson reproduce the
+    numpy quadrature xp-native (issue #220); traced
+    ``energies_out`` reach the adaptive Simpson for LAW=7 only.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -332,25 +390,22 @@ def integrate_mf6_dist2d_over_mu(
                 endf_dict, mt, subsec_nums[0],
                 energies_in, energies_out, to_lab, xp=xp,
             )
+        if law == 7 and not tracer_eout:
+            # Concrete or traced Ein (the latter through the
+            # host-precomputed per-panel path, issue #220).
+            module_logger.debug(
+                f'use knot-aware LAW=7 mu-integrator for MT={mt}',
+            )
+            return mf6_law7.integrate_law7_subsec_over_mu(
+                endf_dict, mt, subsec_nums[0],
+                energies_in, energies_out, to_lab, xp=xp,
+            )
         if law == 7:
-            if not (tracer_ein or tracer_eout):
-                module_logger.debug(
-                    f'use knot-aware LAW=7 mu-integrator for MT={mt}',
-                )
-                return mf6_law7.integrate_law7_subsec_over_mu(
-                    endf_dict, mt, subsec_nums[0],
-                    energies_in, energies_out, to_lab, xp=xp,
-                )
-            # Tracer Ein OR tracer Eout on the query side: fall
-            # through to the xp-native fixed-mesh Simpson path so
-            # grad reaches query-side leaves. The kink-aware
-            # integrator above stays on the file-side-only tracer
-            # path (grad wrt f/Ep amplitudes) since its Simpson
-            # mesh construction is data-dependent on the mu-knot
-            # union, which is not jit-safe (issue #220 PR 4).
+            # Tracer Eout on the query side: the xp-native adaptive
+            # Simpson over mu, so grad reaches query-side leaves.
             module_logger.debug(
                 f'use xp-native mu-Simpson fallback for MT={mt} '
-                f'LAW=7 (tracer Ein/Ep)',
+                f'LAW=7 (tracer Ep)',
             )
             return _integrate_mf6_dist2d_over_mu_default_xp(
                 endf_dict, mt, zap, energies_in, energies_out,
@@ -373,12 +428,9 @@ def integrate_mf6_dist2d_over_mu(
     return xp.asarray(result) if xp.name != 'numpy' else result
 
 
-def _prepare_angdist_to_energydist_conversion(
-    endf_dict, mt, zap, energies_in, energies_out, to_lab
-):
-    energies_in = energies_in.reshape(-1, 1)
-    energies_out = energies_out.reshape(1,-1)
-
+def _two_body_masses(endf_dict, mt, zap, to_lab):
+    """``(m_i, m_t, m_e, m_r)`` of the two-body kinematics of ``mt``
+    with ejectile ``zap`` (residual mass from the reaction Q-value)."""
     if to_lab is not True:
         raise ValueError('This function requires `to_lab=True`')
     m_i = get_projectile_mass(endf_dict)
@@ -392,6 +444,15 @@ def _prepare_angdist_to_energydist_conversion(
             f'Reaction stored in MT={mt} energetically infeasible, '
             'check Q-value stored in MF3/MT{mt}.'
         )
+    return m_i, m_t, m_e, m_r
+
+
+def _prepare_angdist_to_energydist_conversion(
+    endf_dict, mt, zap, energies_in, energies_out, to_lab
+):
+    energies_in = energies_in.reshape(-1, 1)
+    energies_out = energies_out.reshape(1,-1)
+    m_i, m_t, m_e, m_r = _two_body_masses(endf_dict, mt, zap, to_lab)
 
     # Standard-mu API (issue #185): returns cos(theta_lab) and the
     # matching signed Jacobian directly, no bridge negation needed.
@@ -434,6 +495,11 @@ def convert_angdist_to_energydist(
     module_logger.debug(
         f'convert angular distribution for MT={mt} to energy distribution',
     )
+    if getattr(xp, 'name', None) == 'jax' and _is_jax_tracer(energies_in):
+        return _convert_angdist_to_energydist_traced(
+            compute_angdist_func, endf_dict, mt, zap, energies_in,
+            energies_out, to_lab, xp,
+        )
     angle_cosines_out, jacvals = (
         _prepare_angdist_to_energydist_conversion(
             endf_dict, mt, zap, energies_in, energies_out, to_lab,
@@ -464,3 +530,35 @@ def convert_angdist_to_energydist(
     if xp is not None and xp.name != 'numpy':
         return xp.asarray(energydist)
     return energydist
+
+
+def _convert_angdist_to_energydist_traced(
+    compute_angdist_func, endf_dict, mt, zap, energies_in, energies_out,
+    to_lab, xp,
+):
+    """:func:`convert_angdist_to_energydist` for traced incident
+    energies (``jax.jit`` over them; issue #220): the kinematics and
+    the feasibility mask in ``xp``, the per-``E_in`` angular evaluation
+    as one ``xp.map`` body (``lax.map`` inside a trace) instead of the
+    Python loop. ``compute_angdist_func`` must accept ``xp=``.
+    ``energies_out`` stays concrete."""
+    m_i, m_t, m_e, m_r = _two_body_masses(endf_dict, mt, zap, to_lab)
+    e_in = xp.asarray(energies_in, dtype=xp.float64).reshape(-1)
+    e_out = xp.asarray(np.asarray(energies_out, dtype=float).reshape(1, -1))
+    mu = conv_relat.compute_mu_from_Ekin(
+        e_out, e_in.reshape(-1, 1), m_i, m_t, m_e, m_r, xp=xp,
+    )                                                       # (n_ein, n_eout)
+    jac = conv_relat.compute_dmu_dEkin(
+        e_out, e_in.reshape(-1, 1), m_i, m_t, m_e, m_r, xp=xp,
+    )
+    feasible = (~xp.isnan(mu)) & (xp.abs(mu) <= 1.0)
+    mu = xp.where(feasible, mu, 0.0)
+
+    def one_ein(args):
+        ein, mu_row = args
+        return compute_angdist_func(
+            endf_dict, mt, zap, ein.reshape(1), mu_row, to_lab, xp=xp,
+        )[0, :]
+
+    angdist = xp.map(one_ein, (e_in, mu))
+    return xp.where(feasible, angdist * xp.abs(jac), 0.0)

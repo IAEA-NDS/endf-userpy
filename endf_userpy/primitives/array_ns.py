@@ -145,6 +145,16 @@ class NumpyBackend:
         """
         return funcs[int(index)](*args)
 
+    def cond(self, pred, true_fn, false_fn, *operands):
+        """``true_fn(*operands)`` if ``pred`` else ``false_fn(*operands)``.
+
+        JAX version uses ``jax.lax.cond``: ``pred`` may be traced and
+        only the taken branch runs (both are traced).
+        """
+        if pred:
+            return true_fn(*operands)
+        return false_fn(*operands)
+
     def scan(self, fn, init, xs):
         """Sequential scan: `carry_i+1, y_i = fn(carry_i, x_i)`.
 
@@ -256,6 +266,9 @@ class JaxBackend:
     def switch(self, index, funcs, *args):
         # `funcs` must be a fixed tuple; `index` may be a traced int.
         return self._lax.switch(index, funcs, *args)
+
+    def cond(self, pred, true_fn, false_fn, *operands):
+        return self._lax.cond(pred, true_fn, false_fn, *operands)
 
     def scan(self, fn, init, xs):
         return self._lax.scan(fn, init, xs)

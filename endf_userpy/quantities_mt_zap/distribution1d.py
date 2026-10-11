@@ -238,8 +238,9 @@ def compute_energydist_values(
     tracers through the MF5, MF6 and MF15 (gamma) branches end-to-
     end so ``jax.grad`` reaches file-side leaves. The
     ``convert_angdist_to_energydist`` fallback (MF4 angdist -> E'
-    via LAB Jacobian) runs on numpy internally and returns xp-
-    native at the boundary.
+    via LAB Jacobian) runs on numpy internally for concrete incident
+    energies and returns xp-native at the boundary; traced incident
+    energies (``jax.jit`` over them) take its xp-native branch.
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
@@ -262,9 +263,9 @@ def compute_energydist_values(
     elif has_mf4_mt(endf_dict, mt) and zap == _N_ZAP:
         module_logger.debug('--> found discrete angdist in MF4')
         return convert_angdist_to_energydist(
-            lambda endf_dict, mt, _, energies_in, energies_out, to_lab: (
+            lambda endf_dict, mt, _, energies_in, energies_out, to_lab, xp=None: (
                 mf4_interp.compute_angdist_values(
-                    endf_dict, mt, energies_in, energies_out, to_lab
+                    endf_dict, mt, energies_in, energies_out, to_lab, xp=xp,
                 )
             ),
             endf_dict, mt, zap, energies_in, energies_out, to_lab, xp=xp,
