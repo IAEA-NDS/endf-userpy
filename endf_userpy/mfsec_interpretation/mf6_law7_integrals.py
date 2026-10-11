@@ -329,12 +329,11 @@ def integrate_law7_subsec_over_eout(
 
     Not covered by construction:
 
-    * ``angle_cosines_out`` stays concrete: it enters Python-level
-      gating (``mu2 == mu1``) and integer indexing
-      (``find_interval``). Traced ``energies_in`` (``jax.jit`` over
-      them) route to
+    * Traced ``energies_in`` or ``angle_cosines_out`` (``jax.jit``
+      over them, or ``jax.grad`` wrt them) route to
       :func:`mf6_law7_integrals_traced.integrate_law7_subsec_over_eout_traced`,
-      which precomputes the per-panel data on the host (issue #220).
+      which gathers padded per-slice data instead of the Python-level
+      gating and ``find_interval`` below (issue #220).
     * Mu-mesh values and Ein-mesh values stay concrete: those
       feed the same Python-level branching.
 
@@ -362,7 +361,7 @@ def integrate_law7_subsec_over_eout(
             f'MT={mt} subsec_num={subsec_num} is LAW={sub["LAW"]}, '
             'not LAW=7',
         )
-    if _is_jax_tracer(energies_in):
+    if _is_jax_tracer(energies_in) or _is_jax_tracer(angle_cosines_out):
         from .mf6_law7_integrals_traced import (
             integrate_law7_subsec_over_eout_traced,
         )

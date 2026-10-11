@@ -29,7 +29,7 @@ this path; the tables are read on the host.
 """
 import numpy as np
 
-from ..primitives.helpers import convert_interp_repr, dict2array, find_interval
+from ..primitives.helpers import convert_interp_repr, dict2array
 from ..primitives.interpolation import integrate_tab1_panels
 from ..primitives.properties import get_QM, get_QI
 from . import mf6_interpretation_subsecs as _subsec
@@ -94,27 +94,63 @@ def _segment_areas_rows(ep, f, codes, xi_a, xi_b, xp):
     return xp.where(active, areas, 0.0)
 
 
-def _slice_geometry(mus, mu_mesh, mu_int, tab_ids, s, ep_rows):
-    """Concrete unit-base geometry of one Ein slice (dict key ``s``)
-    for every mu target, as in ``_ub_slice_geometry`` /
-    ``_project_ub_knots``. Returns ``(valid, tids, geom)`` with
-    ``tids`` ``(n_mu, 2)`` and ``geom`` a dict of ``(n_mu,)`` arrays."""
-    valid = (mus >= mu_mesh[0]) & (mus <= mu_mesh[-1])
-    j = np.zeros(mus.shape[0], dtype=int)
-    if np.any(valid):
-        j[valid] = find_interval(mu_mesh, mus[valid])
-    mu1 = mu_mesh[j]
-    mu2 = mu_mesh[j + 1]
-    with np.errstate(divide='ignore', invalid='ignore'):
-        yslope = np.where(mu2 == mu1, 0.0, (mus - mu1) / (mu2 - mu1))
-    tids = np.stack([
-        np.array([tab_ids[(s, jj + 1)] for jj in j]),
-        np.array([tab_ids[(s, jj + 2)] for jj in j]),
-    ], axis=-1)
-    x1low = ep_rows[tids[:, 0], 0]
-    x1high = ep_rows[tids[:, 0], -1]
-    x2low = ep_rows[tids[:, 1], 0]
-    x2high = ep_rows[tids[:, 1], -1]
+def _padded_mu_meshes(sub, tab_ids, n_slices):
+    """Per Ein slice (row ``s - 1`` for dict key ``s``): the mu mesh
+    padded by replicating its last value, the mesh length, the mu-axis
+    INT code per point (padded with 2) and the E' table row of every
+    mu slot (padded with the last). Raises for mu-axis INT other than
+    1 / 2 (``_check_supported_int``; checked for every slice)."""
+    meshes, ints, tids = [], [], []
+    for s in range(1, n_slices + 1):
+        mu_interpol = sub['mu_interpol'][s]
+        _law7._check_supported_int(
+            mu_interpol['INT'], mu_interpol['NBT'], axis_name='mu',
+        )
+        ints.append(convert_interp_repr(
+            np.asarray(mu_interpol['INT'], dtype=int),
+            np.asarray(mu_interpol['NBT'], dtype=int),
+        ))
+        meshes.append(dict2array(sub['mu'][s], dtype=float))
+        tids.append([tab_ids[(s, j + 1)] for j in range(meshes[-1].shape[0])])
+    n_pad = max(m.shape[0] for m in meshes)
+    mu_rows = np.empty((n_slices, n_pad))
+    int_rows = np.full((n_slices, n_pad), 2, dtype=int)
+    tid_rows = np.empty((n_slices, n_pad), dtype=int)
+    n_mu = np.empty(n_slices, dtype=int)
+    for r, (m, c, t) in enumerate(zip(meshes, ints, tids)):
+        n = m.shape[0]
+        n_mu[r] = n
+        mu_rows[r, :n] = m
+        mu_rows[r, n:] = m[-1]
+        int_rows[r, :c.shape[0]] = c
+        tid_rows[r, :n] = t
+        tid_rows[r, n:] = t[-1]
+    return mu_rows, n_mu, int_rows, tid_rows
+
+
+def _slice_geometry_traced(mus, s, mu_rows, n_mu, int_rows, tid_rows,
+                           ep_rows, xp):
+    """Unit-base geometry of Ein slice row ``s`` (traced) for every mu
+    target (possibly traced), as ``_ub_slice_geometry`` /
+    ``_project_ub_knots`` compute it per cell. Returns ``(valid, tids,
+    geom)``: ``tids`` ``(n_mu, 2)``, ``geom`` a dict of ``(n_mu,)``."""
+    mesh = mu_rows[s]
+    n = n_mu[s]
+    valid = (mus >= mesh[0]) & (mus <= mesh[n - 1])
+    # find_interval: searchsorted 'right', the last point mapped into
+    # the last interval (the padding replicates the last point).
+    idx = xp.minimum(xp.searchsorted(mesh, mus, side='right'), n - 1)
+    j = xp.clip(idx - 1, 0, n - 2)
+    mu1 = mesh[j]
+    mu2 = mesh[j + 1]
+    same = mu2 == mu1
+    yslope = xp.where(same, 0.0, (mus - mu1) / xp.where(same, 1.0, mu2 - mu1))
+    t1 = tid_rows[s][j]
+    t2 = tid_rows[s][j + 1]
+    x1low = ep_rows[t1, 0]
+    x1high = ep_rows[t1, -1]
+    x2low = ep_rows[t2, 0]
+    x2high = ep_rows[t2, -1]
     x1range = x1high - x1low
     x2range = x2high - x2low
     xlow = x1low + yslope * (x2low - x1low)
@@ -122,24 +158,22 @@ def _slice_geometry(mus, mu_mesh, mu_int, tab_ids, s, ep_rows):
     geom = {
         # Mu-blend base law INT=1 keeps the lower table only; the
         # geometry itself uses the unmodified yslope.
-        'yslope': np.where(mu_int[j + 1] % 10 == 1, 0.0, yslope),
+        'yslope': xp.where(int_rows[s][j + 1] % 10 == 1, 0.0, yslope),
         'xlow': xlow, 'xrange': xhigh - xlow,
         'x1low': x1low, 'x1range': x1range,
         'x2low': x2low, 'x2range': x2range,
     }
-    return valid, tids, geom
+    return valid, xp.stack([t1, t2], axis=-1), geom
 
 
 def integrate_law7_subsec_over_eout_traced(
     endf_dict, mt, subsec_num, energies_in, angle_cosines_out, xp,
 ):
     """:func:`mf6_law7_integrals.integrate_law7_subsec_over_eout` for
-    traced ``energies_in`` (concrete ``angle_cosines_out``)."""
+    traced ``energies_in`` and / or ``angle_cosines_out``."""
     sub = endf_dict[6][mt]['subsection'][subsec_num]
-    mus = np.asarray(angle_cosines_out, dtype=float).reshape(-1)
     q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
     ei_mesh = dict2array(sub['E'], dtype=float)
-    n_panels = ei_mesh.shape[0] - 1
     _law7._check_supported_int(
         sub['E_interpol']['INT'], sub['E_interpol']['NBT'],
         axis_name='outer Ein',
@@ -149,40 +183,21 @@ def integrate_law7_subsec_over_eout_traced(
         np.asarray(sub['E_interpol']['NBT'], dtype=int),
     )
     tab_ids, ep_rows, f_rows, code_rows = _padded_tables(sub)
-
-    # Per (panel, mu) concrete data, slices e1 (key k + 1) and e2.
-    valid = np.empty((n_panels, mus.shape[0]), dtype=bool)
-    tids = np.empty((n_panels, mus.shape[0], 4), dtype=int)
-    geom_keys = ('yslope', 'xlow', 'xrange', 'x1low', 'x1range',
-                 'x2low', 'x2range')
-    geom = {g: np.empty((n_panels, mus.shape[0], 2)) for g in geom_keys}
-    for k in range(n_panels):
-        for side, s in enumerate((k + 1, k + 2)):
-            mu_interpol = sub['mu_interpol'][s]
-            _law7._check_supported_int(
-                mu_interpol['INT'], mu_interpol['NBT'],
-                axis_name=f'mu (Ein slice {side + 1})',
-            )
-            mu_int = convert_interp_repr(
-                np.asarray(mu_interpol['INT'], dtype=int),
-                np.asarray(mu_interpol['NBT'], dtype=int),
-            )
-            mu_mesh = dict2array(sub['mu'][s], dtype=float)
-            v, t, g = _slice_geometry(mus, mu_mesh, mu_int, tab_ids, s, ep_rows)
-            valid[k] = v if side == 0 else (valid[k] & v)
-            tids[k, :, 2 * side:2 * side + 2] = t
-            for name in geom_keys:
-                geom[name][k, :, side] = g[name]
+    mu_rows, n_mu, int_rows, tid_rows = _padded_mu_meshes(
+        sub, tab_ids, ei_mesh.shape[0],
+    )
     lei = e_int[1:] % 10                                   # (n_panels,)
 
     ei_xp = xp.asarray(ei_mesh)
     lei_xp = xp.asarray(lei)
-    valid_xp = xp.asarray(valid)
-    tids_xp = xp.asarray(tids)
-    geom_xp = {name: xp.asarray(a) for name, a in geom.items()}
+    mu_rows_xp = xp.asarray(mu_rows)
+    n_mu_xp = xp.asarray(n_mu)
+    int_rows_xp = xp.asarray(int_rows)
+    tid_rows_xp = xp.asarray(tid_rows)
     ep_xp = xp.asarray(ep_rows)
     f_xp = xp.asarray(f_rows)
     code_xp = xp.asarray(code_rows)
+    mus = xp.asarray(angle_cosines_out, dtype=xp.float64).reshape(-1)
 
     def one_ein(e):
         k = _panel_index(ei_mesh, e, xp)
@@ -195,12 +210,23 @@ def integrate_law7_subsec_over_eout_traced(
         eslope_2 = xp.where(lin & (e2 != e1), (e - e1) / de, 0.0)
         eslope_1 = xp.where(lin, 1.0 - eslope_2, 1.0)
 
-        t = tids_xp[k]                                     # (n_mu, 4)
+        # Slices e1 (row k) and e2 (row k + 1).
+        valid = True
+        tids, g = [], {}
+        for side, s in enumerate((k, k + 1)):
+            v, t, gs = _slice_geometry_traced(
+                mus, s, mu_rows_xp, n_mu_xp, int_rows_xp, tid_rows_xp,
+                ep_xp, xp,
+            )
+            valid = valid & v
+            tids.append(t)
+            for name, val in gs.items():
+                g.setdefault(name, []).append(val)
+        t = xp.concatenate(tids, axis=-1)                  # (n_mu, 4)
+        g = {name: xp.stack(v, axis=-1) for name, v in g.items()}  # (n_mu, 2)
         ep = ep_xp[t]                                      # (n_mu, 4, P)
         f = f_xp[t]
         codes = code_xp[t]
-        g = {name: a[k] for name, a in geom_xp.items()}    # (n_mu, 2)
-
         # Effective knots of both slices (``_project_ub_knots``).
         knots = []
         for side in (0, 1):
@@ -250,17 +276,17 @@ def integrate_law7_subsec_over_eout_traced(
 
         cells = xp.sum(eslope_1 * slice_areas(0) + eslope_2 * slice_areas(1),
                        axis=-1)
-        return xp.where(valid_xp[k] & ok, cells, 0.0)
+        return xp.where(valid & ok, cells, 0.0)
 
     e_in = xp.asarray(energies_in, dtype=xp.float64).reshape(-1)
     return xp.map(one_ein, e_in)
 
 
-def _slice_segment_integrals(sub, s, seg_lo, seg_hi, eouts, eout_ok):
-    """Per-segment Simpson integrals over mu of Ein slice ``s`` on the
-    segments ``[seg_lo, seg_hi]``: ``(fine, coarse, refined)``, each
-    ``(n_eout, n_seg)``, with the sample points, rules and step sizes
-    of :func:`mf6_law7_integrals.integrate_law7_subsec_over_mu`."""
+def _slice_segment_samples(sub, s, seg_lo, seg_hi, eouts, eout_ok):
+    """Ein slice ``s`` sampled on the segments ``[seg_lo, seg_hi]`` at
+    the fine and refined points of
+    :func:`mf6_law7_integrals.integrate_law7_subsec_over_mu`:
+    ``(n_eout, n_seg, n_fine)`` and ``(n_eout, n_seg, n_refined)``."""
     n_seg = seg_lo.shape[0]
     out = []
     for n_pts in (_law7._LAW7_MU_SEG_N_FINE, _law7._LAW7_MU_SEG_N_REFINED):
@@ -271,20 +297,51 @@ def _slice_segment_integrals(sub, s, seg_lo, seg_hi, eouts, eout_ok):
         )                                                  # (n_mu, n_eout)
         vals = np.where(eout_ok[None, :], vals, 0.0)
         out.append(vals.T.reshape(eouts.shape[0], n_seg, n_pts))
-    f_fine, f_ref = out
-    h_fine = (seg_hi - seg_lo) / (_law7._LAW7_MU_SEG_N_FINE - 1)
-    h_ref = (seg_hi - seg_lo) / (_law7._LAW7_MU_SEG_N_REFINED - 1)
-    fine = _law7._simpson_1d(f_fine, 1.0) * h_fine[None, :]
-    coarse = _law7._simpson_1d(f_fine[:, :, ::2], 1.0) * (2 * h_fine)[None, :]
-    refined = _law7._simpson_1d(f_ref, 1.0) * h_ref[None, :]
+    return tuple(out)
+
+
+def _level_integrals(f_fine, f_ref, h_fine, h_ref, xp=None):
+    """Per-segment Simpson integrals ``(fine, coarse, refined)``, each
+    ``(..., n_eout, n_seg)``, with the rules and step sizes of
+    :func:`mf6_law7_integrals.integrate_law7_subsec_over_mu`."""
+    fine = _law7._simpson_1d(f_fine, 1.0, xp=xp) * h_fine
+    coarse = _law7._simpson_1d(f_fine[..., ::2], 1.0, xp=xp) * (2 * h_fine)
+    refined = _law7._simpson_1d(f_ref, 1.0, xp=xp) * h_ref
     return fine, coarse, refined
+
+
+def _outer_blend(a, b, e, e1, e2, law, laws, xp):
+    """``_interp_two_point_columns`` (``x = e``, ``y1 = a``, ``y2 = b``)
+    with a traced law code; only the ``laws`` present are built."""
+    small = 1.0e-38
+    e1s = xp.where(e1 != 0.0, e1, small)
+    forms = {
+        1: lambda: a,
+        2: lambda: a + (e - e1) * (b - a) / (e2 - e1),
+        3: lambda: a + xp.log(e / e1s) * (b - a) / xp.log(e2 / e1s),
+        4: lambda: xp.where(a == 0.0, small, a) * xp.exp(
+            (e - e1) * xp.log(b / xp.where(a == 0.0, small, a)) / (e2 - e1)),
+        5: lambda: xp.where(a == 0.0, small, a) * xp.exp(
+            xp.log(e / e1s) * xp.log(b / xp.where(a == 0.0, small, a))
+            / xp.log(e2 / e1s)),
+    }
+    out = None
+    for code in sorted(laws):
+        val = forms[int(code)]()
+        out = val if out is None else xp.where(law == code, val, out)
+    return out
 
 
 def integrate_law7_subsec_over_mu_traced(
     endf_dict, mt, subsec_num, energies_in, energies_out, xp,
 ):
     """:func:`mf6_law7_integrals.integrate_law7_subsec_over_mu` for
-    traced ``energies_in`` (concrete ``energies_out``)."""
+    traced ``energies_in`` (concrete ``energies_out``).
+
+    Outer Ein laws INT=1..3 are linear in the two slice amplitudes,
+    so the per-segment Simpson integrals of the slices are blended.
+    INT=4 / 5 (log in the amplitude) blend the slice samples point
+    by point, as numpy does, and integrate in the trace."""
     sub = endf_dict[6][mt]['subsection'][subsec_num]
     eouts = np.asarray(energies_out, dtype=float).reshape(-1)
     q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
@@ -297,16 +354,19 @@ def integrate_law7_subsec_over_mu_traced(
         np.asarray(sub['E_interpol']['NBT'], dtype=int),
     )
     lei = ei_interp[:-1] % 10
-    if np.any((lei < 1) | (lei > 3)):
+    laws = set(int(v) for v in lei)
+    if not laws <= {1, 2, 3, 4, 5}:
         raise NotImplementedError(
-            'MF6 LAW=7 mu-integration under jax.jit over the incident '
-            'energies supports outer Ein INT=1..3 only (the log-y '
-            f'laws do not blend linearly); got {sorted(set(lei))}.'
+            f'MF6 LAW=7 outer Ein INT {sorted(laws)} not supported.'
         )
+    pointwise = bool(laws & {4, 5})
     # ``pad_outside_dist2d_values`` zeroes E' < 1e-20.
     eout_ok = eouts >= 1e-20
+    n_eout = eouts.shape[0]
+    n_fine = _law7._LAW7_MU_SEG_N_FINE
+    n_ref = _law7._LAW7_MU_SEG_N_REFINED
 
-    panel_segs = []
+    panels = []
     cache = {}
     for k in range(n_panels):
         mu1 = dict2array(sub['mu'][k + 1], dtype=float)
@@ -314,29 +374,51 @@ def integrate_law7_subsec_over_mu_traced(
         knots = np.unique(np.concatenate([mu1, mu2]))
         knots = knots[(knots > -1.0) & (knots < 1.0)]
         edges = np.concatenate([[-1.0], knots, [1.0]])
-        ints = []
+        h_fine = (edges[1:] - edges[:-1]) / (n_fine - 1)
+        h_ref = (edges[1:] - edges[:-1]) / (n_ref - 1)
+        sides = []
         for s in (k + 1, k + 2):
             key = (s, edges.tobytes())
             if key not in cache:
-                cache[key] = _slice_segment_integrals(
+                f_fine, f_ref = _slice_segment_samples(
                     sub, s, edges[:-1], edges[1:], eouts, eout_ok,
                 )
-            ints.append(cache[key])
-        panel_segs.append(ints)
-    max_seg = max(ints[0][0].shape[1] for ints in panel_segs)
-    # (n_panels, 2 slices, 3 levels, n_eout, max_seg); zero-padded
-    # segments never refine and add zero.
-    tab = np.zeros((n_panels, 2, 3, eouts.shape[0], max_seg))
-    for k, ints in enumerate(panel_segs):
+                cache[key] = (f_fine, f_ref) if pointwise else (
+                    _level_integrals(f_fine, f_ref, h_fine, h_ref))
+            sides.append(cache[key])
+        panels.append((h_fine, h_ref, sides))
+    max_seg = max(h_fine.shape[0] for h_fine, _, _ in panels)
+
+    # Zero-padded segments (zero width) never refine and add zero.
+    h_tab = np.zeros((n_panels, 2, max_seg))
+    if pointwise:
+        # (n_panels, 2 slices, n_eout, max_seg, n_pts); padding 1.0
+        # keeps the log blends finite on the zero-width segments.
+        fine_tab = np.ones((n_panels, 2, n_eout, max_seg, n_fine))
+        ref_tab = np.ones((n_panels, 2, n_eout, max_seg, n_ref))
+    else:
+        # (n_panels, 2 slices, 3 levels, n_eout, max_seg)
+        lev_tab = np.zeros((n_panels, 2, 3, n_eout, max_seg))
+    for k, (h_fine, h_ref, sides) in enumerate(panels):
+        n_seg = h_fine.shape[0]
+        h_tab[k, 0, :n_seg] = h_fine
+        h_tab[k, 1, :n_seg] = h_ref
         for side in (0, 1):
-            for lev in range(3):
-                a = ints[side][lev]
-                tab[k, side, lev, :, :a.shape[1]] = a
+            if pointwise:
+                fine_tab[k, side, :, :n_seg] = sides[side][0]
+                ref_tab[k, side, :, :n_seg] = sides[side][1]
+            else:
+                for lev in range(3):
+                    lev_tab[k, side, lev, :, :n_seg] = sides[side][lev]
 
     ei_xp = xp.asarray(ei_mesh)
     lei_xp = xp.asarray(lei)
-    tab_xp = xp.asarray(tab)
-    small = 1.0e-38
+    h_xp = xp.asarray(h_tab)
+    if pointwise:
+        fine_xp = xp.asarray(fine_tab)
+        ref_xp = xp.asarray(ref_tab)
+    else:
+        lev_xp = xp.asarray(lev_tab)
 
     def one_ein(e):
         k = _panel_index(ei_mesh, e, xp)
@@ -344,15 +426,19 @@ def integrate_law7_subsec_over_mu_traced(
         ok = (e >= ei_mesh[0]) & (e <= ei_mesh[-1]) & (eout_max > 0.0)
         e1 = ei_xp[k]
         e2 = ei_xp[k + 1]
-        t = tab_xp[k]                                      # (2, 3, n_eout, n_seg)
-        a, b = t[0], t[1]
-        # ``_interp_two_point_columns`` per outer law
-        lin = a + (e - e1) * (b - a) / (e2 - e1)
-        e1s = xp.where(e1 != 0.0, e1, small)
-        log = a + xp.log(e / e1s) * (b - a) / xp.log(e2 / e1s)
         law = lei_xp[k]
-        levels = xp.where(law == 1, a, xp.where(law == 2, lin, log))
-        fine, coarse, refined = levels[0], levels[1], levels[2]
+        if pointwise:
+            f_fine = _outer_blend(fine_xp[k, 0], fine_xp[k, 1], e, e1, e2,
+                                  law, laws, xp)
+            f_ref = _outer_blend(ref_xp[k, 0], ref_xp[k, 1], e, e1, e2,
+                                 law, laws, xp)
+            fine, coarse, refined = _level_integrals(
+                f_fine, f_ref, h_xp[k, 0], h_xp[k, 1], xp,
+            )
+        else:
+            fine, coarse, refined = _outer_blend(
+                lev_xp[k, 0], lev_xp[k, 1], e, e1, e2, law, laws, xp,
+            )
         seg_scale = xp.maximum(xp.max(xp.abs(fine), axis=0), 1e-30)
         seg_diff = xp.max(xp.abs(fine - coarse), axis=0)
         need = seg_diff > _law7._LAW7_MU_SEG_RTOL * seg_scale
