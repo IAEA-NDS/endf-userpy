@@ -31,8 +31,9 @@ are inherently concrete file leaves and stay as Python floats.
 
 Internal ``cos_phi`` convention (private ``_*_cos_phi`` helpers)
 ----------------------------------------------------------------
-The four ``_*_cos_phi`` helpers below carry the raw SymPy-generated
-expressions and use ``cos_phi = cos(pi - theta_lab) = -mu``, i.e.
+The four ``_*_cos_phi`` helpers below (originally SymPy-generated,
+now rewritten in cancellation-free form) use
+``cos_phi = cos(pi - theta_lab) = -mu``, i.e.
 the cosine of the angle from the *opposite* of the beam direction.
 The public ``*_mu`` API wraps them with the ``mu <-> cos_phi``
 negation on both the angle argument and the derivative sign.
@@ -87,61 +88,75 @@ def compute_dmu_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r, xp=None):
     return -_compute_dcos_phi_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r, xp=xp)
 
 
-# --- Private helpers (raw SymPy expressions, cos_phi convention) -----------
+# --- Private helpers (cos_phi convention) ----------------------------------
+#
+# With W = m_i + Ekin_i + m_t (total LAB energy), P^2 = Ekin_i^2 +
+# 2 Ekin_i m_i (beam momentum squared), the ejectile momentum p and
+# energy eps = m_e + Ekin, and the residual energy E_r = W - eps, the
+# residual mass shell reads
+#
+#     2 P p mu = m_r^2 + p^2 + P^2 - E_r^2.
+#
+# The terms m_r^2 and E_r^2 are ~(target mass)^2 (5e22 eV^2 for U-235)
+# while the left side is ~p P (1e15 eV^2 at MeV energies), so the
+# SymPy expansions this module used before cancelled catastrophically:
+# relative errors up to 1.5e-8 in mu and 2.6e-9 in Ekin, on every
+# backend. The forms below rewrite each large difference through the
+# mass excess q = (m_t - m_r) + (m_i - m_e) (= Q for consistent masses,
+# accurate to an ulp of the masses):
+#
+#     m_r - E_r          = (Ekin - Ekin_i) - q
+#     2 (A - m_e W)      = (Ekin_i + q) (W - m_e + m_r) - P^2 =: B
+#
+# with A = (W^2 - P^2 + m_e^2 - m_r^2) / 2, and keep every remaining
+# difference well conditioned (relative error ~1e-14 against an
+# mpmath reference on U-235, Al-27 and H-1).
+
+def _beam(Ekin_i, m_i, m_t, m_e, m_r):
+    """``(P^2, W, q)``: beam momentum squared, total LAB energy and
+    the mass excess ``(m_t - m_r) + (m_i - m_e)``."""
+    P2 = Ekin_i**2 + 2*Ekin_i*m_i
+    W = m_i + Ekin_i + m_t
+    q = (m_t - m_r) + (m_i - m_e)
+    return P2, W, q
+
+
+def _mass_shell_numerator(Ekin, Ekin_i, m_i, m_t, m_e, m_r):
+    """``(N, P^2, p^2, E_r)`` with ``N = m_r^2 + p^2 + P^2 - E_r^2 =
+    2 P p mu``, without the cancellation of the direct form."""
+    P2, W, q = _beam(Ekin_i, m_i, m_t, m_e, m_r)
+    p2 = Ekin**2 + 2*Ekin*m_e
+    E_r = W - m_e - Ekin
+    N = p2 + P2 + ((Ekin - Ekin_i) - q) * (m_r + E_r)
+    return N, P2, p2, E_r
+
 
 def _compute_Ekin_from_cos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r, xp=None):
-    """``Ekin(cos_phi)`` with ``cos_phi = cos(pi - theta_lab) = -mu``."""
+    """``Ekin(cos_phi)`` with ``cos_phi = cos(pi - theta_lab) = -mu``.
+
+    The root ``p = (A P mu + W sqrt(D)) / (W^2 - P^2 mu^2)`` of the
+    mass-shell quadratic, ``D = A^2 - m_e^2 (W^2 - P^2 mu^2)``; for
+    ``A P mu < 0`` it is evaluated as ``(m_e^2 W^2 - A^2) / (A P mu -
+    W sqrt(D))`` to avoid cancellation. ``Ekin = p^2 / (sqrt(p^2 +
+    m_e^2) + m_e)``. NaN where no solution exists (``D < 0``).
+    """
     if xp is None:
         xp = array_ns.get_backend('numpy')
     sqrt = xp.sqrt
-    x0 = m_e**2
-    x1 = cos_phi**2
-    x2 = Ekin_i**2 + 2*Ekin_i*m_i
-    x3 = x1*x2
-    x4 = m_i**2
-    x5 = x2 + x4
-    x6 = m_t**2
-    x7 = sqrt(x5)
-    x8 = m_t*x7
-    x9 = 2*x8
-    x10 = x6 + x9
-    x11 = m_r**2
-    x12 = m_e**4
-    x13 = m_r**4
-    x14 = m_i**4
-    x15 = 2*x0
-    x16 = m_t**4
-    x17 = 2*x11
-    x18 = x11*x15
-    x19 = x0*x6
-    x20 = 12*x4
-    x21 = x11*x6
-    x22 = 4*x2**2
-    x23 = x0*x22
-    x24 = x2*x4
-    x25 = 6*x7
-    x26 = 4*x3
-    x27 = m_t**3*x7
-    x28 = 8*x0
-    x29 = 8*x11
-    x30 = x4*x8
-    x31 = x0*x8
-    x32 = 4*x11
-    x33 = 12*x2
-    Ekin_result = (
-        -m_e + sqrt(x0 +
-        ((1/2)*cos_phi*sqrt(x2)*(x0 + x10 - x11 + x4) -
-        1/2*sqrt(m_i**6 + m_t**6 + m_t**5*x25 + m_t*x14*x25 -
-        6*x0*x24 + x0*x26*x4 + x1*x23 + x12*x2 + x12*x4 + x12*x6 +
-        x12*x9 + x13*x2 + x13*x4 + x13*x6 + x13*x9 - x14*x15 -
-        x14*x17 + x14*x2 + 15*x14*x6 - x15*x16 - x15*x21 - x16*x17 +
-        13*x16*x2 + 15*x16*x4 - x17*x24 - x18*x2 - x18*x4 -
-        14*x19*x2 - x19*x20 + x19*x26 - 10*x2*x21 - x2*x32*x8 -
-        x20*x21 + x22*x6 - x23 + 18*x24*x6 + 4*x24*x8 - x27*x28 -
-        x27*x29 + x27*x33 + 20*x27*x4 + x28*x3*x8 - x28*x30 -
-        x29*x30 - x31*x32 - x31*x33))**2/(x10 - x3 + x5)**2)
-    )
-    return Ekin_result
+    mu = -cos_phi
+    P2, W, q = _beam(Ekin_i, m_i, m_t, m_e, m_r)
+    half_B = 0.5 * ((Ekin_i + q) * (W - m_e + m_r) - P2)    # A - m_e W
+    A = m_e * W + half_B
+    c = half_B * (2*m_e*W + half_B)                         # A^2 - m_e^2 W^2
+    D = c + m_e**2 * P2 * mu**2
+    W_sqrt_D = W * sqrt(D)
+    a = A * sqrt(P2) * mu
+    p_direct = (a + W_sqrt_D) / (W**2 - P2 * mu**2)
+    p_conj = -c / (a - W_sqrt_D)
+    p = xp.where(a >= 0, p_direct, p_conj)
+    p2 = p * p
+    denom = sqrt(p2 + m_e**2) + m_e
+    return xp.where(denom == 0, 0.0, p2 / xp.where(denom == 0, 1.0, denom))
 
 
 def _compute_cos_phi_from_Ekin(Ekin, Ekin_i, m_i, m_t, m_e, m_r, xp=None):
@@ -149,101 +164,32 @@ def _compute_cos_phi_from_Ekin(Ekin, Ekin_i, m_i, m_t, m_e, m_r, xp=None):
     if xp is None:
         xp = array_ns.get_backend('numpy')
     sqrt = xp.sqrt
-    x0 = Ekin**2 + 2*Ekin*m_e
-    x1 = Ekin_i**2 + 2*Ekin_i*m_i
-    cos_phi_result = (
-        -1/2*(m_r**2 + x0 + x1 - (m_t -
-        sqrt(m_e**2 + x0) + sqrt(m_i**2 +
-        x1))**2)/(sqrt(x0)*sqrt(x1))
-    )
-    return cos_phi_result
-
-
-def _compute_dEkin_dcos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r, xp=None):
-    """``dEkin / d(cos_phi)``; see module docstring for convention."""
-    if xp is None:
-        xp = array_ns.get_backend('numpy')
-    sqrt = xp.sqrt
-    x0 = m_e**2
-    x1 = cos_phi**2
-    x2 = Ekin_i**2 + 2*Ekin_i*m_i
-    x3 = x1*x2
-    x4 = m_i**2
-    x5 = x2 + x4
-    x6 = m_t**2
-    x7 = sqrt(x5)
-    x8 = m_t*x7
-    x9 = 2*x8
-    x10 = x6 + x9
-    x11 = x10 - x3 + x5
-    x12 = x11**(-2)
-    x13 = m_r**2
-    x14 = sqrt(x2)*(x0 + x10 - x13 + x4)
-    x15 = m_e**4
-    x16 = m_r**4
-    x17 = m_i**4
-    x18 = 2*x0
-    x19 = m_t**4
-    x20 = 2*x13
-    x21 = x13*x18
-    x22 = x0*x6
-    x23 = 12*x4
-    x24 = x13*x6
-    x25 = 4*x2**2
-    x26 = x0*x25
-    x27 = x2*x4
-    x28 = x0*x27
-    x29 = x2*x22
-    x30 = 6*x7
-    x31 = 4*x3
-    x32 = m_t**3*x7
-    x33 = 8*x0
-    x34 = 8*x13
-    x35 = x4*x8
-    x36 = x0*x8
-    x37 = 4*x13
-    x38 = 12*x2
-    x39 = x2*x8
-    x40 = (
-        sqrt(m_i**6 + m_t**6 + m_t**5*x30 + m_t*x17*x30 +
-        x0*x31*x4 + x1*x26 + x15*x2 + x15*x4 + x15*x6 + x15*x9 +
-        x16*x2 + x16*x4 + x16*x6 + x16*x9 - x17*x18 + x17*x2 -
-        x17*x20 + 15*x17*x6 - x18*x19 - x18*x24 + 13*x19*x2 -
-        x19*x20 + 15*x19*x4 - x2*x21 - 10*x2*x24 - x20*x27 - x21*x4
-        - x22*x23 + x22*x31 - x23*x24 + x25*x6 - x26 + 18*x27*x6 +
-        4*x27*x8 - 6*x28 - 14*x29 + x3*x33*x8 - x32*x33 - x32*x34 +
-        x32*x38 + 20*x32*x4 - x33*x35 - x34*x35 - x36*x37 - x36*x38
-        - x37*x39)
-    )
-    x41 = (1/2)*cos_phi*x14 - 1/2*x40
-    x42 = x41**2
-    x43 = 4*cos_phi
-    dEkin_dcos_phi_result = (
-        (2*cos_phi*x2*x42/x11**3 +
-        (1/2)*x12*x41*(x14 - (cos_phi*x26 + cos_phi*x33*x39 +
-        x28*x43 + x29*x43)/x40))/sqrt(x0 + x12*x42)
-    )
-    return dEkin_dcos_phi_result
+    N, P2, p2, _ = _mass_shell_numerator(Ekin, Ekin_i, m_i, m_t, m_e, m_r)
+    return -N / (2 * sqrt(p2) * sqrt(P2))
 
 
 def _compute_dcos_phi_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r, xp=None):
-    """``d(cos_phi) / dEkin``; see module docstring for convention."""
+    """``d(cos_phi) / dEkin``; see module docstring for convention.
+
+    ``d/dEkin [-N / (2 P p)]`` with ``dN/dEkin = 2 (eps + E_r)`` and
+    ``dp/dEkin = eps / p``."""
     if xp is None:
         xp = array_ns.get_backend('numpy')
     sqrt = xp.sqrt
-    x0 = 2*Ekin
-    x1 = Ekin**2 + m_e*x0
-    x2 = Ekin + m_e
-    x3 = sqrt(m_e**2 + x1)
-    x4 = Ekin_i**2 + 2*Ekin_i*m_i
-    x5 = m_t - x3 + sqrt(m_i**2 + x4)
-    x6 = (1/2)/sqrt(x4)
-    dcos_phi_dEkin_result = (
-        -x6*(2*m_e + x0 +
-        2*x2*x5/x3)/sqrt(x1) + x2*x6*(m_r**2 + x1 + x4 -
-        x5**2)/x1**(3/2)
-    )
-    return dcos_phi_dEkin_result
+    N, P2, p2, E_r = _mass_shell_numerator(Ekin, Ekin_i, m_i, m_t, m_e, m_r)
+    eps = Ekin + m_e
+    P = sqrt(P2)
+    p = sqrt(p2)
+    return -(eps + E_r) / (P * p) + eps * N / (2 * P * p2 * p)
+
+
+def _compute_dEkin_dcos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r, xp=None):
+    """``dEkin / d(cos_phi)``: the reciprocal of ``d(cos_phi)/dEkin``
+    at ``Ekin(cos_phi)``."""
+    if xp is None:
+        xp = array_ns.get_backend('numpy')
+    Ekin = _compute_Ekin_from_cos_phi(cos_phi, Ekin_i, m_i, m_t, m_e, m_r, xp=xp)
+    return 1.0 / _compute_dcos_phi_dEkin(Ekin, Ekin_i, m_i, m_t, m_e, m_r, xp=xp)
 
 
 # --- Deprecated cos_phi aliases -------------------------------------------
