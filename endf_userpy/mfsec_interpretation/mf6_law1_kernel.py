@@ -1118,7 +1118,8 @@ def _reconstruct_fallback_scanned(
     b2_arr = packed['b2']
     is_last_arr = packed['is_last']
 
-    def body(result, i):
+    def pair(i):
+        """Amplitude of panel pair ``i`` and its ``in_panel`` mask."""
         e1 = e1_arr[i]
         e2 = e2_arr[i]
         panel1 = {
@@ -1138,7 +1139,24 @@ def _reconstruct_fallback_scanned(
         in_panel_closed = (e_in_col >= e1) & (e_in_col <= e2)
         in_panel_open = (e_in_col >= e1) & (e_in_col < e2)
         in_panel = xp.where(is_last, in_panel_closed, in_panel_open)
-        in_panel_bc = xp.broadcast_to(in_panel, (n_e, n_ep, n_mu))
+        return f_p, xp.broadcast_to(in_panel, (n_e, n_ep, n_mu))
+
+    if n_e == 1:
+        # One query energy (e.g. one ``xp.map`` iteration of the
+        # traced dxs/dmu integrator): only its bracketing pair can
+        # contribute, so gather it instead of scanning all pairs.
+        # The highest pair with e1 <= E is the last one the scan
+        # below would match (the pairs are contiguous, half-open,
+        # the last one closed).
+        i = xp.clip(
+            xp.searchsorted(xp.asarray(e1_arr), e_in[0], side='right') - 1,
+            0, n_pairs - 1,
+        )
+        f_p, in_panel_bc = pair(i)
+        return xp.where(in_panel_bc, f_p, 0.0) * dinv_bc
+
+    def body(result, i):
+        f_p, in_panel_bc = pair(i)
         return xp.where(in_panel_bc, f_p, result), None
 
     result_init = xp.zeros(
