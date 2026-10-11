@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..primitives import array_ns
 from ..primitives.helpers import convert_interp_repr
 from . import mf6_law1_kernel as _kernel
 from . import mf6_law1_epintegral as _epi
@@ -72,8 +73,10 @@ def _f6law1_con_panel_traced(
     # max_na_plus_one for the trailing dim of the b row (zero-padded
     # beyond the panel's own NA).
 
-    ep_row = xp.take(data.ep_panels, p, axis=0)         # (max_nep,)
-    b_row = xp.take(data.b_panels, p, axis=0)           # (max_nep, max_na+1)
+    # Rows truncated to ``max_nep`` (the caller's row length, which
+    # may be below the padded width when every gathered panel fits).
+    ep_row = xp.take(data.ep_panels, p, axis=0)[:max_nep]
+    b_row = xp.take(data.b_panels, p, axis=0)[:max_nep]
 
     # Searchsorted over the padded row with the discrete-line slots
     # [0, nd) masked to -inf: those hold the ND discrete photon /
@@ -178,8 +181,8 @@ def _f6law1con_panel_pair_traced(
     # p, nep-1] == the continuum upper endpoint. Same trick lets
     # us gather ep_panels[p, nd] as the continuum lower endpoint
     # via xp.take on tracer nd.
-    ep_row_p1 = xp.take(data.ep_panels, p1, axis=0)     # (max_nep,)
-    ep_row_p2 = xp.take(data.ep_panels, p2, axis=0)
+    ep_row_p1 = xp.take(data.ep_panels, p1, axis=0)[:max_nep]
+    ep_row_p2 = xp.take(data.ep_panels, p2, axis=0)[:max_nep]
     x1low = xp.take(ep_row_p1, nd1, axis=0)
     x1high = xp.take(ep_row_p1, nep1 - 1, axis=0)
     x2low = xp.take(ep_row_p2, nd2, axis=0)
@@ -200,34 +203,26 @@ def _f6law1con_panel_pair_traced(
     tp_at_p1 = x1low + xslope * x1range
     tp_at_p2 = x2low + xslope * x2range
 
-    # Always compute both single-panel amplitudes at their own tp
-    # (used when only one panel has continuum).
-    f1_single = _f6law1_con_panel_traced(
-        data, p1, e1, tp_bc, w_bc, xp,
-        max_nep, max_na_plus_one, lang, lep,
-    )
-    f2_single = _f6law1_con_panel_traced(
-        data, p2, e2, tp_bc, w_bc, xp,
-        max_nep, max_na_plus_one, lang, lep,
-    )
-    # Both-panel path: evaluate each panel at the unit-base
-    # transformed tp, scaled by x{1,2}range / xrange.
-    x1range_over_xrange = x1range / xrange_safe
-    x2range_over_xrange = x2range / xrange_safe
-    f1_both = _f6law1_con_panel_traced(
-        data, p1, e1, tp_at_p1, w_bc, xp,
-        max_nep, max_na_plus_one, lang, lep,
-    ) * x1range_over_xrange
-    f2_both = _f6law1_con_panel_traced(
-        data, p2, e2, tp_at_p2, w_bc, xp,
-        max_nep, max_na_plus_one, lang, lep,
-    ) * x2range_over_xrange
-
+    # Each panel is evaluated once: at the unit-base transformed tp,
+    # scaled by x{1,2}range / xrange, when both panels have continuum,
+    # else at its own tp (scale exactly 1.0). Selecting the argument
+    # instead of the result halves the amplitude work and gives the
+    # same values bit for bit.
     both_cont = p1_has_cont & p2_has_cont
-    f1 = xp.where(both_cont, f1_both,
-                  xp.where(p1_has_cont, f1_single, xp.zeros_like(f1_single)))
-    f2 = xp.where(both_cont, f2_both,
-                  xp.where(p2_has_cont, f2_single, xp.zeros_like(f2_single)))
+    tp1 = xp.where(both_cont, tp_at_p1, tp_bc)
+    tp2 = xp.where(both_cont, tp_at_p2, tp_bc)
+    scale1 = xp.where(both_cont, x1range / xrange_safe, 1.0)
+    scale2 = xp.where(both_cont, x2range / xrange_safe, 1.0)
+    f1 = _f6law1_con_panel_traced(
+        data, p1, e1, tp1, w_bc, xp,
+        max_nep, max_na_plus_one, lang, lep,
+    ) * scale1
+    f2 = _f6law1_con_panel_traced(
+        data, p2, e2, tp2, w_bc, xp,
+        max_nep, max_na_plus_one, lang, lep,
+    ) * scale2
+    f1 = xp.where(p1_has_cont, f1, xp.zeros_like(f1))
+    f2 = xp.where(p2_has_cont, f2, xp.zeros_like(f2))
 
     # Outer E interp between panel results
     law = int(lei) % 10
@@ -296,8 +291,8 @@ def _law1_spectrum_panel_pair_traced(
 
     # Panel-pair Ep upper bound at each incident e. Padding invariant
     # makes ep_panels[p, -1] the continuum upper endpoint.
-    ep_row_p1 = xp.take(data.ep_panels, p1, axis=0)
-    ep_row_p2 = xp.take(data.ep_panels, p2, axis=0)
+    ep_row_p1 = xp.take(data.ep_panels, p1, axis=0)[:max_nep]
+    ep_row_p2 = xp.take(data.ep_panels, p2, axis=0)[:max_nep]
     ep1max = xp.take(ep_row_p1, nep1 - 1, axis=0)
     ep2max = xp.take(ep_row_p2, nep2 - 1, axis=0)
     e_bc = e_sub[:, None]                                    # (nE, 1)
@@ -435,7 +430,17 @@ def integrate_law1_spectrum_multipanel_traced(
     e_min = ei_mesh_xp[0]
     e_max = ei_mesh_xp[-1]
 
-    def _spectrum_one_e(e_scalar):
+    nep_xp = xp.asarray(data.nep_arr)
+    # Row-length buckets: the panel pair of one E only needs rows of
+    # length max(nep1, nep2); the slots beyond replicate the last knot
+    # and only add zero-width kink subpanels. Under jit each E picks
+    # the shortest bucket that holds its pair (``xp.switch`` inside
+    # ``xp.map``), so the kink-subpanel count and the bracket search
+    # scale with the pair's own size instead of the section's widest
+    # panel.
+    buckets = sorted({max(2, -(-max_nep // k)) for k in (8, 4, 2)} | {max_nep})
+
+    def _spectrum_one_e_rows(e_scalar, row_len):
         # panel_idx = clamp(searchsorted(ei_mesh, e, side='right') - 1,
         #                   0, n_pairs - 1)
         idx = xp.searchsorted(ei_mesh_xp, e_scalar, side='right') - 1
@@ -443,14 +448,29 @@ def integrate_law1_spectrum_multipanel_traced(
         row = _law1_spectrum_panel_pair_traced(
             data, idx, static_lei,
             e_scalar[None], ep_out_xp, eff_lct, gl_x, gl_w, xp,
-            max_nep, max_na_plus_one, lang, lep,
+            row_len, max_na_plus_one, lang, lep,
         )[0]
         # Mask out-of-range E (below section min or above section max)
         in_range = (e_scalar >= e_min) & (e_scalar <= e_max)
         return xp.where(in_range, row, xp.zeros_like(row))
 
-    # vmap over the E axis. Under jax, vmap traces once with a scalar
-    # tracer -> single-graph compile.
     import jax
-    result = jax.vmap(_spectrum_one_e)(e_in_xp)
+    if len(buckets) == 1 or not array_ns._inside_jit_trace():
+        # Eager (e.g. jax.grad wrt E): vmap over the E axis traces once
+        # with a scalar tracer -> single-graph compile; a per-call
+        # lax.map would recompile its body every call.
+        return jax.vmap(lambda e: _spectrum_one_e_rows(e, max_nep))(e_in_xp)
+
+    branches = tuple(
+        (lambda e, L=L: _spectrum_one_e_rows(e, L)) for L in buckets
+    )
+
+    def _spectrum_one_e(e_scalar):
+        idx = xp.searchsorted(ei_mesh_xp, e_scalar, side='right') - 1
+        idx = xp.clip(idx, 0, n_pairs - 1)
+        need = xp.maximum(xp.take(nep_xp, idx), xp.take(nep_xp, idx + 1))
+        b = xp.sum(xp.asarray(buckets) < need)
+        return xp.switch(b, branches, e_scalar)
+
+    result = xp.map(_spectrum_one_e, e_in_xp)
     return result

@@ -36,29 +36,6 @@ def _is_jax_tracer(x):
     return isinstance(x, jax.core.Tracer)
 
 
-def _check_no_tracer_inputs(where, xp, *arrays):
-    """Raise a clear ``NotImplementedError`` if ``xp`` is JAX and
-    any of the passed arrays is an abstract tracer. Fires early
-    with a suggestive message instead of letting a downstream
-    ``np.asarray(tracer)`` crash with the confusing
-    ``TracerArrayConversionError`` (issue #220).
-
-    Guards the query axes that the integrators still need concrete
-    (the outgoing angle cosines of the E' integration); traced
-    incident energies are supported.
-    """
-    if getattr(xp, 'name', None) != 'jax':
-        return
-    for a in arrays:
-        if _is_jax_tracer(a):
-            raise NotImplementedError(
-                f'{where}: JAX tracers on this query axis are not '
-                f'supported (the integrator segments on concrete '
-                f'values; issue #220). Pass a concrete numpy array '
-                f'for it; traced incident energies are fine.'
-            )
-
-
 # Adaptive-mesh Simpson defaults for the two MF6 integrators below.
 # INITIAL_MESH_N=81 already resolves Legendre expansions up to order
 # ~40 and typical LAW=1/6 tabulated E' spectra to well under _RTOL.
@@ -206,8 +183,8 @@ def integrate_mf6_dist2d_over_eout(
     incident energies (``jax.jit`` over them) both paths run
     xp-native and reproduce the numpy quadrature
     (:func:`_integrate_mf6_over_eout_adaptive_simpson_traced`,
-    :mod:`mf6_law7_integrals_traced`). Traced ``angle_cosines_out``
-    are not supported.
+    :mod:`mf6_law7_integrals_traced`); the same holds for traced
+    ``angle_cosines_out``.
 
     The LAW=7 fast path fires whenever every MF6 subsection
     matching ``zap`` is LAW=7 (a common pattern for files that
@@ -219,9 +196,8 @@ def integrate_mf6_dist2d_over_eout(
     """
     if xp is None:
         xp = array_ns.get_backend('numpy')
-    traced_ein = xp.name == 'jax' and _is_jax_tracer(energies_in)
-    _check_no_tracer_inputs(
-        'integrate_mf6_dist2d_over_eout', xp, angle_cosines_out,
+    traced = xp.name == 'jax' and (
+        _is_jax_tracer(energies_in) or _is_jax_tracer(angle_cosines_out)
     )
     mtsec = endf_dict[6][mt]
     subsec_nums = mf6_help.find_subsec_nums(endf_dict, mt, zap)
@@ -242,7 +218,7 @@ def integrate_mf6_dist2d_over_eout(
                 energies_in, angle_cosines_out, to_lab, xp=xp,
             )
         return total
-    if traced_ein:
+    if traced:
         return _integrate_mf6_over_eout_adaptive_simpson_traced(
             endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp,
         )
@@ -287,9 +263,10 @@ def _integrate_mf6_over_eout_adaptive_simpson_traced(
     endf_dict, mt, zap, energies_in, angle_cosines_out, to_lab, xp,
 ):
     """:func:`_integrate_mf6_over_eout_adaptive_simpson` for traced
-    incident energies (issue #220): one ``xp.map`` body per ``E_in``
-    running the same adaptive Simpson on ``[0, (E_in + q) * 1.1]``."""
-    mus_out = xp.asarray(np.asarray(angle_cosines_out, dtype=float))
+    incident energies and / or angle cosines (issue #220): one
+    ``xp.map`` body per ``E_in`` running the same adaptive Simpson on
+    ``[0, (E_in + q) * 1.1]``."""
+    mus_out = xp.asarray(angle_cosines_out, dtype=xp.float64).reshape(-1)
     q = max(get_QM(endf_dict, mt), get_QI(endf_dict, mt))
     e_in = xp.asarray(energies_in, dtype=xp.float64).reshape(-1)
 

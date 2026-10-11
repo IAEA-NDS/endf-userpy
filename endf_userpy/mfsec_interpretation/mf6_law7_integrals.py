@@ -105,6 +105,15 @@ def _is_jax_tracer(x):
     return isinstance(x, jax.core.Tracer)
 
 
+def _host_tables_on_jax(sub, xp):
+    """Eager jax with plain (non-jax) tables: the host-precomputed
+    integrators of :mod:`mf6_law7_integrals_traced` apply as they are
+    and avoid the per-cell op-by-op dispatch of the loops below (H-2
+    (n,2n) dxs/dE: ~20x slower than numpy otherwise). Tables carrying
+    jax leaves (jax.grad wrt ``f`` / ``Ep``) keep the loops."""
+    return xp.name == 'jax' and not _subsec._tables_have_jax_leaf(sub, xp)
+
+
 def _to_numpy(x, xp):
     """Materialise ``x`` to a numpy float array for a discrete
     (non-differentiable) use downstream. A tracer input under
@@ -329,12 +338,11 @@ def integrate_law7_subsec_over_eout(
 
     Not covered by construction:
 
-    * ``angle_cosines_out`` stays concrete: it enters Python-level
-      gating (``mu2 == mu1``) and integer indexing
-      (``find_interval``). Traced ``energies_in`` (``jax.jit`` over
-      them) route to
+    * Traced ``energies_in`` or ``angle_cosines_out`` (``jax.jit``
+      over them, or ``jax.grad`` wrt them) route to
       :func:`mf6_law7_integrals_traced.integrate_law7_subsec_over_eout_traced`,
-      which precomputes the per-panel data on the host (issue #220).
+      which gathers padded per-slice data instead of the Python-level
+      gating and ``find_interval`` below (issue #220).
     * Mu-mesh values and Ein-mesh values stay concrete: those
       feed the same Python-level branching.
 
@@ -362,7 +370,8 @@ def integrate_law7_subsec_over_eout(
             f'MT={mt} subsec_num={subsec_num} is LAW={sub["LAW"]}, '
             'not LAW=7',
         )
-    if _is_jax_tracer(energies_in):
+    if (_is_jax_tracer(energies_in) or _is_jax_tracer(angle_cosines_out)
+            or _host_tables_on_jax(sub, xp)):
         from .mf6_law7_integrals_traced import (
             integrate_law7_subsec_over_eout_traced,
         )
@@ -592,6 +601,30 @@ def _simpson_1d(f_samples, h, xp=None):
     return (h / 3.0) * xp.sum(f_samples * w, axis=-1)
 
 
+def _refine_decision(integ_fine, integ_coarse, xp):
+    """Per-segment refinement flags (concrete numpy bools) from the
+    fine / coarse Simpson integrals ``(n_eout, n_seg)``, or None when
+    they cannot be read concretely (``jax.jit`` with file-side table
+    tracers): the refinement is then skipped. Under ``jax.grad`` the
+    values are read through ``stop_gradient`` -- the decision is
+    discrete, so no gradient is lost."""
+    try:
+        fine = _to_numpy(integ_fine, xp)
+        coarse = _to_numpy(integ_coarse, xp)
+    except Exception as exc:
+        try:
+            import jax.errors
+        except ImportError:
+            raise exc
+        if isinstance(exc, (jax.errors.TracerArrayConversionError,
+                            jax.errors.ConcretizationTypeError)):
+            return None
+        raise
+    seg_scale = np.maximum(np.abs(fine).max(axis=0), 1e-30)
+    seg_diff = np.abs(fine - coarse).max(axis=0)
+    return seg_diff > _LAW7_MU_SEG_RTOL * seg_scale
+
+
 def integrate_law7_subsec_over_mu(
     endf_dict, mt, subsec_num, energies_in, energies_out, to_lab=True,
     xp=None,
@@ -628,13 +661,13 @@ def integrate_law7_subsec_over_mu(
     Traced ``energies_in`` (``jax.jit`` over them) route to
     :func:`mf6_law7_integrals_traced.integrate_law7_subsec_over_mu_traced`,
     which reproduces the numpy result including the refinement
-    (issue #220). Otherwise, under ``xp=jax`` the refine branch is
-    skipped (the tracer
-    ``np.any(need_refine)`` decision would abort the trace); the
-    fine-only integral stays within a few permille of the refined
-    numpy path on the corpus, and gradients flow through the ``f``
+    (issue #220). Eager ``xp=jax`` (including ``jax.grad``) refines
+    like numpy: the discrete refine decision is read through
+    ``stop_gradient``, and gradients flow through the ``f``
     amplitudes / ``Ep`` knots of the underlying tables via the
-    xp-native reconstruction in ``get_dist2d_from_subsec_law7``.
+    xp-native reconstruction in ``get_dist2d_from_subsec_law7``. Only
+    under ``jax.jit`` with traced file-side tables is the refinement
+    skipped (the fine-only integral stays within a few permille).
 
     Parameters
     ----------
@@ -658,7 +691,7 @@ def integrate_law7_subsec_over_mu(
             f'MT={mt} subsec_num={subsec_num} is LAW={sub["LAW"]}, '
             'not LAW=7',
         )
-    if _is_jax_tracer(energies_in):
+    if _is_jax_tracer(energies_in) or _host_tables_on_jax(sub, xp):
         from .mf6_law7_integrals_traced import (
             integrate_law7_subsec_over_mu_traced,
         )
@@ -675,10 +708,6 @@ def integrate_law7_subsec_over_mu(
     # under xp=jax (same pattern as integrate_law7_subsec_over_eout).
     zero_row = xp.zeros(n_eout)
     row_cells = [zero_row for _ in range(len(einc))]
-    # Refinement needs concrete values (``np.any`` on the error
-    # estimate); only the jax backend can carry tracers here. The
-    # numba backend computes on numpy arrays and must refine too.
-    use_refine = xp.name != 'jax'
 
     for i, e in enumerate(einc):
         # Outside the section's Ein range -> zero.
@@ -724,15 +753,12 @@ def integrate_law7_subsec_over_mu(
         h_fine = (seg_hi - seg_lo) / (n_fine - 1)   # (n_seg,) numpy
         integ_fine = _simpson_1d(f_fine, 1.0, xp=xp) * h_fine[None, :]
 
-        if use_refine:
-            # Coarse check: decimate to every second sample.
-            f_coarse = f_fine[:, :, ::2]
-            h_coarse = 2 * h_fine
-            integ_coarse = _simpson_1d(f_coarse, 1.0, xp=xp) * h_coarse[None, :]
-            seg_max = np.abs(integ_fine).max(axis=0)
-            seg_scale = np.maximum(seg_max, 1e-30)
-            seg_diff = np.abs(integ_fine - integ_coarse).max(axis=0)
-            need_refine = seg_diff > _LAW7_MU_SEG_RTOL * seg_scale
+        # Coarse check: decimate to every second sample.
+        f_coarse = f_fine[:, :, ::2]
+        h_coarse = 2 * h_fine
+        integ_coarse = _simpson_1d(f_coarse, 1.0, xp=xp) * h_coarse[None, :]
+        need_refine = _refine_decision(integ_fine, integ_coarse, xp)
+        if need_refine is not None:
             if np.any(need_refine):
                 refine_idcs = np.where(need_refine)[0]
                 n_ref = _LAW7_MU_SEG_N_REFINED
@@ -756,7 +782,10 @@ def integrate_law7_subsec_over_mu(
                 )
                 h_ref = (ref_hi - ref_lo) / (n_ref - 1)
                 integ_ref = _simpson_1d(f_ref, 1.0, xp=xp) * h_ref[None, :]
-                integ_fine[:, refine_idcs] = integ_ref
+                if xp.name == 'jax':
+                    integ_fine = integ_fine.at[:, refine_idcs].set(integ_ref)
+                else:
+                    integ_fine[:, refine_idcs] = integ_ref
 
         row_cells[i] = integ_fine.sum(axis=1)
 
