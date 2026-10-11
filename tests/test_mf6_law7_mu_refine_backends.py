@@ -43,3 +43,26 @@ def test_law7_spectrum_numba_backend_equals_numpy():
                                          options=RunOptions(backend='numba')))
     assert np.count_nonzero(ref) > 20
     np.testing.assert_array_equal(got, ref)
+
+
+def test_law7_spectrum_eager_jax_refines_like_numpy():
+    """Eager jax skipped the refinement too (a few permille off numpy,
+    and off the jax.jit path, which refines). The refine decision is
+    discrete, so it is read concretely under eager jax and jax.grad."""
+    if 'jax' not in array_ns.available_backends():
+        pytest.skip('jax not installed')
+    path = resolve_h2()
+    if path is None:
+        pytest.skip('H-2 corpus file not present (see fetch.sh)')
+    d = EndfParserCpp(ignore_missing_tpid=True, ignore_zero_mismatch=True,
+                      accept_spaces=True).parsefile(path)
+    ein = np.geomspace(5e6, 1.9e7, 4)
+    eout = np.geomspace(1e4, 1e7, 12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = np.asarray(qz.compute_dexs(d, 16, 1, ein, eout,
+                                         options=RunOptions(backend='numpy')))
+        got = np.asarray(qz.compute_dexs(d, 16, 1, ein, eout,
+                                         options=RunOptions(backend='jax')))
+    assert np.count_nonzero(ref) > 20
+    np.testing.assert_allclose(got, ref, rtol=1e-12, atol=0.0)
