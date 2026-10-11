@@ -105,6 +105,15 @@ def _is_jax_tracer(x):
     return isinstance(x, jax.core.Tracer)
 
 
+def _host_tables_on_jax(sub, xp):
+    """Eager jax with plain (non-jax) tables: the host-precomputed
+    integrators of :mod:`mf6_law7_integrals_traced` apply as they are
+    and avoid the per-cell op-by-op dispatch of the loops below (H-2
+    (n,2n) dxs/dE: ~20x slower than numpy otherwise). Tables carrying
+    jax leaves (jax.grad wrt ``f`` / ``Ep``) keep the loops."""
+    return xp.name == 'jax' and not _subsec._tables_have_jax_leaf(sub, xp)
+
+
 def _to_numpy(x, xp):
     """Materialise ``x`` to a numpy float array for a discrete
     (non-differentiable) use downstream. A tracer input under
@@ -361,7 +370,8 @@ def integrate_law7_subsec_over_eout(
             f'MT={mt} subsec_num={subsec_num} is LAW={sub["LAW"]}, '
             'not LAW=7',
         )
-    if _is_jax_tracer(energies_in) or _is_jax_tracer(angle_cosines_out):
+    if (_is_jax_tracer(energies_in) or _is_jax_tracer(angle_cosines_out)
+            or _host_tables_on_jax(sub, xp)):
         from .mf6_law7_integrals_traced import (
             integrate_law7_subsec_over_eout_traced,
         )
@@ -681,7 +691,7 @@ def integrate_law7_subsec_over_mu(
             f'MT={mt} subsec_num={subsec_num} is LAW={sub["LAW"]}, '
             'not LAW=7',
         )
-    if _is_jax_tracer(energies_in):
+    if _is_jax_tracer(energies_in) or _host_tables_on_jax(sub, xp):
         from .mf6_law7_integrals_traced import (
             integrate_law7_subsec_over_mu_traced,
         )

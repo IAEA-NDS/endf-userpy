@@ -45,10 +45,13 @@ def test_law7_spectrum_numba_backend_equals_numpy():
     np.testing.assert_array_equal(got, ref)
 
 
-def test_law7_spectrum_eager_jax_refines_like_numpy():
+@pytest.mark.parametrize('jax_leaf', [False, True])
+def test_law7_spectrum_eager_jax_refines_like_numpy(jax_leaf):
     """Eager jax skipped the refinement too (a few permille off numpy,
     and off the jax.jit path, which refines). The refine decision is
-    discrete, so it is read concretely under eager jax and jax.grad."""
+    discrete, so it is read concretely under eager jax and jax.grad.
+    Plain tables take the host-precomputed integrator; tables with a
+    jax leaf (the jax.grad-wrt-file-values pattern) the per-cell loop."""
     if 'jax' not in array_ns.available_backends():
         pytest.skip('jax not installed')
     path = resolve_h2()
@@ -62,7 +65,14 @@ def test_law7_spectrum_eager_jax_refines_like_numpy():
         warnings.simplefilter('ignore')
         ref = np.asarray(qz.compute_dexs(d, 16, 1, ein, eout,
                                          options=RunOptions(backend='numpy')))
+        if jax_leaf:
+            import jax.numpy as jnp
+            tab = d[6][16]['subsection'][1]['table'][30][10]
+            tab['f'] = jnp.asarray(tab['f'])
         got = np.asarray(qz.compute_dexs(d, 16, 1, ein, eout,
                                          options=RunOptions(backend='jax')))
     assert np.count_nonzero(ref) > 20
-    np.testing.assert_allclose(got, ref, rtol=1e-12, atol=0.0)
+    # The per-cell jax interpolation rounds differently from numpy
+    # (~1e-10); without the refinement it was 6.5e-4 off.
+    np.testing.assert_allclose(got, ref, rtol=1e-9 if jax_leaf else 1e-12,
+                               atol=0.0)
