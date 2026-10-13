@@ -134,6 +134,60 @@ def _numpy_chunk_size(ne: int, nres: int, max_bytes: int) -> int:
     return max(1, max_bytes // bytes_per_row)
 
 
+def _chunked_reconstruct(reco_fn, data, e, xp, chunk, max_bytes):
+    """Chunk ``e`` into ``chunk``-sized pieces and run ``reco_fn``
+    on each. Numpy backend: plain Python ``for`` loop. JAX backend:
+    ``jax.lax.scan`` so the per-chunk body is traced + compiled
+    exactly ONCE (shape-specialised to ``chunk``) and dispatched
+    N times from the compiled code, avoiding the per-op eager
+    overhead the Python-for-loop variant would pay on every chunk.
+
+    Returns a dict with the same keys as ``reco_fn``'s output, each
+    value shaped ``(ne,)`` on the caller's backend.
+
+    The remainder chunk (``ne % chunk != 0``) is handled with a
+    second scan over a right-padded array; the pad values are
+    recomputed but discarded. This keeps scan's shape-specialisation
+    intact without a separate single-call tail that would trigger a
+    second trace+compile.
+    """
+    ne = int(e.shape[0])
+    kwargs = dict(_max_intermediate_bytes=max_bytes, _skip_chunk=True)
+    is_jax = getattr(xp, 'name', None) == 'jax'
+    if not is_jax:
+        parts: dict = {}
+        for start in range(0, ne, chunk):
+            sub = reco_fn(data, e[start:start + chunk], xp, **kwargs)
+            for k, v in sub.items():
+                parts.setdefault(k, []).append(v)
+        return {k: xp.concatenate(v) for k, v in parts.items()}
+
+    # JAX branch: scan over a (n_chunks, chunk)-reshaped e, then
+    # concatenate and trim. Padding uses the final e value (edge
+    # pad) so numeric domain assumptions in reco_fn (positive E,
+    # finite log/exp) stay valid for the discarded tail.
+    import jax
+    from jax import lax
+    import jax.numpy as jnp
+    n_full = (ne // chunk) * chunk
+    tail = ne - n_full
+    main = e[:n_full].reshape(n_full // chunk, chunk)
+
+    def body(_carry, e_slice):
+        return _carry, reco_fn(data, e_slice, xp, **kwargs)
+
+    _, main_out = lax.scan(body, None, main)
+    # main_out[k] has shape (n_chunks, chunk); flatten to (n_full,).
+    result = {k: v.reshape(-1) for k, v in main_out.items()}
+    if tail > 0:
+        last_pad = jnp.pad(e[n_full:], (0, chunk - tail), mode='edge')
+        _, last_out = lax.scan(body, None, last_pad[None, :])
+        for k in result:
+            tail_vals = last_out[k].reshape(-1)[:tail]
+            result[k] = jnp.concatenate([result[k], tail_vals])
+    return result
+
+
 def _rho(e, ki, r_tab, xp):
     """Channel radius parameter rho = k(|E|) * radius(|E|)."""
     ee = xp.abs(e)
@@ -313,26 +367,29 @@ def reconstruct(
 
     e = xp.asarray(energies_in, dtype=xp.float64)
 
-    # Numpy memory safety: split NE into slices whose (chunk, nres)
+    # Memory safety: split NE into slices whose (chunk, nres)
     # intermediate fits under the cap, recurse into ourselves with
-    # `_skip_chunk` to bypass the wrapper on each slice.
-    if not _skip_chunk and getattr(xp, 'name', None) == 'numpy':
+    # ``_skip_chunk`` to bypass the wrapper on each slice. Fires on
+    # the numpy AND jax backends (both allocate the full
+    # ``(ne, nres)`` complex-128 intermediate; JAX actually needs
+    # the cap more because its non-in-place semantics multiply the
+    # transient footprint). Numba's own kernel is memory-flat and
+    # does not need the cap. The JAX path uses ``lax.scan`` so the
+    # per-chunk body is traced + compiled once (shape-specialised to
+    # ``chunk``) and dispatched for every subsequent chunk from the
+    # compiled artefact.
+    if not _skip_chunk and getattr(xp, 'name', None) in ('numpy', 'jax'):
         max_bytes = (_max_intermediate_bytes
                      if _max_intermediate_bytes is not None
                      else NUMPY_MAX_INTERMEDIATE_BYTES)
         nres = int(data.res_er.shape[0])
         chunk = _numpy_chunk_size(int(e.shape[0]), nres, max_bytes)
         if chunk < e.shape[0]:
-            parts: dict = {}
-            for start in range(0, int(e.shape[0]), chunk):
-                sub = reconstruct(
-                    data, e[start:start + chunk], xp, nl_max,
-                    _max_intermediate_bytes=max_bytes,
-                    _skip_chunk=True,
-                )
-                for k, v in sub.items():
-                    parts.setdefault(k, []).append(v)
-            return {k: np.concatenate(v) for k, v in parts.items()}
+            def _reco(data, e_slice, xp, **kw):
+                return reconstruct(data, e_slice, xp, nl_max, **kw)
+            return _chunked_reconstruct(
+                _reco, data, e, xp, chunk, max_bytes,
+            )
 
     er = xp.asarray(data.res_er, dtype=xp.float64)
     gn = xp.asarray(data.res_gn, dtype=xp.float64)

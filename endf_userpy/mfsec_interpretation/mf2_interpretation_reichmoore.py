@@ -621,9 +621,10 @@ def reconstruct(
 
     e = xp.asarray(energies_in, dtype=xp.float64)
 
-    # Numpy memory safety: same chunking wrapper as MLBW. Shares the
+    # Memory safety: same chunking wrapper as MLBW. Shares the
     # global cap and helper from :mod:`mf2_interpretation_mlbw`.
-    if not _skip_chunk and getattr(xp, 'name', None) == 'numpy':
+    # Fires on numpy AND jax backends; see MLBW for the rationale.
+    if not _skip_chunk and getattr(xp, 'name', None) in ('numpy', 'jax'):
         from . import mf2_interpretation_mlbw as _mlbw
         max_bytes = (_max_intermediate_bytes
                      if _max_intermediate_bytes is not None
@@ -633,16 +634,9 @@ def reconstruct(
         nres = int(data.res_er.shape[0])
         chunk = _mlbw._numpy_chunk_size(int(e.shape[0]), nres, max_bytes)
         if chunk < e.shape[0]:
-            parts: dict = {}
-            for start in range(0, int(e.shape[0]), chunk):
-                sub = reconstruct(
-                    data, e[start:start + chunk], xp,
-                    _max_intermediate_bytes=max_bytes,
-                    _skip_chunk=True,
-                )
-                for k, v in sub.items():
-                    parts.setdefault(k, []).append(v)
-            return {k: np.concatenate(v) for k, v in parts.items()}
+            return _mlbw._chunked_reconstruct(
+                reconstruct, data, e, xp, chunk, max_bytes,
+            )
     e_pos = e > 0.0
     e_safe = xp.maximum(e, 0.0)
     k_e2 = (data.ki ** 2) * e_safe                             # (ne,)
