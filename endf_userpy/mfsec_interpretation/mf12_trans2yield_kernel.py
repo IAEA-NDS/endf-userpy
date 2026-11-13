@@ -242,7 +242,6 @@ def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
     # ``[0:N]`` slice is a redundant XLA op that hurts jit steady-
     # state (measured 3x slower before this shortcut). Bypass it.
     ee_view = ee if is_padded else ee[0:N]
-    a_view = a if is_padded else a[0:N, 0:N]
 
     # Under padded, extend esi/tp/gp to length N so the match op
     # can run at fixed shape; sentinels ensure no k matches a
