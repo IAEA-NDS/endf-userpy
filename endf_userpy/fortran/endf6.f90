@@ -2638,8 +2638,10 @@ subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nko,es,eg,y)
 !          gp(i)= 1.0 for pure photon transitions [gp(i),i=1,nt]
 !   maxlevel: Maximum number of levels for inelastic reactions (z,x') x=n,p,d,t,he-3,he-4
 !   ee(i):  Energy of the excited level i. [ee(i),i=1,maxlevel]
-!   r(i,j): Probability that the nucleus initially excited at level i de-excites
-!           at level j through all possible transitions [a(i,j),i=1,maxlevel, j=1,maxlevel]
+!   r(i,j): for i<j, probability that the nucleus initially excited at level j reaches
+!           level i through all possible transitions (photon or internal conversion);
+!           for i>j, total direct transition probability TP from level i to level j.
+!           r(i,i)=1. [r(i,j),i=1,maxlevel, j=1,maxlevel]
 !   a(i,j): Probability that a gamma ray of energy eg is emitted in the transition from
 !           level j to i, taken as the gamma-ray branching ratio,
 !           [a(i,j),i=1,maxlevel, j=1,maxlevel]
@@ -2697,10 +2699,15 @@ subroutine trans2yield(mt,esns,nt,esi,tp,gp,maxlevel,ee,r,a,maxnk,nko,es,eg,y)
       r(k,j)=p
       a(k,j)=p*gp(ii)
     endif
+    ! DLA 13Nov26: store the total direct transition probability TP (photon + internal
+    ! conversion) from level j to level k in the unused lower triangle r(j,k), j>k.
+    ! The level population cascade must use TP, not TP*GP; TP*GP (matrix a) is only
+    ! the photon emission probability of the transition.
+    r(j,k)=r(k,j)
     if (k.ne.jm1) then
       kp1=k+1
       do i=kp1,jm1
-        r(k,j)=r(k,j)+a(k,i)*r(i,j)
+        r(k,j)=r(k,j)+r(i,k)*r(i,j)   ! DLA 13Nov26: was a(k,i)*r(i,j) (TP*GP)
       enddo
     endif
   enddo

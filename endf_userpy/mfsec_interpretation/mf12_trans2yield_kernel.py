@@ -10,8 +10,10 @@ emitted when an inelastic reaction populates a given upper level.
 Two-step API mirrors the Fortran:
 
 - :func:`init_trans2yield` builds and returns the level-energy array
-  ``ee`` and probability matrices ``r`` (level->level de-excitation)
-  and ``a`` (level->level photon branching) for a whole series of
+  ``ee`` and probability matrices ``r`` (upper triangle: cumulative
+  level->level population through the cascade; strict lower
+  triangle: total direct transition probability ``TP``) and ``a``
+  (level->level photon emission ``TP*GP``) for a whole series of
   discrete inelastic reactions. Call once per section (per ejectile
   series).
 - :func:`trans2yield` consumes the section's per-level transition
@@ -240,7 +242,6 @@ def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
     # ``[0:N]`` slice is a redundant XLA op that hurts jit steady-
     # state (measured 3x slower before this shortcut). Bypass it.
     ee_view = ee if is_padded else ee[0:N]
-    a_view = a if is_padded else a[0:N, 0:N]
 
     # Under padded, extend esi/tp/gp to length N so the match op
     # can run at fixed shape; sentinels ensure no k matches a
@@ -263,19 +264,31 @@ def trans2yield(mt: int, esns, esi, tp, gp, ee, r, a,
         p_direct = xp.where(row_mask, p_direct, 0.0)
         a_val = xp.where(row_mask, a_val, 0.0)
 
+    # Store the total direct transition probability TP(j0 -> k)
+    # (photon + internal conversion) in the strict lower triangle of
+    # ``r``, row j0 (r[j0, k], k < j0), as in the Fortran
+    # ``trans2yield`` (DLA 13Nov26). Written before the column
+    # update below, which restores r[j0, j0] = 1 on the padded path.
     if xp.name == 'jax':
         a = a.at[:, j0].set(a_val) if is_padded else a.at[0:N, j0].set(a_val)
+        r = r.at[j0, :].set(p_direct) if is_padded else r.at[j0, 0:N].set(p_direct)
     else:
         a[0:N, j0] = a_val
+        r[j0, 0:N] = p_direct
 
-    # Triangular solve: (I - strict_upper(a_view)) @ r_col = p_direct.
-    # Single XLA primitive per MT (was O(j0^2) chained adds pre
-    # Lever 2) -> the compile-time bottleneck on deep cascades.
-    # Introduces up to ~1 ULP drift vs the Fortran sequential
-    # accumulation. Re-read ``a_view`` after the column write.
-    a_view = a if is_padded else a[0:N, 0:N]
+    # Triangular solve: (I - T) @ r_col = p_direct, where
+    # T[k, i] = TP(i -> k) for i > k, read from the lower triangle of
+    # ``r``. The level population cascade must be propagated with the
+    # total transition probability TP (photon or internal conversion,
+    # ENDF-102 12.2.2), not with the photon probability TP*GP stored in
+    # ``a``, which loses the cascade below converted transitions when
+    # LG=2 (DLA 13Nov26). Single XLA primitive per MT (was O(j0^2)
+    # chained adds pre Lever 2) -> the compile-time bottleneck on deep
+    # cascades. Introduces up to ~1 ULP drift vs the Fortran
+    # sequential accumulation.
+    r_view = r if is_padded else r[0:N, 0:N]
     eye_N = xp.eye(N, dtype=xp.float64)
-    M = eye_N - xp.triu(a_view, k=1)
+    M = eye_N - xp.triu(r_view.T, k=1)
     if xp.name == 'jax':
         import jax.scipy.linalg as _jsp_la
         r_col = _jsp_la.solve_triangular(
